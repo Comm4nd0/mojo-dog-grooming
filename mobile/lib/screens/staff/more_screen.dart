@@ -1,0 +1,90 @@
+import 'package:flutter/material.dart';
+
+import '../../constants/app_colors.dart';
+import '../../services/auth_service.dart';
+import '../../services/service_locator.dart';
+import 'equipment_screen.dart';
+import 'intake_review_screen.dart';
+import 'invoices_screen.dart';
+import 'settings_screen.dart';
+import 'staff_shell.dart';
+
+/// Everything that isn't the dog list or the diary.
+class MoreScreen extends StatelessWidget {
+  const MoreScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final user = getIt<AuthService>().user;
+    return Scaffold(
+      appBar: AppBar(title: const Text('More')),
+      body: ListView(
+        children: [
+          _tile(
+            context,
+            icon: Icons.assignment_outlined,
+            title: 'Intake forms',
+            subtitle: 'Review new client submissions and profile claims',
+            builder: (_) => const IntakeReviewScreen(),
+          ),
+          _tile(
+            context,
+            icon: Icons.receipt_long_outlined,
+            title: 'Invoices',
+            subtitle: 'Raise invoices and record payments',
+            builder: (_) => const InvoicesScreen(),
+          ),
+          _tile(
+            context,
+            icon: Icons.content_cut_outlined,
+            title: 'Equipment',
+            subtitle: 'Blades, dryers — sharpening and PAT testing',
+            builder: (_) => const EquipmentScreen(),
+          ),
+          _tile(
+            context,
+            icon: Icons.settings_outlined,
+            title: 'Settings',
+            subtitle: 'Opening hours, temperament limits, breeds',
+            builder: (_) => const SettingsScreen(),
+          ),
+          const Divider(height: 32),
+          ListTile(
+            leading: const Icon(Icons.logout, color: AppColors.error),
+            title: const Text('Sign out', style: TextStyle(color: AppColors.error)),
+            subtitle: Text(user?.username ?? ''),
+            onTap: () => confirmSignOut(context),
+          ),
+          const SizedBox(height: 24),
+          const Center(
+            child: Padding(
+              padding: EdgeInsets.all(16),
+              child: Text(
+                'Mojo and Co',
+                style: TextStyle(
+                  fontSize: 11, letterSpacing: 3, color: AppColors.inkSecondary,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _tile(
+    BuildContext context, {
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required WidgetBuilder builder,
+  }) {
+    return ListTile(
+      leading: Icon(icon, color: AppColors.primary),
+      title: Text(title),
+      subtitle: Text(subtitle),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: builder)),
+    );
+  }
+}

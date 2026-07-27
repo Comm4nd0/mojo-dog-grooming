@@ -1,0 +1,21 @@
+# Base (dev + shared) requirements for mojo_backend.
+# Production installs requirements-prod.txt, which pulls this file in via
+# "-r requirements.txt" and adds prod-only extras (gunicorn, psycopg2, whitenoise).
+# Versions are pinned to match p4td, the sibling Django/Flutter app on the same
+# host, so both projects stay on one known-good set.
+
+# Django core
+Django==5.2.10
+djangorestframework==3.15.1
+djoser==2.2.3
+django-cors-headers==4.3.1
+
+# Environment variables
+python-dotenv==1.2.2
+
+# Image processing (dog photo thumbnails, EXIF rotation)
+Pillow==10.3.0
+
+# Static file serving. In base rather than prod-only because it sits in
+# MIDDLEWARE unconditionally, so dev needs it importable too.
+whitenoise==6.6.0

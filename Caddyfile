@@ -1,0 +1,16 @@
+# Append this block to /root/caddy/Caddyfile on the Hetzner host, then
+# reload Caddy:  docker exec caddy-caddy-1 caddy reload --config /etc/caddy/Caddyfile
+#
+# Requires an A record for app.mojoandco.uk pointing at this host before Caddy
+# can issue a certificate.
+
+app.mojoandco.uk {
+    # Dog photos are served straight off disk rather than through gunicorn.
+    handle_path /media/* {
+        root * /srv/mojo-media
+        file_server
+    }
+
+    reverse_proxy 172.17.0.1:8010
+    encode gzip
+}

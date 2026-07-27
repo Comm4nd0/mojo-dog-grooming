@@ -1,0 +1,16 @@
+# Local development stack. Postgres only — run Django on the host with
+# `python manage.py runserver` against SQLite, or point DATABASE_URL here.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: mojo
+      POSTGRES_USER: mojo
+      POSTGRES_PASSWORD: mojo
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata_dev:/var/lib/postgresql/data
+
+volumes:
+  pgdata_dev:
