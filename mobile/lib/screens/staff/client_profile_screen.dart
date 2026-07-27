@@ -69,7 +69,9 @@ class _ClientProfileScreenState extends State<ClientProfileScreen> {
     try {
       final token = await _data.createIntakeInvite(email: client.email, clientId: client.id);
       if (!mounted) return;
-      final link = 'https://app.mojoandco.uk/intake/$token';
+      // Derived from the configured API base so the link always points at
+      // whichever host the app is actually talking to.
+      final link = '${apiBaseUrl.replaceFirst(RegExp(r'/api/?$'), '')}/intake/$token';
       showDialog<void>(
         context: context,
         builder: (context) => AlertDialog(
