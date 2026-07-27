@@ -1,16 +1,33 @@
-# Append this block to /root/caddy/Caddyfile on the Hetzner host, then
-# reload Caddy:  docker exec caddy-caddy-1 caddy reload --config /etc/caddy/Caddyfile
+# Append to /root/caddy/Caddyfile on the Hetzner host, then reload:
+#   docker exec caddy-caddy-1 caddy reload --config /etc/caddy/Caddyfile
 #
-# Requires an A record for app.mojoandco.uk pointing at this host before Caddy
-# can issue a certificate.
+# Caddy also needs the media directory mounted, alongside the p4td one:
+#   - /root/mojo-dog-grooming/media:/srv/mojo-media:ro
+#
+# The Hetzner cloud firewall only allows 80 and 443, so the app must go
+# through Caddy — binding the container to a high port directly is
+# unreachable from outside.
 
-app.mojoandco.uk {
-    # Dog photos are served straight off disk rather than through gunicorn.
+# Interim hostname. sslip.io resolves *.<dashed-ip>.sslip.io to that IP via
+# public DNS, so Caddy can obtain a real Let's Encrypt certificate without
+# anyone touching the mojoandco.uk zone. Delete this block once the proper
+# subdomain is pointed here.
+mojo.178-104-29-66.sslip.io {
     handle_path /media/* {
         root * /srv/mojo-media
         file_server
     }
-
     reverse_proxy 172.17.0.1:8010
     encode gzip
 }
+
+# The real home, once an A record for app.mojoandco.uk points at this host.
+# Until then Caddy cannot get a certificate for it, so it stays commented out.
+# app.mojoandco.uk {
+#     handle_path /media/* {
+#         root * /srv/mojo-media
+#         file_server
+#     }
+#     reverse_proxy 172.17.0.1:8010
+#     encode gzip
+# }
