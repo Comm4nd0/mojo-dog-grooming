@@ -109,10 +109,28 @@ Sampled from the live site, not invented:
 ## The silhouette grid
 
 Problem areas are stored as cell references over a fixed **12 × 8** grid on a side-profile dog
-silhouette (`r{row}c{col}`, zero-indexed). The dog is drawn as a `Path` rather than an image
-asset so it scales and themes cleanly. `kGridColumns`/`kGridRows` in
-`mobile/lib/widgets/dog_silhouette.dart` **must** stay in step with `ProblemArea.GRID_COLUMNS`
-/ `GRID_ROWS` in `api/models.py`, which validates incoming references.
+silhouette (`r{row}c{col}`, zero-indexed from the top-left). The dog is `mobile/assets/
+dog_silhouette.svg`, rendered with `flutter_svg` and tinted at render time, so swapping it for
+a different outline means replacing the file rather than regenerating code — see
+`mobile/assets/ATTRIBUTION.md`.
+
+`kGridColumns`/`kGridRows` in `mobile/lib/widgets/dog_silhouette.dart` **must** stay in step
+with `ProblemArea.GRID_COLUMNS` / `GRID_ROWS` in `api/models.py`, which validates incoming
+references. Changing either invalidates every problem area already stored.
+
+The frame uses the artwork's own aspect (`kSilhouetteAspect`, 2605:1661.7) rather than 3:2, so
+the dog fills the width instead of sitting letterboxed. Cells come out at about 1.05:1.
+
+Unit tests can pass while the artwork fails to load or sits misaligned, so
+`test/silhouette_golden_test.dart` renders it and compares pixels, in light and dark. After
+deliberately changing the artwork or the grid:
+
+```bash
+cd mobile && flutter test --update-goldens
+```
+
+Then **look at** `test/goldens/*.png` before committing — that is the only check that the dog
+still reads as a dog and the grid still lands on the right anatomy.
 
 ## Host constraints
 

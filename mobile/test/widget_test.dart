@@ -80,13 +80,26 @@ void main() {
   });
 
   group('Silhouette picker', () {
+    // Size the harness to the artwork's own aspect so the picker fills it
+    // exactly. Deriving the geometry from the constants keeps these tests
+    // honest if the grid or the silhouette is ever swapped.
+    const harnessWidth = 480.0;
+    final harnessHeight = harnessWidth / kSilhouetteAspect;
+    final cellWidth = harnessWidth / kGridColumns;
+    final cellHeight = harnessHeight / kGridRows;
+
+    Offset centreOf(int row, int col) => Offset(
+          col * cellWidth + cellWidth / 2,
+          row * cellHeight + cellHeight / 2,
+        );
+
     Widget harness(Set<String> selected, ValueChanged<Set<String>> onChanged,
         {bool readOnly = false}) {
       return MaterialApp(
         home: Scaffold(
           body: SizedBox(
-            width: 480,
-            height: 320,
+            width: harnessWidth,
+            height: harnessHeight,
             child: DogSilhouettePicker(
               selectedCells: selected,
               onChanged: onChanged,
@@ -104,12 +117,11 @@ void main() {
       }
 
       await rebuild();
-      // The grid is 12x8 over 480x320, so each cell is 40x40. Tap row 3, col 5.
-      await tester.tapAt(const Offset(5 * 40 + 20, 3 * 40 + 20));
+      await tester.tapAt(centreOf(3, 5));
       expect(selected, {'r3c5'});
 
       await rebuild();
-      await tester.tapAt(const Offset(5 * 40 + 20, 3 * 40 + 20));
+      await tester.tapAt(centreOf(3, 5));
       expect(selected, isEmpty);
     });
 
@@ -117,9 +129,27 @@ void main() {
       Set<String> selected = {};
       for (final (row, col) in [(2, 4), (2, 5), (3, 4)]) {
         await tester.pumpWidget(harness(selected, (cells) => selected = cells));
-        await tester.tapAt(Offset(col * 40 + 20, row * 40 + 20));
+        await tester.tapAt(centreOf(row, col));
       }
       expect(selected, {'r2c4', 'r2c5', 'r3c4'});
+    });
+
+    testWidgets('every cell in the grid is reachable', (tester) async {
+      // Guards the corners: an off-by-one in the layout maths would leave the
+      // last row or column untappable, and nobody would notice until an owner
+      // tried to mark a paw or the tail tip.
+      final hit = <String>{};
+      for (int row = 0; row < kGridRows; row++) {
+        for (int col = 0; col < kGridColumns; col++) {
+          Set<String> selected = {};
+          await tester.pumpWidget(harness(selected, (cells) => selected = cells));
+          await tester.tapAt(centreOf(row, col));
+          hit.addAll(selected);
+        }
+      }
+      expect(hit.length, kGridRows * kGridColumns);
+      expect(hit, contains('r0c0'));
+      expect(hit, contains(cellRef(kGridRows - 1, kGridColumns - 1)));
     });
 
     testWidgets('read-only mode ignores taps', (tester) async {
@@ -127,15 +157,34 @@ void main() {
       await tester.pumpWidget(
         harness(selected, (cells) => selected = cells, readOnly: true),
       );
-      await tester.tapAt(const Offset(100, 100));
+      await tester.tapAt(centreOf(4, 6));
       expect(selected, isEmpty);
+    });
+
+    testWidgets('the thumbnail keeps the artwork aspect', (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: Center(child: DogSilhouetteThumbnail(cells: ['r2c4'], size: 120)),
+          ),
+        ),
+      );
+      final box = tester.getSize(find.byType(DogSilhouetteThumbnail));
+      expect(box.width, 120);
+      expect(box.height, closeTo(120 / kSilhouetteAspect, 0.01));
     });
 
     test('cell references match the format the API validates', () {
       expect(cellRef(0, 0), 'r0c0');
       expect(cellRef(7, 11), 'r7c11');
+      // Changing either would invalidate every problem area already stored and
+      // desync this from ProblemArea.GRID_COLUMNS / GRID_ROWS on the server.
       expect(kGridColumns, 12);
       expect(kGridRows, 8);
+    });
+
+    test('the silhouette asset is declared in pubspec', () {
+      expect(kSilhouetteAsset, 'assets/dog_silhouette.svg');
     });
   });
 

@@ -27,6 +27,11 @@ dependencies:
   # Brand typography (Playfair Display + Montserrat, as on mojoandco.uk)
   google_fonts: ^6.2.1
 
+  # Renders the dog silhouette on the problem-area picker. Published by
+  # flutter.dev; keeping the silhouette as an SVG asset means swapping it for a
+  # different outline later is dropping in a file, not regenerating code.
+  flutter_svg: ^2.3.0
+
   # Service locator
   get_it: ^7.7.0
 
@@ -37,3 +42,5 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/dog_silhouette.svg
