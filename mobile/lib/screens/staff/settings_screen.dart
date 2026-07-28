@@ -114,12 +114,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ListTile(
                         dense: true,
                         title: Text(day['weekday_display']?.toString() ?? ''),
-                        trailing: Text(
-                          day['is_closed'] == true || day['open_time'] == null
-                              ? 'Closed'
-                              : '${_shortTime(day['open_time'])} – ${_shortTime(day['close_time'])}',
-                          style: const TextStyle(color: AppColors.inkSecondary),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              _hoursLabel(day),
+                              style: const TextStyle(color: AppColors.inkSecondary),
+                            ),
+                            const SizedBox(width: 10),
+                            const Icon(Icons.edit_outlined, size: 18),
+                          ],
                         ),
+                        onTap: () => _editHours(day),
                       ),
 
                     const SectionHeader(title: 'Breeds'),
@@ -149,33 +155,131 @@ class _SettingsScreenState extends State<SettingsScreen> {
   static String _shortTime(dynamic value) =>
       value == null ? '' : value.toString().substring(0, 5);
 
-  Future<void> _editLimit(Map<String, dynamic> limit) async {
-    final controller = TextEditingController(
-      text: limit['max_per_day']?.toString() ?? '',
-    );
-    final result = await showDialog<String>(
+  static String _hoursLabel(Map<String, dynamic> day) =>
+      day['is_closed'] == true || day['open_time'] == null
+          ? 'Closed'
+          : '${_shortTime(day['open_time'])} – ${_shortTime(day['close_time'])}';
+
+  /// "09:00:00" (the API's format) or "09:00" into a TimeOfDay. Null for a day
+  /// that has never had hours set.
+  static TimeOfDay? _parseTime(dynamic value) {
+    if (value == null) return null;
+    final parts = value.toString().split(':');
+    if (parts.length < 2) return null;
+    final hour = int.tryParse(parts[0]);
+    final minute = int.tryParse(parts[1]);
+    if (hour == null || minute == null) return null;
+    return TimeOfDay(hour: hour, minute: minute);
+  }
+
+  static String _apiTime(TimeOfDay time) =>
+      '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
+
+  static int _minutes(TimeOfDay time) => time.hour * 60 + time.minute;
+
+  Future<void> _editHours(Map<String, dynamic> day) async {
+    // A day that has never been set opens on a plain 9–5 rather than empty
+    // fields, so setting one is two taps rather than four.
+    var isOpen = day['is_closed'] != true && day['open_time'] != null;
+    var open = _parseTime(day['open_time']) ?? const TimeOfDay(hour: 9, minute: 0);
+    var close = _parseTime(day['close_time']) ?? const TimeOfDay(hour: 17, minute: 0);
+
+    final saved = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(limit['temperament_display']?.toString() ?? 'Limit'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          keyboardType: TextInputType.number,
-          decoration: const InputDecoration(
-            labelText: 'Maximum per day',
-            helperText: 'Leave blank for no limit',
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCEL')),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, controller.text.trim()),
-            child: const Text('SAVE'),
-          ),
-        ],
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          // Open and close are times on one day, so closing at or before
+          // opening is a typo rather than an overnight shift.
+          final invalid = isOpen && _minutes(close) <= _minutes(open);
+
+          Future<void> pick({required bool opening}) async {
+            final picked = await showTimePicker(
+              context: context,
+              initialTime: opening ? open : close,
+            );
+            if (picked == null) return;
+            setDialogState(() {
+              if (opening) {
+                open = picked;
+              } else {
+                close = picked;
+              }
+            });
+          }
+
+          return AlertDialog(
+            title: Text(day['weekday_display']?.toString() ?? 'Opening hours'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: isOpen,
+                  onChanged: (value) => setDialogState(() => isOpen = value),
+                  title: Text(isOpen ? 'Open this day' : 'Closed this day'),
+                ),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  enabled: isOpen,
+                  title: const Text('Opens'),
+                  trailing: Text(_apiTime(open)),
+                  onTap: isOpen ? () => pick(opening: true) : null,
+                ),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  enabled: isOpen,
+                  title: const Text('Closes'),
+                  trailing: Text(_apiTime(close)),
+                  onTap: isOpen ? () => pick(opening: false) : null,
+                ),
+                if (invalid)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 8),
+                    child: Text(
+                      'Closing time must be after opening time.',
+                      style: TextStyle(color: AppColors.error, fontSize: 12.5),
+                    ),
+                  ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('CANCEL'),
+              ),
+              ElevatedButton(
+                onPressed: invalid ? null : () => Navigator.pop(context, true),
+                child: const Text('SAVE'),
+              ),
+            ],
+          );
+        },
       ),
     );
-    controller.dispose();
+    if (saved != true) return;
+
+    // The times go up even when the day is closed, so re-opening it restores
+    // what was there rather than snapping back to the 9–5 default. Both the
+    // list above and opening_hours_warning() on the server read is_closed
+    // first, so the kept times stay invisible until the day reopens.
+    await _api.patch('/opening-hours/${day['id']}/', {
+      'is_closed': !isOpen,
+      'open_time': _apiTime(open),
+      'close_time': _apiTime(close),
+    });
+    _load();
+  }
+
+  Future<void> _editLimit(Map<String, dynamic> limit) async {
+    final result = await promptForText(
+      context,
+      title: limit['temperament_display']?.toString() ?? 'Limit',
+      initialValue: limit['max_per_day']?.toString() ?? '',
+      labelText: 'Maximum per day',
+      helperText: 'Leave blank for no limit',
+      keyboardType: TextInputType.number,
+    );
     if (result == null) return;
 
     await _api.patch('/temperament-limits/${limit['id']}/', {

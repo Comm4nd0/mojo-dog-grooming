@@ -6,6 +6,7 @@ import '../../services/auth_service.dart';
 import '../../services/data_service.dart';
 import '../../services/service_locator.dart';
 import '../../widgets/common.dart';
+import '../account_switcher.dart';
 import '../staff/staff_shell.dart';
 
 /// A client's own details, editable by them, plus their invoices if Jess has
@@ -149,7 +150,13 @@ class _MyProfileScreenState extends State<MyProfileScreen> {
           if (_client != null)
             IconButton(icon: const Icon(Icons.edit_outlined), onPressed: _edit),
           IconButton(
+            icon: const Icon(Icons.switch_account_outlined),
+            tooltip: 'Switch account',
+            onPressed: () => showAccountSwitcher(context),
+          ),
+          IconButton(
             icon: const Icon(Icons.logout),
+            tooltip: 'Sign out',
             onPressed: () => confirmSignOut(context),
           ),
         ],

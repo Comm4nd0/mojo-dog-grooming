@@ -6,7 +6,12 @@ import '../services/auth_service.dart';
 import '../services/service_locator.dart';
 
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key});
+  const LoginScreen({super.key, this.isAddingAccount = false});
+
+  /// Pushed over an existing session to add a second account, rather than
+  /// shown as the app root because nobody is signed in. Adds a way back out
+  /// and pops itself once the new account is in.
+  final bool isAddingAccount;
 
   @override
   State<LoginScreen> createState() => _LoginScreenState();
@@ -47,7 +52,10 @@ class _LoginScreenState extends State<LoginScreen> {
       } else {
         await auth.signIn(_username.text, _password.text);
       }
-      // The app root listens to AuthService and swaps in the right shell.
+      // The app root listens to AuthService and swaps in the right shell. When
+      // this screen was pushed over a session, it also has to get out of the
+      // way, or it sits on top of the shell it just brought up.
+      if (widget.isAddingAccount && mounted) Navigator.of(context).pop();
     } on ApiException catch (error) {
       setState(() => _error = error.message);
     } on NoConnectionException catch (error) {
@@ -60,6 +68,7 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      appBar: widget.isAddingAccount ? AppBar(title: const Text('Add account')) : null,
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
@@ -153,6 +162,7 @@ class _LoginScreenState extends State<LoginScreen> {
                             : 'New client? Create an account',
                       ),
                     ),
+                    if (!widget.isAddingAccount) ..._savedAccounts(),
                   ],
                 ),
               ),
@@ -161,6 +171,59 @@ class _LoginScreenState extends State<LoginScreen> {
         ),
       ),
     );
+  }
+
+  /// Accounts still remembered after signing out of another one. Without these
+  /// they would be saved but unreachable — the switcher only exists inside a
+  /// session, and this screen is what you get when there isn't one.
+  List<Widget> _savedAccounts() {
+    final accounts = getIt<AuthService>().accounts;
+    if (accounts.isEmpty) return const [];
+    return [
+      const SizedBox(height: 20),
+      const Divider(),
+      const Padding(
+        padding: EdgeInsets.only(top: 10, bottom: 2),
+        child: Text(
+          'SIGNED IN BEFORE',
+          style: TextStyle(
+            fontSize: 11,
+            letterSpacing: 3,
+            fontWeight: FontWeight.w700,
+            color: AppColors.inkSecondary,
+          ),
+        ),
+      ),
+      for (final account in accounts)
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(
+            account.isStaff ? Icons.content_cut : Icons.person_outline,
+            color: AppColors.primary,
+          ),
+          title: Text(account.username),
+          subtitle: Text(account.isStaff ? 'Staff' : 'Client'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: _busy ? null : () => _useSaved(account),
+        ),
+    ];
+  }
+
+  Future<void> _useSaved(SavedAccount account) async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await getIt<AuthService>().switchTo(account);
+      // Success disposes this screen — the root swaps the shell in.
+    } on ApiException catch (error) {
+      setState(() => _error = error.message);
+    } on NoConnectionException catch (error) {
+      setState(() => _error = error.toString());
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 }
 

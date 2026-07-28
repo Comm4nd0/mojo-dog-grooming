@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../constants/app_colors.dart';
 import '../../services/auth_service.dart';
 import '../../services/service_locator.dart';
+import '../account_switcher.dart';
 import 'equipment_screen.dart';
 import 'intake_review_screen.dart';
 import 'invoices_screen.dart';
@@ -49,6 +50,13 @@ class MoreScreen extends StatelessWidget {
             builder: (_) => const SettingsScreen(),
           ),
           const Divider(height: 32),
+          ListTile(
+            leading: const Icon(Icons.switch_account_outlined, color: AppColors.primary),
+            title: const Text('Switch account'),
+            subtitle: const Text('Check what a client sees, without signing out'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => showAccountSwitcher(context),
+          ),
           ListTile(
             leading: const Icon(Icons.logout, color: AppColors.error),
             title: const Text('Sign out', style: TextStyle(color: AppColors.error)),

@@ -22,6 +22,7 @@ from .models import (
     AppointmentStatus,
     Breed,
     Client,
+    ClientClaimRequest,
     ClosureDay,
     Dog,
     GroomPhase,
@@ -713,6 +714,89 @@ class ClaimRequestTests(BaseAPITestCase):
         self.unclaimed.refresh_from_db()
         self.assertIsNone(self.unclaimed.user)
         self.assertEqual(self.dana_client.get('/api/dogs/').data['count'], 0)
+
+    def test_claim_matches_on_surname_and_postcode_despite_the_space(self):
+        """The fallback must survive postcodes written the normal way.
+
+        Stored postcodes are typed by hand and usually carry the space, while
+        the claimed one is stripped before comparison. Comparing the two
+        directly meant this fallback never fired in practice.
+        """
+        spaced = Client.objects.create(
+            uid='MOJO-011', first_name='Marco', last_name='Baldanza',
+            email='someone-else@example.com', postcode='SL7 2HE',
+        )
+        user = User.objects.create_user('marco.baldanza', password='pw')
+        client = APIClient()
+        client.force_authenticate(user)
+
+        response = client.post(
+            '/api/claim-requests/',
+            {
+                # A different address to the one on file, so only the
+                # surname + postcode route can find the record.
+                'claimed_name': 'Marco Baldanza',
+                'claimed_email': 'marco@example.com',
+                'claimed_postcode': 'SL7 2HE',
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['matched_client'], spaced.pk)
+
+    def test_claim_matches_when_the_claimant_omits_the_space(self):
+        spaced = Client.objects.create(
+            uid='MOJO-012', first_name='Erin', last_name='Ellis',
+            email='on-file@example.com', postcode='RG9 9EE',
+        )
+        user = User.objects.create_user('erin', password='pw')
+        client = APIClient()
+        client.force_authenticate(user)
+
+        response = client.post(
+            '/api/claim-requests/',
+            {
+                'claimed_name': 'Erin Ellis',
+                'claimed_email': 'erin@example.com',
+                'claimed_postcode': 'rg99ee',
+            },
+            format='json',
+        )
+        self.assertEqual(response.data['matched_client'], spaced.pk)
+
+    def test_staff_can_approve_against_a_client_they_pick_themselves(self):
+        """No suggested match must not mean no way to approve.
+
+        The auto-match is a hint; when it misses, staff name the record and
+        that choice is what gets linked.
+        """
+        unmatchable = Client.objects.create(
+            uid='MOJO-013', first_name='Fay', last_name='Fisher',
+            email='fay@example.com', postcode='RG5 5FF',
+        )
+        user = User.objects.create_user('fay', password='pw')
+        client = APIClient()
+        client.force_authenticate(user)
+        client.post(
+            '/api/claim-requests/',
+            {
+                'claimed_name': 'Totally Different',
+                'claimed_email': 'nothing@example.com',
+                'claimed_postcode': 'ZZ1 1ZZ',
+            },
+            format='json',
+        )
+        claim = ClientClaimRequest.objects.get(user=user)
+        self.assertIsNone(claim.matched_client)
+
+        response = self.staff_client.post(
+            f'/api/claim-requests/{claim.pk}/approve/',
+            {'client_id': unmatchable.pk},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        unmatchable.refresh_from_db()
+        self.assertEqual(unmatchable.user, user)
 
     def test_staff_approval_links_the_record(self):
         self.dana_client.post(

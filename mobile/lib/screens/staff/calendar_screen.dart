@@ -100,8 +100,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
         ],
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: () => _openBooking(),
-        tooltip: 'New booking',
+        onPressed: _quickActions,
+        tooltip: 'Add',
         child: const Icon(Icons.add),
       ),
       body: _error != null && _byDay.isEmpty
@@ -169,7 +169,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
     if (_loading && _byDay.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
-    final appointments = _eventsFor(_selectedDay)..sort((a, b) => a.startAt.compareTo(b.startAt));
+    // Copy before sorting: an empty day yields the shared `const []`, which
+    // throws on sort, and sorting in place would mutate _byDay during build.
+    final appointments = [..._eventsFor(_selectedDay)]
+      ..sort((a, b) => a.startAt.compareTo(b.startAt));
     if (appointments.isEmpty) {
       return EmptyState(
         icon: Icons.event_available_outlined,
@@ -253,10 +256,9 @@ class _CalendarScreenState extends State<CalendarScreen> {
                   if (outstanding > 0)
                     InfoTag(label: '$outstanding outstanding'),
                   const Spacer(),
-                  IconButton(
-                    icon: const Icon(Icons.add, size: 20),
-                    onPressed: _addTodo,
-                  ),
+                  // No add button here: the FAB sits directly over this corner
+                  // of the sheet, so one here can't be tapped. Adding a to-do
+                  // is in the FAB's quick actions instead.
                   Icon(_todosExpanded ? Icons.expand_more : Icons.expand_less),
                 ],
               ),
@@ -319,31 +321,54 @@ class _CalendarScreenState extends State<CalendarScreen> {
   }
 
   Future<void> _addTodo() async {
-    final controller = TextEditingController();
-    final text = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Add to the list'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          textCapitalization: TextCapitalization.sentences,
-          decoration: const InputDecoration(hintText: 'e.g. Order more shampoo'),
-          onSubmitted: (value) => Navigator.pop(context, value),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCEL')),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, controller.text),
-            child: const Text('ADD'),
-          ),
-        ],
-      ),
+    final text = await promptForText(
+      context,
+      title: 'Add to the list',
+      hintText: 'e.g. Order more shampoo',
+      confirmLabel: 'ADD',
     );
-    controller.dispose();
-    if (text == null || text.trim().isEmpty) return;
-    await _data.createTodo(text.trim());
+    if (text == null || text.isEmpty) return;
+    try {
+      await _data.createTodo(text);
+    } catch (error) {
+      // Without this the failure surfaced as an unhandled exception with
+      // nothing on screen to say what went wrong.
+      if (mounted) showSnack(context, error.toString(), isError: true);
+      return;
+    }
+    if (!mounted) return;
     setState(() => _todosExpanded = true);
     _load();
+  }
+
+  /// The FAB used to be "new booking" alone, sitting directly on top of the
+  /// to-do list's own add button. Both actions live in here now, so nothing is
+  /// covered and the + means one thing: something new.
+  Future<void> _quickActions() async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.event_outlined, color: AppColors.primary),
+              title: const Text('New booking'),
+              subtitle: Text(formatDate(_selectedDay)),
+              onTap: () => Navigator.pop(context, 'booking'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.checklist, color: AppColors.primary),
+              title: const Text('New to-do'),
+              subtitle: const Text('Added to the list at the bottom'),
+              onTap: () => Navigator.pop(context, 'todo'),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (action == 'booking') await _openBooking(at: _selectedDay);
+    if (action == 'todo') await _addTodo();
   }
 }

@@ -251,3 +251,120 @@ void showSnack(BuildContext context, String message, {bool isError = false}) {
       ),
     );
 }
+
+/// Ask for a single line of text. Returns null if the dialog was cancelled,
+/// otherwise the trimmed text (which may be empty).
+///
+/// The controller belongs to the dialog's own State rather than the caller.
+/// `await showDialog(...)` completes the moment `Navigator.pop` runs, while
+/// the route is still animating out and the field is still on screen, so a
+/// caller that disposes its controller on the next line kills it underneath a
+/// live TextField: "A TextEditingController was used after being disposed."
+Future<String?> promptForText(
+  BuildContext context, {
+  required String title,
+  String? message,
+  String initialValue = '',
+  String? labelText,
+  String? hintText,
+  String? helperText,
+  String? suffixText,
+  TextInputType? keyboardType,
+  TextCapitalization textCapitalization = TextCapitalization.sentences,
+  String confirmLabel = 'SAVE',
+}) {
+  return showDialog<String>(
+    context: context,
+    builder: (context) => _TextPromptDialog(
+      title: title,
+      message: message,
+      initialValue: initialValue,
+      labelText: labelText,
+      hintText: hintText,
+      helperText: helperText,
+      suffixText: suffixText,
+      keyboardType: keyboardType,
+      textCapitalization: textCapitalization,
+      confirmLabel: confirmLabel,
+    ),
+  );
+}
+
+class _TextPromptDialog extends StatefulWidget {
+  const _TextPromptDialog({
+    required this.title,
+    required this.message,
+    required this.initialValue,
+    required this.labelText,
+    required this.hintText,
+    required this.helperText,
+    required this.suffixText,
+    required this.keyboardType,
+    required this.textCapitalization,
+    required this.confirmLabel,
+  });
+
+  final String title;
+  final String? message;
+  final String initialValue;
+  final String? labelText;
+  final String? hintText;
+  final String? helperText;
+  final String? suffixText;
+  final TextInputType? keyboardType;
+  final TextCapitalization textCapitalization;
+  final String confirmLabel;
+
+  @override
+  State<_TextPromptDialog> createState() => _TextPromptDialogState();
+}
+
+class _TextPromptDialogState extends State<_TextPromptDialog> {
+  late final TextEditingController _controller =
+      TextEditingController(text: widget.initialValue);
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() => Navigator.pop(context, _controller.text.trim());
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.title),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (widget.message != null) ...[
+            Text(widget.message!),
+            const SizedBox(height: 12),
+          ],
+          TextField(
+            controller: _controller,
+            autofocus: true,
+            keyboardType: widget.keyboardType,
+            textCapitalization: widget.textCapitalization,
+            decoration: InputDecoration(
+              labelText: widget.labelText,
+              hintText: widget.hintText,
+              helperText: widget.helperText,
+              suffixText: widget.suffixText,
+            ),
+            onSubmitted: (_) => _submit(),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('CANCEL'),
+        ),
+        ElevatedButton(onPressed: _submit, child: Text(widget.confirmLabel)),
+      ],
+    );
+  }
+}

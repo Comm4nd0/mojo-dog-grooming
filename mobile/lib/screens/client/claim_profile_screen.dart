@@ -5,6 +5,7 @@ import '../../services/auth_service.dart';
 import '../../services/data_service.dart';
 import '../../services/service_locator.dart';
 import '../../widgets/common.dart';
+import '../account_switcher.dart';
 import '../staff/staff_shell.dart';
 
 /// Where a newly signed-up client lands.
@@ -84,8 +85,16 @@ class _ClaimProfileScreenState extends State<ClaimProfileScreen> {
       appBar: AppBar(
         title: const Text('Link your profile'),
         actions: [
+          // A client login with no linked record can go nowhere else, so the
+          // way back to a staff account has to be reachable from here too.
+          IconButton(
+            icon: const Icon(Icons.switch_account_outlined),
+            tooltip: 'Switch account',
+            onPressed: () => showAccountSwitcher(context),
+          ),
           IconButton(
             icon: const Icon(Icons.logout),
+            tooltip: 'Sign out',
             onPressed: () => confirmSignOut(context),
           ),
         ],

@@ -18,7 +18,8 @@ from pathlib import Path
 
 from django.conf import settings as django_settings
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Q, Value
+from django.db.models.functions import Replace, Upper
 from django.utils import timezone
 from django.utils.safestring import mark_safe
 from rest_framework import status, viewsets
@@ -263,9 +264,13 @@ class ClientClaimRequestViewSet(viewsets.ModelViewSet):
         match = candidates.filter(email__iexact=data['claimed_email']).first()
         if match is None:
             surname = data['claimed_name'].split()[-1] if data['claimed_name'].split() else ''
-            match = candidates.filter(last_name__iexact=surname).filter(
-                postcode__iexact=postcode
-            ).first()
+            # Normalise both sides. Stored postcodes are typed by hand and
+            # usually carry the space ("SL7 2HE"); comparing them against the
+            # stripped claim ("SL72HE") never matched, which quietly killed
+            # this fallback for every postcode written the normal way.
+            match = candidates.annotate(
+                postcode_key=Upper(Replace('postcode', Value(' '), Value(''))),
+            ).filter(last_name__iexact=surname, postcode_key=postcode).first()
         serializer.save(user=self.request.user, matched_client=match)
 
     @action(detail=True, methods=['post'], permission_classes=[IsAdminUser])

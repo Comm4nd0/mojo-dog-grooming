@@ -81,30 +81,16 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
   }
 
   Future<void> _editManually(String phase) async {
-    final controller = TextEditingController(
-      text: ((_elapsed[phase] ?? 0) ~/ 60).toString(),
+    final entered = await promptForText(
+      context,
+      title: '${models.PhaseTiming.labelFor(phase)} — enter minutes',
+      initialValue: ((_elapsed[phase] ?? 0) ~/ 60).toString(),
+      suffixText: 'minutes',
+      keyboardType: TextInputType.number,
+      confirmLabel: 'SET',
     );
-    final minutes = await showDialog<int>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('${models.PhaseTiming.labelFor(phase)} — enter minutes'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          keyboardType: TextInputType.number,
-          decoration: const InputDecoration(suffixText: 'minutes'),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCEL')),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, int.tryParse(controller.text) ?? 0),
-            child: const Text('SET'),
-          ),
-        ],
-      ),
-    );
-    controller.dispose();
-    if (minutes == null) return;
+    if (entered == null) return;
+    final minutes = int.tryParse(entered) ?? 0;
     setState(() {
       if (_running == phase) _bankRunning();
       _elapsed[phase] = minutes * 60;

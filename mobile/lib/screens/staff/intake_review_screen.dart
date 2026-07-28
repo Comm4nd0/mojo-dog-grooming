@@ -203,36 +203,16 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
       };
 
   Future<void> _approve(IntakeSubmission submission) async {
-    final controller = TextEditingController();
-    final uid = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Give this client a UID'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Approving creates ${submission.fullName} and their '
-                '${submission.dogs.length} dog${submission.dogs.length == 1 ? '' : 's'}.'),
-            const SizedBox(height: 12),
-            TextField(
-              controller: controller,
-              autofocus: true,
-              textCapitalization: TextCapitalization.characters,
-              decoration: const InputDecoration(labelText: 'Client UID', hintText: 'MOJO-015'),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCEL')),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, controller.text.trim()),
-            child: const Text('APPROVE'),
-          ),
-        ],
-      ),
+    final uid = await promptForText(
+      context,
+      title: 'Give this client a UID',
+      message: 'Approving creates ${submission.fullName} and their '
+          '${submission.dogs.length} dog${submission.dogs.length == 1 ? '' : 's'}.',
+      labelText: 'Client UID',
+      hintText: 'MOJO-015',
+      textCapitalization: TextCapitalization.characters,
+      confirmLabel: 'APPROVE',
     );
-    controller.dispose();
     if (uid == null || uid.isEmpty) return;
 
     try {
@@ -250,11 +230,40 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
     _load();
   }
 
-  Future<void> _approveClaim(ClaimRequest claim, String matchedName) async {
+  Future<void> _approveClaim(ClaimRequest claim) async {
+    final client = await showModalBottomSheet<ClientRecord>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => _ClientPickerSheet(claim: claim),
+    );
+    if (client == null || !mounted) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Link ${client.fullName}?'),
+        content: Text(
+          '${claim.username} will sign in and see this client\'s dogs, '
+          'bookings and history.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('CANCEL'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('LINK'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
     try {
-      await _data.approveClaim(claim.id);
+      await _data.approveClaim(claim.id, clientId: client.id);
       if (!mounted) return;
-      showSnack(context, 'Linked to $matchedName.');
+      showSnack(context, 'Linked ${claim.username} to ${client.fullName}.');
       _load();
     } catch (error) {
       if (!mounted) return;
@@ -307,20 +316,193 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
                   },
                 ),
                 IconButton(
-                  icon: Icon(
-                    Icons.check,
-                    color: matched == null ? AppColors.inkSecondary : AppColors.success,
-                  ),
-                  // Without a suggested match there is nothing to link to;
-                  // Jess sets the link from the client record instead.
-                  onPressed:
-                      matched == null ? null : () => _approveClaim(claim, matched),
+                  icon: const Icon(Icons.check, color: AppColors.success),
+                  tooltip: 'Approve and link',
+                  // Always live. The suggested match is only a hint and misses
+                  // often enough that this used to be a dead button; approving
+                  // now opens the client list so the record can be named.
+                  onPressed: () => _approveClaim(claim),
                 ),
               ],
             ),
           );
         },
       ),
+    );
+  }
+}
+
+/// Which client record a claim gets linked to.
+///
+/// The server suggests a match, but it is only a hint — it looks at email, or
+/// surname plus postcode, and a client who signs up with a different address
+/// to the one on file matches neither. Staff name the record instead.
+///
+/// Records that already have a login are left out: the server refuses to move
+/// one to a second account, so offering them would only produce a 409.
+class _ClientPickerSheet extends StatefulWidget {
+  const _ClientPickerSheet({required this.claim});
+
+  final ClaimRequest claim;
+
+  @override
+  State<_ClientPickerSheet> createState() => _ClientPickerSheetState();
+}
+
+class _ClientPickerSheetState extends State<_ClientPickerSheet> {
+  final _data = getIt<DataService>();
+  final _search = TextEditingController();
+
+  List<ClientRecord> _clients = const [];
+  int _hiddenBecauseLinked = 0;
+  String _query = '';
+  bool _loading = true;
+  Object? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    try {
+      final clients = await _data.getClients();
+      if (!mounted) return;
+      final linkable = clients.where((client) => !client.hasLogin).toList();
+      setState(() {
+        _clients = linkable;
+        _hiddenBecauseLinked = clients.length - linkable.length;
+        _loading = false;
+        _error = null;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _error = error;
+        _loading = false;
+      });
+    }
+  }
+
+  /// Postcodes are typed by hand, so compare them with the spaces taken out —
+  /// the same trap that broke the server's own matching.
+  static String _squash(String value) => value.toLowerCase().replaceAll(' ', '');
+
+  List<ClientRecord> get _visible {
+    final query = _query.trim().toLowerCase();
+    final matches = query.isEmpty
+        ? _clients
+        : [
+            for (final client in _clients)
+              if (client.fullName.toLowerCase().contains(query) ||
+                  client.uid.toLowerCase().contains(query) ||
+                  _squash(client.postcode).contains(_squash(query)))
+                client,
+          ];
+
+    // Float the server's suggestion to the top when it found one.
+    final suggested = widget.claim.matchedClientId;
+    if (suggested == null) return matches;
+    return [
+      for (final client in matches)
+        if (client.id == suggested) client,
+      for (final client in matches)
+        if (client.id != suggested) client,
+    ];
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final claim = widget.claim;
+    return SizedBox(
+      height: MediaQuery.of(context).size.height * 0.85,
+      child: SafeArea(
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Link to which client?',
+                      style: Theme.of(context).textTheme.headlineSmall),
+                  const SizedBox(height: 6),
+                  Text(
+                    '${claim.username} claims to be ${claim.claimedName} — '
+                    '${claim.claimedEmail} · ${claim.claimedPostcode}',
+                    style: const TextStyle(fontSize: 12.5, color: AppColors.inkSecondary),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _search,
+                    decoration: const InputDecoration(
+                      prefixIcon: Icon(Icons.search),
+                      hintText: 'Name, UID or postcode',
+                      isDense: true,
+                    ),
+                    onChanged: (value) => setState(() => _query = value),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Expanded(child: _body()),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _body() {
+    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_error != null) return ErrorRetry(error: _error!, onRetry: _load);
+
+    final visible = _visible;
+    if (visible.isEmpty) {
+      return EmptyState(
+        icon: Icons.person_off_outlined,
+        title: _clients.isEmpty ? 'No records to link' : 'Nothing matches',
+        message: _clients.isEmpty
+            ? 'Every client record already has a login attached.'
+            : 'No client matches "$_query".',
+      );
+    }
+
+    return ListView.separated(
+      itemCount: visible.length + (_hiddenBecauseLinked > 0 ? 1 : 0),
+      separatorBuilder: (_, _) => const Divider(height: 1),
+      itemBuilder: (context, index) {
+        if (index == visible.length) {
+          return Padding(
+            padding: const EdgeInsets.all(16),
+            child: Text(
+              '$_hiddenBecauseLinked client${_hiddenBecauseLinked == 1 ? '' : 's'} '
+              'hidden — already linked to a login.',
+              style: const TextStyle(fontSize: 12, color: AppColors.inkSecondary),
+            ),
+          );
+        }
+        final client = visible[index];
+        final isSuggested = client.id == widget.claim.matchedClientId;
+        return ListTile(
+          title: Text(client.fullName),
+          subtitle: Text(
+            '${client.uid} · ${client.postcode} · '
+            '${client.dogCount} dog${client.dogCount == 1 ? '' : 's'}',
+          ),
+          trailing: isSuggested
+              ? const InfoTag(label: 'Suggested', icon: Icons.link)
+              : const Icon(Icons.chevron_right),
+          onTap: () => Navigator.pop(context, client),
+        );
+      },
     );
   }
 }
