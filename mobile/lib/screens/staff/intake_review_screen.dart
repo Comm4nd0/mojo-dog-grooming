@@ -231,13 +231,46 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
   }
 
   Future<void> _approveClaim(ClaimRequest claim) async {
-    final client = await showModalBottomSheet<ClientRecord>(
+    final choice = await showModalBottomSheet<ClaimApproval>(
       context: context,
       isScrollControlled: true,
       builder: (_) => _ClientPickerSheet(claim: claim),
     );
-    if (client == null || !mounted) return;
+    if (choice == null || !mounted) return;
 
+    if (choice.createNew) {
+      await _approveAsNewClient(claim);
+      return;
+    }
+    await _linkToExistingClient(claim, choice.client!);
+  }
+
+  /// Nobody on file matches, so make the record from what they gave us.
+  Future<void> _approveAsNewClient(ClaimRequest claim) async {
+    final uid = await promptForText(
+      context,
+      title: 'Give this client a UID',
+      message: 'Creates a new record for ${claim.claimedName} and links it to '
+          '${claim.username}. You can add their dogs afterwards.',
+      labelText: 'Client UID',
+      hintText: 'MOJO-015',
+      textCapitalization: TextCapitalization.characters,
+      confirmLabel: 'CREATE',
+    );
+    if (uid == null || uid.isEmpty) return;
+
+    try {
+      await _data.approveClaimAsNewClient(claim.id, uid: uid);
+      if (!mounted) return;
+      showSnack(context, 'Created ${claim.claimedName} and linked ${claim.username}.');
+      _load();
+    } catch (error) {
+      if (!mounted) return;
+      showSnack(context, error.toString(), isError: true);
+    }
+  }
+
+  Future<void> _linkToExistingClient(ClaimRequest claim, ClientRecord client) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -330,6 +363,21 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
       ),
     );
   }
+}
+
+/// What staff chose to do with a claim.
+///
+/// Two outcomes, because two things happen in practice: the person is already
+/// one of Jess's clients and needs linking, or they signed up without ever
+/// having been entered and need a record making.
+class ClaimApproval {
+  const ClaimApproval.link(ClientRecord this.client) : createNew = false;
+  const ClaimApproval.createNew()
+      : client = null,
+        createNew = true;
+
+  final ClientRecord? client;
+  final bool createNew;
 }
 
 /// Which client record a claim gets linked to.
@@ -431,7 +479,7 @@ class _ClientPickerSheetState extends State<_ClientPickerSheet> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Link to which client?',
+                  Text('Approve this claim',
                       style: Theme.of(context).textTheme.headlineSmall),
                   const SizedBox(height: 6),
                   Text(
@@ -453,6 +501,16 @@ class _ClientPickerSheetState extends State<_ClientPickerSheet> {
               ),
             ),
             const Divider(height: 1),
+            // Always offered, not just when the search comes up empty: someone
+            // who was never entered as a client is an ordinary case, not a
+            // failure of the list below.
+            ListTile(
+              leading: const Icon(Icons.person_add_alt, color: AppColors.primary),
+              title: const Text('Create a new client'),
+              subtitle: Text('Not one of yours yet — make a record from ${claim.claimedName}'),
+              onTap: () => Navigator.pop(context, const ClaimApproval.createNew()),
+            ),
+            const Divider(height: 1),
             Expanded(child: _body()),
           ],
         ),
@@ -470,8 +528,10 @@ class _ClientPickerSheetState extends State<_ClientPickerSheet> {
         icon: Icons.person_off_outlined,
         title: _clients.isEmpty ? 'No records to link' : 'Nothing matches',
         message: _clients.isEmpty
-            ? 'Every client record already has a login attached.'
-            : 'No client matches "$_query".',
+            ? 'Every client record already has a login attached. Use "Create a '
+                'new client" above if this is a new customer.'
+            : 'No client matches "$_query". If they are new, create a record '
+                'for them above.',
       );
     }
 
@@ -500,7 +560,7 @@ class _ClientPickerSheetState extends State<_ClientPickerSheet> {
           trailing: isSuggested
               ? const InfoTag(label: 'Suggested', icon: Icons.link)
               : const Icon(Icons.chevron_right),
-          onTap: () => Navigator.pop(context, client),
+          onTap: () => Navigator.pop(context, ClaimApproval.link(client)),
         );
       },
     );

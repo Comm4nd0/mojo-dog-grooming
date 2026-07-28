@@ -798,6 +798,117 @@ class ClaimRequestTests(BaseAPITestCase):
         unmatchable.refresh_from_db()
         self.assertEqual(unmatchable.user, user)
 
+    def test_a_walk_up_signup_can_be_given_a_brand_new_client_record(self):
+        """Someone Jess never entered still has to get through.
+
+        There is nothing to link them to, so approving creates the record from
+        what they gave and attaches their login in one step.
+        """
+        user = User.objects.create_user('gareth', password='pw')
+        client = APIClient()
+        client.force_authenticate(user)
+        client.post(
+            '/api/claim-requests/',
+            {
+                'claimed_name': 'Gareth Green',
+                'claimed_email': 'gareth@example.com',
+                'claimed_postcode': 'RG7 7GG',
+            },
+            format='json',
+        )
+        claim = ClientClaimRequest.objects.get(user=user)
+        self.assertIsNone(claim.matched_client, 'nothing on file should match')
+
+        response = self.staff_client.post(
+            f'/api/claim-requests/{claim.pk}/approve_as_new_client/',
+            {'client_uid': 'MOJO-020'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        created = Client.objects.get(uid='MOJO-020')
+        self.assertEqual(created.first_name, 'Gareth')
+        self.assertEqual(created.last_name, 'Green')
+        self.assertEqual(created.email, 'gareth@example.com')
+        self.assertEqual(created.user, user)
+
+        claim.refresh_from_db()
+        self.assertEqual(claim.status, 'APPROVED')
+        self.assertEqual(claim.matched_client, created)
+
+        # And they are through: their own record is now visible to them.
+        self.assertEqual(client.get('/api/clients/').data['count'], 1)
+
+    def test_a_double_barrelled_surname_survives(self):
+        user = User.objects.create_user('hana', password='pw')
+        client = APIClient()
+        client.force_authenticate(user)
+        client.post(
+            '/api/claim-requests/',
+            {
+                'claimed_name': 'Hana de la Cruz',
+                'claimed_email': 'hana@example.com',
+                'claimed_postcode': 'RG8 8HH',
+            },
+            format='json',
+        )
+        claim = ClientClaimRequest.objects.get(user=user)
+        self.staff_client.post(
+            f'/api/claim-requests/{claim.pk}/approve_as_new_client/',
+            {'client_uid': 'MOJO-021'},
+            format='json',
+        )
+        created = Client.objects.get(uid='MOJO-021')
+        self.assertEqual(created.first_name, 'Hana')
+        self.assertEqual(created.last_name, 'de la Cruz')
+
+    def test_creating_a_new_client_rejects_a_uid_already_in_use(self):
+        user = User.objects.create_user('ivan', password='pw')
+        client = APIClient()
+        client.force_authenticate(user)
+        client.post(
+            '/api/claim-requests/',
+            {
+                'claimed_name': 'Ivan Ives',
+                'claimed_email': 'ivan@example.com',
+                'claimed_postcode': 'RG9 9II',
+            },
+            format='json',
+        )
+        claim = ClientClaimRequest.objects.get(user=user)
+
+        response = self.staff_client.post(
+            f'/api/claim-requests/{claim.pk}/approve_as_new_client/',
+            {'client_uid': self.alice.uid},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        claim.refresh_from_db()
+        self.assertEqual(claim.status, 'PENDING', 'a rejected UID must not approve the claim')
+
+    def test_a_client_cannot_create_their_own_record_from_a_claim(self):
+        user = User.objects.create_user('jen', password='pw')
+        client = APIClient()
+        client.force_authenticate(user)
+        client.post(
+            '/api/claim-requests/',
+            {
+                'claimed_name': 'Jen Jones',
+                'claimed_email': 'jen@example.com',
+                'claimed_postcode': 'RG1 1JJ',
+            },
+            format='json',
+        )
+        claim = ClientClaimRequest.objects.get(user=user)
+
+        response = client.post(
+            f'/api/claim-requests/{claim.pk}/approve_as_new_client/',
+            {'client_uid': 'MOJO-022'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(Client.objects.filter(uid='MOJO-022').exists())
+
     def test_staff_approval_links_the_record(self):
         self.dana_client.post(
             '/api/claim-requests/',

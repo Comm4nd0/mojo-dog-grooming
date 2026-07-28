@@ -303,6 +303,74 @@ class ClientClaimRequestViewSet(viewsets.ModelViewSet):
         return Response(self.get_serializer(claim).data)
 
     @action(detail=True, methods=['post'], permission_classes=[IsAdminUser])
+    def approve_as_new_client(self, request, pk=None):
+        """Approve a claim from someone who was never on file.
+
+        ``approve`` links a record Jess already keeps. This is the other half:
+        somebody signs up who she has not entered as a client, so there is
+        nothing to link and the record has to be created from what they gave.
+        Their login is attached in the same transaction, so they never see the
+        claim screen again.
+
+        The UID is asked for rather than generated: Mojo and Co's numbering is
+        Jess's own, and inventing a next value would impose a convention she
+        has not chosen.
+        """
+        claim = self.get_object()
+        if claim.status == ReviewStatus.APPROVED:
+            return Response(
+                {'detail': 'This claim has already been approved.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        uid = (request.data.get('client_uid') or '').strip()
+        if not uid:
+            return Response(
+                {'detail': 'Give the new client a UID before approving.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if Client.objects.filter(uid=uid).exists():
+            return Response(
+                {'detail': f'UID "{uid}" is already in use.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+        # Client.user is one-to-one, so a second record for the same login
+        # would fail on the constraint. Say why instead.
+        if Client.objects.filter(user=claim.user).exists():
+            return Response(
+                {'detail': 'That login already has a client record.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        # "Marco Baldanza" -> first "Marco", last "Baldanza"; anything longer
+        # keeps the remainder as the surname rather than dropping it.
+        name_parts = claim.claimed_name.strip().split(None, 1)
+        first_name = name_parts[0] if name_parts else ''
+        last_name = name_parts[1] if len(name_parts) > 1 else ''
+        if not first_name:
+            return Response(
+                {'detail': 'This claim has no name to create a client from.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            client = Client.objects.create(
+                uid=uid,
+                first_name=first_name,
+                last_name=last_name,
+                email=claim.claimed_email,
+                postcode=claim.claimed_postcode,
+                user=claim.user,
+            )
+            claim.matched_client = client
+            claim.status = ReviewStatus.APPROVED
+            claim.reviewed_by = request.user
+            claim.reviewed_at = timezone.now()
+            claim.review_notes = request.data.get('review_notes', '')
+            claim.save()
+        return Response(self.get_serializer(claim).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'], permission_classes=[IsAdminUser])
     def reject(self, request, pk=None):
         claim = self.get_object()
         claim.status = ReviewStatus.REJECTED

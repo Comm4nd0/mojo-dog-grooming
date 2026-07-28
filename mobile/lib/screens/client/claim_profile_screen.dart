@@ -111,8 +111,8 @@ class _ClaimProfileScreenState extends State<ClaimProfileScreen> {
     return EmptyState(
       icon: Icons.hourglass_empty,
       title: 'Request sent',
-      message: 'Mojo and Co will check your details against their records and link '
-          'your account. You will see your dogs and bookings here once they do.',
+      message: 'Mojo and Co will check your details and set your account up. '
+          'You will see your dogs and bookings here once they do.',
       action: OutlinedButton(
         onPressed: () async {
           await _auth.refreshUser();
@@ -131,9 +131,13 @@ class _ClaimProfileScreenState extends State<ClaimProfileScreen> {
         children: [
           Text('Almost there', style: AppColors.display(26)),
           const SizedBox(height: 10),
+          // Not everyone who lands here is on file — someone can sign up
+          // without Jess having entered them, and telling them a record exists
+          // when it doesn't reads as a mistake on their first screen.
           const Text(
-            'Mojo and Co already hold a record for you. Confirm your details and '
-            'they will link it to this account.',
+            'Send Mojo and Co your details. If they already hold a record for '
+            'you it will be linked to this account; if not, they will set one '
+            'up for you.',
             style: TextStyle(fontSize: 14, height: 1.5),
           ),
           const SizedBox(height: 28),

@@ -355,6 +355,11 @@ class DataService {
   Future<void> approveClaim(int id, {int? clientId}) =>
       _api.post('/claim-requests/$id/approve/', {'client_id': ?clientId});
 
+  /// Approve a claim from someone who was never entered as a client, creating
+  /// their record from the details they gave and attaching their login.
+  Future<void> approveClaimAsNewClient(int id, {required String uid}) =>
+      _api.post('/claim-requests/$id/approve_as_new_client/', {'client_uid': uid});
+
   Future<void> rejectClaim(int id, {String notes = ''}) =>
       _api.post('/claim-requests/$id/reject/', {'review_notes': notes});
 }
