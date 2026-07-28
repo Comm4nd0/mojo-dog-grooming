@@ -312,9 +312,9 @@ class ClientClaimRequestViewSet(viewsets.ModelViewSet):
         Their login is attached in the same transaction, so they never see the
         claim screen again.
 
-        The UID is asked for rather than generated: Mojo and Co's numbering is
-        Jess's own, and inventing a next value would impose a convention she
-        has not chosen.
+        A UID typed by staff always wins; left blank, the next one in the
+        MOJO-### series is assigned. Jess's numbering stays hers, without
+        making her think of a number to get somebody through the door.
         """
         claim = self.get_object()
         if claim.status == ReviewStatus.APPROVED:
@@ -323,12 +323,7 @@ class ClientClaimRequestViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_409_CONFLICT,
             )
 
-        uid = (request.data.get('client_uid') or '').strip()
-        if not uid:
-            return Response(
-                {'detail': 'Give the new client a UID before approving.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        uid = (request.data.get('client_uid') or '').strip() or Client.next_uid()
         if Client.objects.filter(uid=uid).exists():
             return Response(
                 {'detail': f'UID "{uid}" is already in use.'},

@@ -249,15 +249,18 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
   Future<void> _approveAsNewClient(ClaimRequest claim) async {
     final uid = await promptForText(
       context,
-      title: 'Give this client a UID',
-      message: 'Creates a new record for ${claim.claimedName} and links it to '
-          '${claim.username}. You can add their dogs afterwards.',
+      title: 'Create ${claim.claimedName}',
+      message: 'Creates a new client record and links it to ${claim.username}. '
+          'You can add their dogs afterwards.',
       labelText: 'Client UID',
       hintText: 'MOJO-015',
+      helperText: 'Leave blank to use the next number',
       textCapitalization: TextCapitalization.characters,
       confirmLabel: 'CREATE',
     );
-    if (uid == null || uid.isEmpty) return;
+    // Only cancelling aborts. Blank means "you pick one" — the server assigns
+    // the next UID in the series.
+    if (uid == null) return;
 
     try {
       await _data.approveClaimAsNewClient(claim.id, uid: uid);

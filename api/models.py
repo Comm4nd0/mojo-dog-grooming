@@ -154,6 +154,32 @@ class Client(models.Model):
     def full_name(self):
         return f'{self.first_name} {self.last_name}'.strip()
 
+    UID_PREFIX = 'MOJO-'
+
+    @classmethod
+    def next_uid(cls):
+        """The next free UID in the MOJO-### series.
+
+        Only used where staff leave the field blank — Jess numbers her own
+        clients and nothing here overrides a UID she has typed.
+
+        UIDs outside the series are ignored rather than parsed: there is a live
+        record numbered "1337", and letting a one-off like that set the
+        sequence would push every later client into the wrong range. Counting
+        only MOJO-### keeps the generated run predictable no matter what else
+        is in the table.
+
+        Always one past the highest, so gaps left by deleted clients stay gaps
+        rather than being handed to somebody new.
+        """
+        highest = 0
+        existing = cls.objects.filter(uid__istartswith=cls.UID_PREFIX)
+        for uid in existing.values_list('uid', flat=True):
+            suffix = uid[len(cls.UID_PREFIX):]
+            if suffix.isdigit():
+                highest = max(highest, int(suffix))
+        return f'{cls.UID_PREFIX}{highest + 1:03d}'
+
 
 class ClientClaimRequest(models.Model):
     """A signed-up user asking to be linked to an existing client record.

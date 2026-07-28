@@ -839,6 +839,49 @@ class ClaimRequestTests(BaseAPITestCase):
         # And they are through: their own record is now visible to them.
         self.assertEqual(client.get('/api/clients/').data['count'], 1)
 
+    def test_a_blank_uid_is_assigned_the_next_in_the_series(self):
+        """Leaving the field empty must create the client, not quietly fail."""
+        user = User.objects.create_user('kev', password='pw')
+        client = APIClient()
+        client.force_authenticate(user)
+        client.post(
+            '/api/claim-requests/',
+            {
+                'claimed_name': 'Kev King',
+                'claimed_email': 'kev@example.com',
+                'claimed_postcode': 'RG2 2KK',
+            },
+            format='json',
+        )
+        claim = ClientClaimRequest.objects.get(user=user)
+
+        # setUp holds MOJO-001, MOJO-002 and MOJO-010.
+        response = self.staff_client.post(
+            f'/api/claim-requests/{claim.pk}/approve_as_new_client/',
+            {'client_uid': ''},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Client.objects.get(user=user).uid, 'MOJO-011')
+
+    def test_a_uid_outside_the_series_does_not_drag_the_sequence(self):
+        """A live record is numbered "1337"; it must not become the baseline."""
+        self.assertEqual(Client.next_uid(), 'MOJO-011')
+
+        Client.objects.create(uid='1337', first_name='Odd', last_name='One')
+        self.assertEqual(
+            Client.next_uid(), 'MOJO-011',
+            'a UID outside the series must not move the sequence',
+        )
+
+    def test_next_uid_does_not_backfill_gaps(self):
+        """MOJO-003 to MOJO-009 are unused, and stay that way.
+
+        Reusing a gap would hand a new client a number that may still be
+        written on old paperwork for someone else.
+        """
+        self.assertEqual(Client.next_uid(), 'MOJO-011')
+
     def test_a_double_barrelled_surname_survives(self):
         user = User.objects.create_user('hana', password='pw')
         client = APIClient()
