@@ -47,7 +47,12 @@ docker compose -f "$COMPOSE_FILE" up -d
 echo ""
 echo ">>> Waiting for the health check..."
 for i in $(seq 1 30); do
-    if curl -fsS http://172.17.0.1:8010/api/health/ >/dev/null 2>&1; then
+    # -H Host matters. Hitting the bridge IP directly sends "Host:
+    # 172.17.0.1:8010", which is not in DJANGO_ALLOWED_HOSTS, so Django
+    # answers 400 DisallowedHost and this check could never pass: every
+    # deploy burned the full five minutes and then reported failure over a
+    # container that was up and serving the whole time.
+    if curl -fsS -H 'Host: localhost' http://172.17.0.1:8010/api/health/ >/dev/null 2>&1; then
         echo "    Healthy after ${i}0s."
         break
     fi
