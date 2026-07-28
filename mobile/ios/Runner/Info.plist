@@ -24,8 +24,18 @@
 	<string>????</string>
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
+	<!-- The app's only encryption is HTTPS to the Mojo and Co API, which is
+	     exempt. Declaring it here stops every TestFlight build stalling on
+	     "Missing Compliance" until the question is answered by hand. Revisit
+	     if the app ever adds its own cryptography. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Take photos of a dog before and after a groom, to keep on their profile.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Add existing photos of a dog to their profile.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
