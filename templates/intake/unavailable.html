@@ -1,0 +1,23 @@
+{% extends "intake/base.html" %}
+
+{% block title %}Link unavailable — {{ settings.business_name }}{% endblock %}
+
+{% block content %}
+<div class="card">
+  <h1>Sorry, this link can't be opened</h1>
+  <p>{{ message }}</p>
+  <p class="hint">
+    Each form link works once and then expires, so this may simply mean your details
+    are already with us.
+  </p>
+  {% if settings.contact_phone or settings.contact_email %}
+    <p>
+      If you're not sure, get in touch
+      {% if settings.contact_phone %}on <a href="tel:{{ settings.contact_phone }}">{{ settings.contact_phone }}</a>{% endif %}
+      {% if settings.contact_phone and settings.contact_email %}or{% endif %}
+      {% if settings.contact_email %}at <a href="mailto:{{ settings.contact_email }}">{{ settings.contact_email }}</a>{% endif %}
+      and we'll send a fresh one.
+    </p>
+  {% endif %}
+</div>
+{% endblock %}

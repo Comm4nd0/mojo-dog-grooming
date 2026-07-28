@@ -38,14 +38,14 @@ mobile/lib/
 Backend:
 ```bash
 python manage.py migrate && python manage.py seed_breeds
-python manage.py test api        # 70 tests
+python manage.py test api        # 81 tests
 python manage.py runserver 0.0.0.0:8000
 ```
 
 Mobile:
 ```bash
 cd mobile && flutter pub get
-flutter analyze && flutter test  # 19 tests
+flutter analyze && flutter test  # 33 tests
 flutter run --dart-define=MOJO_API_BASE=http://192.168.1.20:8000/api
 ```
 
@@ -106,6 +106,23 @@ Sampled from the live site, not invented:
 - Buttons: uppercase, weight 700, letter-spacing 3.0, **square corners** — the site rounds
   nothing, and softening it reads as a different brand.
 
+## The intake form is a web page, not an app screen
+
+`/intake/<token>/` is server-rendered HTML (`templates/intake/`), not a Flutter screen. That is
+deliberate: the recipient is a brand-new client who has not signed up for anything and has no
+app installed, so a link into the app would be useless to them. The page posts JSON to
+`/api/intake/<token>/`, so validation, single-use and expiry all stay in the tested API.
+
+The page inlines `mobile/assets/dog_silhouette.svg` read straight off disk, so the web form and
+the app can never drift onto different-shaped dogs. `describe()` in `form.html` and
+`describeCell()` in `dog_silhouette.dart` label the same grid and must stay in step.
+
+Two things that bite on this page specifically:
+- The grid `<rect>`s share the artwork's 2605-unit viewBox, so `stroke-width: 1` renders at
+  about **0.12 CSS px** — invisible. They need `vector-effect: non-scaling-stroke`.
+- Loading the page and submitting it use **separate throttle scopes**. Sharing one would let
+  ordinary reloading exhaust the budget and lock a client out of sending their details.
+
 ## The silhouette grid
 
 Problem areas are stored as cell references over a fixed **12 × 8** grid on a side-profile dog
@@ -130,7 +147,17 @@ cd mobile && flutter test --update-goldens
 ```
 
 Then **look at** `test/goldens/*.png` before committing — that is the only check that the dog
-still reads as a dog and the grid still lands on the right anatomy.
+still reads as a dog and the grid still lands on the right anatomy. Never run
+`--update-goldens` to make a red test go green: a missing asset renders as a bare grid with no
+error, and regenerating would bake the dogless version in permanently. The
+`the artwork is actually painted` test is a golden-independent backstop against exactly that.
+
+Cells come out around 26 x 25dp on a phone, under the 44-48dp both platforms recommend for a
+touch target, so **dragging paints** across cells rather than requiring a separate accurate tap
+each. The gesture uses `DragStartBehavior.down`; the default reports the position *after* the
+~18dp touch slop, which skips the cell the user actually pressed. Cells accumulate in the
+widget's own state during a drag, because several pointer moves can land in one frame and
+reading the parent's selection each time would drop all but the last.
 
 ## Host constraints
 

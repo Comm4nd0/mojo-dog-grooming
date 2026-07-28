@@ -1,21 +1,24 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mojo_app/widgets/dog_silhouette.dart';
 
 /// Golden tests for the problem-area picker.
 ///
-/// The silhouette is the one screen where a wrong result is invisible to the
-/// unit tests: the cell maths can be perfectly correct while the artwork fails
-/// to load, renders at the wrong scale, or sits misaligned against the grid.
-/// Rendering it and comparing pixels is the only way to catch that short of
-/// putting it on a device.
+/// The silhouette is the one place where a wrong result is invisible to the
+/// unit tests: the cell arithmetic can be perfectly correct while the artwork
+/// fails to load, renders at the wrong scale, or sits misaligned against the
+/// grid. Comparing pixels is the only way to catch that short of a device —
+/// and it has already earned its keep, catching a version of this widget that
+/// drew the grid over an empty frame.
 ///
-/// Regenerate after deliberately changing the artwork or the grid:
+/// Regenerate after deliberately changing the artwork or the grid, then look
+/// at the PNGs before committing:
 ///   flutter test --update-goldens
 void main() {
   testWidgets('silhouette renders with the grid aligned', (tester) async {
-    await tester.pumpWidget(_harness(const {}));
-    await tester.pumpAndSettle();
+    await _pumpSettled(tester, _harness(const {}));
     await expectLater(
       find.byType(DogSilhouettePicker),
       matchesGoldenFile('goldens/silhouette_empty.png'),
@@ -25,8 +28,7 @@ void main() {
   testWidgets('selected cells mark the hindquarters', (tester) async {
     // Cells over the rear leg and hip — the kind of area an owner would mark
     // for "dislikes being brushed here".
-    await tester.pumpWidget(_harness(const {'r3c8', 'r3c9', 'r4c8', 'r4c9'}));
-    await tester.pumpAndSettle();
+    await _pumpSettled(tester, _harness(const {'r3c8', 'r3c9', 'r4c8', 'r4c9'}));
     await expectLater(
       find.byType(DogSilhouettePicker),
       matchesGoldenFile('goldens/silhouette_selected.png'),
@@ -34,13 +36,66 @@ void main() {
   });
 
   testWidgets('renders on a dark background', (tester) async {
-    await tester.pumpWidget(_harness(const {'r0c1', 'r1c1'}, dark: true));
-    await tester.pumpAndSettle();
+    await _pumpSettled(tester, _harness(const {'r0c1', 'r1c1'}, dark: true));
     await expectLater(
       find.byType(DogSilhouettePicker),
       matchesGoldenFile('goldens/silhouette_dark.png'),
     );
   });
+
+  testWidgets('the artwork is actually painted, not just the grid', (tester) async {
+    // Cheap guard that does not depend on golden files, so a machine with
+    // different pixel output still catches a missing asset.
+    await _pumpSettled(tester, _harness(const {}));
+    expect(find.byType(SvgPicture), findsOneWidget);
+
+    final image = await _capture(tester);
+    expect(
+      image.inkPixels,
+      greaterThan(image.total * 0.10),
+      reason: 'the silhouette covers roughly a third of the frame; far less '
+          'than that means the SVG did not render',
+    );
+  });
+}
+
+/// Pump, then give the SVG a real chance to load before anything is captured.
+///
+/// `SvgPicture.asset` reads the asset bundle asynchronously. `pumpAndSettle`
+/// drives the animation scheduler, not file I/O, so on its own it can capture
+/// a frame where the artwork has not arrived — which is exactly how the first
+/// set of goldens was generated correctly and then failed on the next run,
+/// with the dog simply absent. `runAsync` lets the real I/O complete.
+Future<void> _pumpSettled(WidgetTester tester, Widget widget) async {
+  await tester.pumpWidget(widget);
+  await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 120)));
+  await tester.pumpAndSettle();
+}
+
+const _boundaryKey = ValueKey('silhouette-boundary');
+
+/// Counts non-background pixels, as a proxy for "something was drawn".
+///
+/// `toImage` is genuinely asynchronous, so it has to run through `runAsync`;
+/// awaiting it directly inside a widget test hangs until the test times out,
+/// because the fake async zone never lets the real future complete.
+Future<({int inkPixels, int total})> _capture(WidgetTester tester) async {
+  final boundary = tester.renderObject<RenderRepaintBoundary>(find.byKey(_boundaryKey));
+
+  final result = await tester.runAsync(() async {
+    final image = await boundary.toImage(pixelRatio: 1.0);
+    final data = await image.toByteData();
+    final bytes = data!.buffer.asUint8List();
+
+    var ink = 0;
+    for (var i = 0; i < bytes.length; i += 4) {
+      // Anything meaningfully darker than white counts as drawn.
+      if (bytes[i] < 240 || bytes[i + 1] < 240 || bytes[i + 2] < 240) ink++;
+    }
+    return (inkPixels: ink, total: bytes.length ~/ 4);
+  });
+
+  return result!;
 }
 
 Widget _harness(Set<String> selected, {bool dark = false}) {
@@ -51,9 +106,14 @@ Widget _harness(Set<String> selected, {bool dark = false}) {
       body: Center(
         child: SizedBox(
           width: 600,
-          child: DogSilhouettePicker(
-            selectedCells: selected,
-            onChanged: (_) {},
+          // RepaintBoundary so the capture covers the picker alone rather than
+          // the surrounding scaffold.
+          child: RepaintBoundary(
+            key: _boundaryKey,
+            child: DogSilhouettePicker(
+              selectedCells: selected,
+              onChanged: (_) {},
+            ),
           ),
         ),
       ),

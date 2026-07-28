@@ -147,7 +147,13 @@ REST_FRAMEWORK = {
     ),
     'DEFAULT_THROTTLE_RATES': {
         'anon': '60/min',
+        # Submitting an intake form is the abuse vector, so it stays tight.
         'intake': '20/hour',
+        # Loading the form page is not: a client may reload it, come back to
+        # it, or share an IP with the rest of their household. Sharing one
+        # bucket with the submission would let ordinary reloading lock someone
+        # out of actually sending their details.
+        'intake_form': '120/hour',
     },
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 100,

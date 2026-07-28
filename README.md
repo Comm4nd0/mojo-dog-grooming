@@ -36,8 +36,8 @@ Without `--dart-define` the app points at `https://app.mojoandco.uk/api`.
 ## Tests
 
 ```bash
-python manage.py test api     # 70 backend tests
-cd mobile && flutter test     # 19 widget and model tests
+python manage.py test api     # 81 backend tests
+cd mobile && flutter test     # 33 widget, model and golden tests
 ```
 
 The backend suite covers the access-control rules the design rests on: a client can only reach

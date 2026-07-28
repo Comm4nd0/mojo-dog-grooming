@@ -11,7 +11,7 @@ from datetime import date, time, timedelta
 from decimal import Decimal
 
 from django.contrib.auth.models import User
-from django.urls import reverse
+from django.core.cache import cache
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
@@ -40,6 +40,11 @@ class BaseAPITestCase(APITestCase):
     """Two clients with a dog each, plus a staff login."""
 
     def setUp(self):
+        # DRF keeps throttle history in the cache, which persists for the whole
+        # test run. Without this, tests silently start throttling each other
+        # and fail with 429s that have nothing to do with what they assert.
+        cache.clear()
+
         self.staff = User.objects.create_user('jess', password='pw', is_staff=True, is_superuser=True)
 
         self.breed = Breed.objects.create(
@@ -594,6 +599,94 @@ class IntakeFormTests(BaseAPITestCase):
             format='json',
         )
         self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+
+
+class IntakeFormPageTests(BaseAPITestCase):
+    """The intake form is a web page, opened from an email by someone who has
+    no account and no app. If this 404s, the whole intake feature is unusable
+    no matter how well the API behind it works."""
+
+    def setUp(self):
+        super().setUp()
+        self.invite = IntakeInvite.objects.create(
+            email='newclient@example.com',
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        self.public = APIClient()
+
+    def test_the_link_staff_send_actually_resolves(self):
+        response = self.public.get(f'/intake/{self.invite.token}/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('text/html', response['Content-Type'])
+
+    def test_it_works_without_a_trailing_slash(self):
+        # Email clients and hand-typed links routinely drop it.
+        self.assertEqual(
+            self.public.get(f'/intake/{self.invite.token}').status_code,
+            status.HTTP_200_OK,
+        )
+
+    def test_the_page_carries_what_the_form_needs(self):
+        html = self.public.get(f'/intake/{self.invite.token}/').content.decode()
+        self.assertIn(self.invite.email, html)
+        self.assertIn(f'/api/intake/{self.invite.token}/', html)
+        # The silhouette is inlined, not linked, so there is no second request.
+        self.assertIn('<svg', html)
+        self.assertIn('viewBox', html)
+        # Breeds are rendered server-side for the datalist.
+        self.assertIn(self.breed.name, html)
+
+    def test_the_grid_matches_the_server_constants(self):
+        html = self.public.get(f'/intake/{self.invite.token}/').content.decode()
+        self.assertIn(f'var COLS = {ProblemArea.GRID_COLUMNS}', html)
+        self.assertIn(f'var ROWS = {ProblemArea.GRID_ROWS}', html)
+
+    def test_a_used_link_explains_itself_rather_than_erroring(self):
+        self.invite.used_at = timezone.now()
+        self.invite.save()
+        response = self.public.get(f'/intake/{self.invite.token}/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('already been filled in', response.content.decode())
+
+    def test_an_expired_link_explains_itself(self):
+        self.invite.expires_at = timezone.now() - timedelta(days=1)
+        self.invite.save()
+        html = self.public.get(f'/intake/{self.invite.token}/').content.decode()
+        self.assertIn('expired', html)
+
+    def test_an_unknown_token_is_404_not_a_crash(self):
+        response = self.public.get('/intake/not-a-real-token/')
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_the_page_does_not_leak_the_token_to_search_engines(self):
+        html = self.public.get(f'/intake/{self.invite.token}/').content.decode()
+        self.assertIn('noindex', html)
+
+    def test_the_grid_is_reachable_without_a_pointer(self):
+        """96 silent shapes would make this section unusable on a screen
+        reader, on a public form filled in by members of the public."""
+        html = self.public.get(f'/intake/{self.invite.token}/').content.decode()
+        for attribute in ["role', 'checkbox'", "aria-checked", "aria-label", "tabindex"]:
+            self.assertIn(attribute, html, f'{attribute} wiring is missing')
+        # Space and Enter toggle a focused cell.
+        self.assertIn("keydown", html)
+        # The grid announces which way the dog faces; there is no other cue.
+        self.assertIn('faces left', html)
+
+    def test_grid_strokes_do_not_scale_with_the_viewbox(self):
+        """The grid shares the artwork's 2605-unit viewBox, so a plain
+        stroke-width of 1 renders at about 0.12 CSS px — invisible."""
+        html = self.public.get(f'/intake/{self.invite.token}/').content.decode()
+        self.assertIn('non-scaling-stroke', html)
+
+    def test_silhouette_is_shared_with_the_mobile_app(self):
+        """One copy of the artwork, so the web form and the app never drift."""
+        from api.views import load_silhouette_svg
+
+        markup = load_silhouette_svg()
+        self.assertTrue(markup, 'silhouette asset failed to load')
+        self.assertNotIn('<?xml', markup, 'XML prolog must be stripped for inlining')
+        self.assertIn('<svg', markup)
 
 
 class ClaimRequestTests(BaseAPITestCase):

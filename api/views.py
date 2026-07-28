@@ -13,16 +13,41 @@ serializer gating alone.
 """
 
 from datetime import timedelta
+from functools import lru_cache
+from pathlib import Path
 
+from django.conf import settings as django_settings
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
+from django.utils.safestring import mark_safe
 from rest_framework import status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes, throttle_classes
 from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
+from rest_framework.renderers import TemplateHTMLRenderer
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
+
+
+@lru_cache(maxsize=1)
+def load_silhouette_svg():
+    """The dog silhouette, inlined into the intake page.
+
+    Read from the Flutter app's asset directory rather than duplicated into
+    Django's static files, so the web form and the mobile app can never drift
+    onto different-shaped dogs. The whole repo is in the production image, so
+    the path resolves there too.
+    """
+    path = Path(django_settings.BASE_DIR) / 'mobile' / 'assets' / 'dog_silhouette.svg'
+    try:
+        markup = path.read_text(encoding='utf-8')
+    except OSError:
+        return ''
+    # Strip the XML prolog so it can be inlined inside an HTML document.
+    if markup.lstrip().startswith('<?xml'):
+        markup = markup.split('?>', 1)[-1]
+    return mark_safe(markup.strip())  # noqa: S308 — our own asset, not user input
 
 from .models import (
     AppSettings,
@@ -669,6 +694,68 @@ class PublicIntakeView(APIView):
         return Response(
             {'detail': 'Thank you — your details have been sent to Mojo and Co.', 'id': submission.pk},
             status=status.HTTP_201_CREATED,
+        )
+
+
+class PublicIntakeFormView(APIView):
+    """The intake form as a web page, for someone with no app and no login.
+
+    This is the point of intake: the recipient is a brand-new client who has
+    not signed up for anything yet. A link to a screen inside the mobile app
+    would be useless to them, so the form is served as plain HTML that works
+    from an email in any browser.
+
+    The page posts JSON to :class:`PublicIntakeView`, so validation, token
+    single-use and expiry all stay in one tested place.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    # Deliberately a different bucket from the submission endpoint — see the
+    # note on DEFAULT_THROTTLE_RATES in settings.
+    throttle_scope = 'intake_form'
+    # Rendered as a page, not part of the JSON API.
+    renderer_classes = [TemplateHTMLRenderer]
+
+    def get(self, request, token):
+        invite = IntakeInvite.objects.filter(token=token).first()
+        settings_row = AppSettings.get()
+
+        if invite is None or not invite.is_usable:
+            if invite is None:
+                message = 'This link is not valid.'
+            elif invite.used_at:
+                message = 'This form has already been filled in.'
+            else:
+                message = 'This link has expired.'
+            return Response(
+                {
+                    'message': message,
+                    'settings': settings_row,
+                },
+                template_name='intake/unavailable.html',
+                status=status.HTTP_200_OK if invite else status.HTTP_404_NOT_FOUND,
+            )
+
+        return Response(
+            {
+                'token': token,
+                'email': invite.email,
+                'settings': settings_row,
+                'breeds': Breed.objects.values_list('name', flat=True),
+                'grid_columns': ProblemArea.GRID_COLUMNS,
+                'grid_rows': ProblemArea.GRID_ROWS,
+                'silhouette_svg': load_silhouette_svg(),
+                'preference_fields': [
+                    ('pref_body', 'Body'),
+                    ('pref_feet', 'Feet shape'),
+                    ('pref_tail', 'Tail'),
+                    ('pref_face', 'Face'),
+                    ('pref_ears', 'Ears'),
+                    ('pref_skirt', 'Skirt'),
+                ],
+            },
+            template_name='intake/form.html',
         )
 
 

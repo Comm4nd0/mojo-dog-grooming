@@ -10,6 +10,8 @@ media/
 # Flutter / Dart
 mobile/.dart_tool/
 mobile/build/
+# Diff images written when a golden test fails — useful locally, never committed.
+mobile/test/failures/
 mobile/.flutter-plugins
 mobile/.flutter-plugins-dependencies
 mobile/ios/Pods/

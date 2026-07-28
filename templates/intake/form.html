@@ -1,0 +1,471 @@
+{% extends "intake/base.html" %}
+
+{% block title %}New client form — {{ settings.business_name }}{% endblock %}
+
+{% block head_extra %}
+<style>
+  /* ── Problem-area picker ─────────────────────────────────────────── */
+  .dog-picker { position: relative; border: 1px solid var(--hairline); background: var(--surface); touch-action: none; }
+  .dog-picker svg.silhouette { display: block; width: 100%; height: auto; }
+  .dog-picker svg.silhouette path { fill: var(--ink); opacity: .25; }
+  .dog-grid { position: absolute; inset: 0; width: 100%; height: 100%; }
+  /* The grid shares the artwork's 2605-unit viewBox, so a stroke-width of 1
+     user unit would render at about 0.12 CSS px — invisible. non-scaling-stroke
+     makes the width mean screen pixels regardless of the viewBox. */
+  .dog-grid rect {
+    fill: transparent; stroke: var(--ink); stroke-opacity: .18; stroke-width: 1;
+    vector-effect: non-scaling-stroke; cursor: pointer;
+  }
+  .dog-grid rect.on {
+    fill: var(--error); fill-opacity: .42; stroke: var(--error);
+    stroke-opacity: 1; stroke-width: 2; vector-effect: non-scaling-stroke;
+  }
+  .dog-grid rect:focus-visible { outline: 2px solid var(--green); outline-offset: -2px; }
+  .picker-meta { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 8px 0 4px; }
+  .picker-meta span { font-size: 12px; color: var(--ink-2); }
+  .orient { font-size: 11px; color: var(--ink-2); letter-spacing: 1px; text-transform: uppercase; }
+
+  .dog-block { border: 1px solid var(--hairline); padding: 18px 16px; margin-bottom: 16px; background: var(--surface); }
+  .dog-block > header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+  .dog-block > header h3 { margin: 0; }
+  .link-btn { background: none; border: 0; color: var(--error); font-size: 12px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; width: auto; padding: 6px; cursor: pointer; }
+  .area { border-left: 3px solid var(--tint); padding: 10px 0 10px 12px; margin-bottom: 10px; }
+  .area p { margin: 0 0 6px; font-size: 13.5px; }
+  .area .cells { font-size: 11.5px; color: var(--ink-2); }
+  fieldset { border: 0; padding: 0; margin: 0 0 6px; }
+  legend { font-size: 13px; font-weight: 600; padding: 0; margin-bottom: 4px; }
+  .done { text-align: center; padding: 40px 20px; }
+  .done .tick { width: 60px; height: 60px; background: var(--tint); color: var(--green); display: grid; place-items: center; margin: 0 auto 18px; font-size: 30px; }
+  [hidden] { display: none !important; }
+</style>
+{% endblock %}
+
+{% block content %}
+
+<div id="form-view">
+  <h1>Welcome to {{ settings.business_name }}</h1>
+  <p class="hint" style="font-size:14px">
+    A few details about you and your dog, so we can look after them properly.
+    It takes about five minutes. Only the starred fields are required.
+  </p>
+
+  <div id="error-banner" class="banner error" hidden></div>
+
+  <form id="intake-form" novalidate>
+    <div class="card">
+      <h2>About you</h2>
+      <div class="row">
+        <div class="field">
+          <label for="first_name">First name <span class="req">*</span></label>
+          <input type="text" id="first_name" name="first_name" autocomplete="given-name" required>
+        </div>
+        <div class="field">
+          <label for="last_name">Last name</label>
+          <input type="text" id="last_name" name="last_name" autocomplete="family-name">
+        </div>
+      </div>
+      <div class="field">
+        <label for="email">Email <span class="req">*</span></label>
+        <input type="email" id="email" name="email" autocomplete="email" value="{{ email }}" required>
+      </div>
+      <div class="field">
+        <label for="phone">Phone</label>
+        <input type="tel" id="phone" name="phone" autocomplete="tel">
+      </div>
+      <div class="field">
+        <label for="address">Address</label>
+        <textarea id="address" name="address" autocomplete="street-address"></textarea>
+      </div>
+      <div class="field" style="max-width:220px">
+        <label for="postcode">Postcode</label>
+        <input type="text" id="postcode" name="postcode" autocomplete="postal-code">
+      </div>
+    </div>
+
+    <h2>Your dogs</h2>
+    <div id="dogs"></div>
+    <button type="button" class="secondary" id="add-dog" style="margin-bottom:22px">+ Add another dog</button>
+
+    <button type="submit" id="submit">Send to {{ settings.business_name }}</button>
+    <p class="hint" style="text-align:center;margin-top:12px">
+      Your details go straight to {{ settings.business_name }} and are not shared with anyone else.
+    </p>
+  </form>
+</div>
+
+<div id="done-view" class="card done" hidden>
+  <div class="tick" aria-hidden="true">&check;</div>
+  <h1>Thank you</h1>
+  <p>Your details are with {{ settings.business_name }}. We'll be in touch to arrange the first groom.</p>
+</div>
+
+{# The dog outline, shared with the mobile app so both show the same animal. #}
+<template id="silhouette-tpl">{{ silhouette_svg }}</template>
+
+<template id="dog-tpl">
+  <section class="dog-block">
+    <header>
+      <h3>Dog <span class="dog-n"></span></h3>
+      <button type="button" class="link-btn remove-dog">Remove</button>
+    </header>
+
+    <div class="row">
+      <div class="field">
+        <label>Name <span class="req">*</span></label>
+        <input type="text" data-f="name" required>
+      </div>
+      <div class="field">
+        <label>Breed</label>
+        <input type="text" data-f="breed" list="breed-list" placeholder="Start typing…">
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="field">
+        <label>Date of birth</label>
+        <input type="date" data-f="date_of_birth">
+      </div>
+      <div class="field">
+        <label>Sex</label>
+        <select data-f="sex">
+          <option value="">Prefer not to say</option>
+          <option value="M">Male</option>
+          <option value="F">Female</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="field">
+      <label class="check"><input type="checkbox" data-f="is_neutered"> Neutered or spayed</label>
+    </div>
+
+    <fieldset>
+      <legend>How would you like {{ '{' }}name{{ '}' }} groomed?</legend>
+      <p class="hint">Leave anything blank if you'd rather we advise.</p>
+      {% for key, label in preference_fields %}
+        <div class="field">
+          <label>{{ label }}</label>
+          <input type="text" data-f="{{ key }}">
+        </div>
+      {% endfor %}
+    </fieldset>
+
+    <div class="field">
+      <label>Anything medical we should know?</label>
+      <textarea data-f="medical_notes"></textarea>
+    </div>
+    <div class="field">
+      <label>Your vet</label>
+      <textarea data-f="vet" placeholder="Practice name, address and phone number"></textarea>
+    </div>
+
+    <fieldset>
+      <legend>Any sore or sensitive areas?</legend>
+      <p class="hint">
+        Tap or drag over the parts of the dog we should be careful with, then tell us why.
+        This helps us avoid hurting or upsetting them. The dog is shown from the side,
+        facing left.
+      </p>
+      <div class="dog-picker"></div>
+      <div class="picker-meta">
+        <span class="orient">&larr; head &nbsp;·&nbsp; tail &rarr;</span>
+        <span class="count">Nothing selected</span>
+      </div>
+      <div class="field">
+        <label>Why is this area sensitive?</label>
+        <input type="text" data-f="area_reason" placeholder="e.g. Sore hip — dislikes being lifted here">
+      </div>
+      <button type="button" class="secondary add-area">Save this area</button>
+      <div class="areas" style="margin-top:12px"></div>
+    </fieldset>
+  </section>
+</template>
+
+<datalist id="breed-list">
+  {% for name in breeds %}<option value="{{ name }}"></option>{% endfor %}
+</datalist>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  'use strict';
+
+  var COLS = {{ grid_columns }};
+  var ROWS = {{ grid_rows }};
+  var ENDPOINT = '/api/intake/{{ token }}/';
+
+  var dogsEl = document.getElementById('dogs');
+  var dogTpl = document.getElementById('dog-tpl');
+  var silhouetteTpl = document.getElementById('silhouette-tpl');
+  var banner = document.getElementById('error-banner');
+  var dogCount = 0;
+
+  function cellRef(row, col) { return 'r' + row + 'c' + col; }
+
+  // Builds the silhouette plus a tappable COLS x ROWS grid. Cell references
+  // must match ProblemArea.GRID_COLUMNS/GRID_ROWS on the server, which
+  // validates them, and the mobile app, which renders the same marks.
+  function buildPicker(host) {
+    host.innerHTML = silhouetteTpl.innerHTML;
+    var svg = host.querySelector('svg');
+    if (!svg) return null;
+    svg.classList.add('silhouette');
+    svg.removeAttribute('width');
+    svg.removeAttribute('height');
+
+    var vb = (svg.getAttribute('viewBox') || '0 0 100 100').split(/[\s,]+/).map(Number);
+    var w = vb[2], h = vb[3];
+
+    var grid = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    grid.setAttribute('viewBox', '0 0 ' + w + ' ' + h);
+    grid.setAttribute('preserveAspectRatio', 'none');
+    grid.setAttribute('class', 'dog-grid');
+
+    grid.setAttribute('role', 'group');
+    grid.setAttribute('aria-label', 'Areas of the dog. The dog faces left.');
+
+    for (var r = 0; r < ROWS; r++) {
+      for (var c = 0; c < COLS; c++) {
+        var rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        rect.setAttribute('x', (c * w / COLS));
+        rect.setAttribute('y', (r * h / ROWS));
+        rect.setAttribute('width', w / COLS);
+        rect.setAttribute('height', h / ROWS);
+        rect.dataset.ref = cellRef(r, c);
+        // Keyboard and screen-reader reachable: 96 silent shapes would make
+        // this section unusable without a mouse or a working pointer.
+        rect.setAttribute('role', 'checkbox');
+        rect.setAttribute('aria-checked', 'false');
+        rect.setAttribute('tabindex', '0');
+        rect.setAttribute('aria-label', describe(r, c));
+        grid.appendChild(rect);
+      }
+    }
+    host.appendChild(grid);
+    return grid;
+  }
+
+  // Rough anatomy for the label, so "row 8, column 5" becomes something a
+  // person can act on. The artwork is a standing dog seen from its left side,
+  // head at the left of the frame. Kept in step with describeCell() in
+  // mobile/lib/widgets/dog_silhouette.dart.
+  function describe(row, col) {
+    var where = 'row ' + (row + 1) + ' column ' + (col + 1);
+    if (row >= 6) {
+      var side = col <= 5 ? 'front' : 'hind';
+      return side + (row === 7 ? ' paw' : ' leg') + ', ' + where;
+    }
+    var part = col <= 2 ? 'head'
+      : col <= 4 ? 'neck and shoulder'
+      : col <= 8 ? 'body'
+      : (row <= 1 ? 'tail' : 'hindquarters');
+    var band = row <= 1 ? 'top of' : (row <= 3 ? 'upper' : 'lower');
+    return band + ' ' + part + ', ' + where;
+  }
+
+  // Tap toggles; dragging paints. Cells are small on a phone, so requiring a
+  // separate accurate tap per cell would make marking an area tedious.
+  function wirePicker(grid, onChange) {
+    var painting = false;
+    var mode = null;
+
+    function cellAt(x, y) {
+      var el = document.elementFromPoint(x, y);
+      return (el && el.dataset && el.dataset.ref) ? el : null;
+    }
+    function apply(el) {
+      if (!el) return;
+      var on = el.classList.contains('on');
+      if (mode === null) mode = on ? 'off' : 'on';
+      if (mode === 'on' && !on) el.classList.add('on');
+      else if (mode === 'off' && on) el.classList.remove('on');
+      el.setAttribute('aria-checked', el.classList.contains('on') ? 'true' : 'false');
+      onChange();
+    }
+
+    // Keyboard equivalent of a tap, for anyone not using a pointer.
+    grid.addEventListener('keydown', function (e) {
+      if (e.key !== ' ' && e.key !== 'Enter') return;
+      var el = e.target;
+      if (!el || !el.dataset || !el.dataset.ref) return;
+      e.preventDefault();
+      mode = null;
+      apply(el);
+      mode = null;
+    });
+
+    grid.addEventListener('pointerdown', function (e) {
+      painting = true; mode = null;
+      apply(cellAt(e.clientX, e.clientY));
+      e.preventDefault();
+    });
+    grid.addEventListener('pointermove', function (e) {
+      if (!painting) return;
+      apply(cellAt(e.clientX, e.clientY));
+      e.preventDefault();
+    });
+    window.addEventListener('pointerup', function () { painting = false; mode = null; });
+    window.addEventListener('pointercancel', function () { painting = false; mode = null; });
+  }
+
+  function selectedRefs(grid) {
+    return Array.prototype.map.call(grid.querySelectorAll('rect.on'), function (r) {
+      return r.dataset.ref;
+    });
+  }
+
+  function addDog() {
+    dogCount += 1;
+    var node = dogTpl.content.cloneNode(true);
+    var block = node.querySelector('.dog-block');
+    block.querySelector('.dog-n').textContent = dogCount;
+    block._areas = [];
+
+    var grid = buildPicker(block.querySelector('.dog-picker'));
+    var countEl = block.querySelector('.count');
+
+    if (grid) {
+      wirePicker(grid, function () {
+        var n = selectedRefs(grid).length;
+        countEl.textContent = n === 0
+          ? 'Nothing selected'
+          : n + (n === 1 ? ' square selected' : ' squares selected');
+      });
+    }
+
+    block.querySelector('.add-area').addEventListener('click', function () {
+      var reasonEl = block.querySelector('[data-f=area_reason]');
+      var cells = grid ? selectedRefs(grid) : [];
+      if (!cells.length) { return flash('Tap the areas on the dog first.'); }
+      if (!reasonEl.value.trim()) { return flash('Please tell us why that area is sensitive.'); }
+
+      block._areas.push({ grid_cells: cells, reason: reasonEl.value.trim() });
+      reasonEl.value = '';
+      Array.prototype.forEach.call(grid.querySelectorAll('rect.on'), function (r) {
+        r.classList.remove('on');
+      });
+      countEl.textContent = 'Nothing selected';
+      renderAreas(block);
+    });
+
+    block.querySelector('.remove-dog').addEventListener('click', function () {
+      if (dogsEl.querySelectorAll('.dog-block').length === 1) {
+        return flash('Please tell us about at least one dog.');
+      }
+      block.remove();
+      renumber();
+    });
+
+    dogsEl.appendChild(node);
+    renumber();
+  }
+
+  function renderAreas(block) {
+    var host = block.querySelector('.areas');
+    host.innerHTML = '';
+    block._areas.forEach(function (area, i) {
+      var div = document.createElement('div');
+      div.className = 'area';
+      var p = document.createElement('p');
+      p.textContent = area.reason;
+      var small = document.createElement('div');
+      small.className = 'cells';
+      small.textContent = area.grid_cells.length +
+        (area.grid_cells.length === 1 ? ' square' : ' squares') + ' marked';
+      var del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'link-btn';
+      del.textContent = 'Remove';
+      del.addEventListener('click', function () {
+        block._areas.splice(i, 1);
+        renderAreas(block);
+      });
+      div.appendChild(p); div.appendChild(small); div.appendChild(del);
+      host.appendChild(div);
+    });
+  }
+
+  function renumber() {
+    Array.prototype.forEach.call(dogsEl.querySelectorAll('.dog-block'), function (b, i) {
+      b.querySelector('.dog-n').textContent = i + 1;
+      b.querySelector('.remove-dog').hidden = (i === 0 && dogsEl.children.length === 1);
+    });
+  }
+
+  function flash(message) {
+    banner.textContent = message;
+    banner.hidden = false;
+    banner.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  function collect() {
+    var payload = {
+      first_name: val('first_name'), last_name: val('last_name'),
+      email: val('email'), phone: val('phone'),
+      address: val('address'), postcode: val('postcode'),
+      dogs: []
+    };
+    Array.prototype.forEach.call(dogsEl.querySelectorAll('.dog-block'), function (b) {
+      var dog = { problem_areas: b._areas || [] };
+      Array.prototype.forEach.call(b.querySelectorAll('[data-f]'), function (el) {
+        var f = el.dataset.f;
+        if (f === 'area_reason') return;
+        dog[f] = el.type === 'checkbox' ? el.checked : el.value.trim();
+      });
+      // An empty date must be omitted, not sent as "", which Django rejects.
+      if (!dog.date_of_birth) delete dog.date_of_birth;
+      payload.dogs.push(dog);
+    });
+    return payload;
+  }
+
+  function val(id) { return (document.getElementById(id).value || '').trim(); }
+
+  document.getElementById('add-dog').addEventListener('click', addDog);
+
+  document.getElementById('intake-form').addEventListener('submit', function (e) {
+    e.preventDefault();
+    banner.hidden = true;
+
+    var payload = collect();
+    if (!payload.first_name) return flash('Please tell us your first name.');
+    if (!payload.email || payload.email.indexOf('@') < 0) return flash('Please give us a valid email address.');
+    if (!payload.dogs.length || payload.dogs.some(function (d) { return !d.name; })) {
+      return flash('Every dog needs a name.');
+    }
+
+    var btn = document.getElementById('submit');
+    btn.disabled = true;
+    btn.textContent = 'Sending…';
+
+    fetch(ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify(payload)
+    }).then(function (res) {
+      return res.json().then(function (body) { return { ok: res.ok, body: body }; });
+    }).then(function (r) {
+      if (r.ok) {
+        document.getElementById('form-view').hidden = true;
+        document.getElementById('done-view').hidden = false;
+        window.scrollTo(0, 0);
+        return;
+      }
+      var msg = r.body && (r.body.detail ||
+        (r.body.dogs && [].concat(r.body.dogs)[0]) ||
+        (r.body.email && 'Email: ' + [].concat(r.body.email)[0]));
+      flash(msg || 'Sorry, something went wrong. Please try again.');
+      btn.disabled = false;
+      btn.textContent = 'Send to {{ settings.business_name|escapejs }}';
+    }).catch(function () {
+      flash("We couldn't reach {{ settings.business_name|escapejs }}. Check your connection and try again.");
+      btn.disabled = false;
+      btn.textContent = 'Send to {{ settings.business_name|escapejs }}';
+    });
+  });
+
+  addDog();
+})();
+</script>
+{% endblock %}
