@@ -54,40 +54,87 @@ things deciding the same field.
 
 ### App Store Connect API key
 
-`release.yml` needs a key to submit on your behalf. App Store Connect → Users
-and Access → Integrations → App Store Connect API → **+**:
+`release.yml` needs a key to submit on your behalf. This is the fiddly half of
+the setup, so in detail:
 
-- Access: **App Manager** (less than this cannot submit for review).
-- Download the `.p8`. Apple lets you download it **once**.
+**1. Make the key.** [appstoreconnect.apple.com](https://appstoreconnect.apple.com)
+→ **Users and Access** (top nav) → **Integrations** tab → **App Store Connect
+API** in the left sidebar → **Team Keys** → the blue **+**.
 
-Then GitHub → Settings → Secrets and variables → Actions → New repository secret,
-three times:
+- Name: anything — `GitHub Actions` does.
+- Access: **App Manager**. Developer is not enough; it can read the app but not
+  submit, and that only shows up at the last call of a real release.
+- Generate, then **Download** the `.p8`. Apple allows this **once** — if you
+  lose it, revoke the key and make another.
 
-| Secret | Where it comes from |
+If there is no **Integrations** tab, your Apple ID is not an Account Holder or
+Admin on the team. Nobody else can make this key for you to use; whoever holds
+that role has to create it.
+
+**2. Collect three values.**
+
+| Value | Where |
 |---|---|
-| `APP_STORE_CONNECT_ISSUER_ID` | The Issuer ID above the key list |
-| `APP_STORE_CONNECT_KEY_ID` | The key's ID column |
-| `APP_STORE_CONNECT_PRIVATE_KEY` | The whole `.p8` file contents, `-----BEGIN` line and all |
+| Issuer ID | Above the key list, small grey text with a Copy button. A UUID. |
+| Key ID | The **KEY ID** column of the key you just made. 10 characters. |
+| Private key | The `.p8` file you downloaded, contents and all |
 
-### Try it without submitting anything
+**3. Put them in GitHub.** In this repository: **Settings** → **Secrets and
+variables** → **Actions** → **New repository secret**, three times. Names must
+match exactly:
 
-Before trusting it with a real release, run the workflow by hand:
+| Secret name | Value |
+|---|---|
+| `APP_STORE_CONNECT_ISSUER_ID` | The issuer UUID |
+| `APP_STORE_CONNECT_KEY_ID` | The 10-character key ID |
+| `APP_STORE_CONNECT_PRIVATE_KEY` | `cat AuthKey_XXXXXXXXXX.p8` and paste **everything**, including the `-----BEGIN PRIVATE KEY-----` and `-----END PRIVATE KEY-----` lines and the line breaks between |
 
-GitHub → Actions → **Release to the App Store** → Run workflow → version
-`1.10.0`, dry run **true**.
+Open the `.p8` in a plain text editor, not Preview or Word. The most common
+failure is the key arriving as one long line with its newlines lost.
 
-It authenticates, finds the app, reads the changelog and prints every change it
-*would* make without making any. That is worth doing once: a submission cannot
-be withdrawn without it counting against you.
+**4. Check it.** GitHub → **Actions** → **Check App Store credentials** → **Run
+workflow**. It takes seconds, submits nothing, and says which of the three is
+wrong if any are. Green means a tag will release.
 
-You can do the same locally:
+Or locally:
 
 ```bash
 pip install "PyJWT[crypto]" requests
 export APP_STORE_CONNECT_ISSUER_ID=... APP_STORE_CONNECT_KEY_ID=...
-export APP_STORE_CONNECT_PRIVATE_KEY="$(cat AuthKey_XXXX.p8)"
+export APP_STORE_CONNECT_PRIVATE_KEY="$(cat AuthKey_XXXXXXXXXX.p8)"
+python tools/appstore_release.py --check-credentials
+```
+
+What the failures mean:
+
+| Message | Cause |
+|---|---|
+| `does not look like a .p8 file` | The secret holds the key ID or a fragment, not the file |
+| `Could not sign with that private key` | The `.p8` lost its line breaks — repaste it whole |
+| `401` / `NOT_AUTHORIZED` | Issuer ID and Key ID are swapped, or the key was revoked |
+| `No app with bundle id … is visible` | Right team, wrong app, or the key predates the app |
+| `can see the app but not its review submissions` | Access is below App Manager |
+
+### Try it without submitting anything
+
+Once the credentials check passes and a build has been uploaded, rehearse the
+release itself:
+
+GitHub → Actions → **Release to the App Store** → Run workflow → version
+`1.10.0`, dry run **true**.
+
+It authenticates, finds the app, waits for the build, reads the changelog and
+prints every change it *would* make without making any. Worth doing once: a
+submission cannot be withdrawn without it counting against you.
+
+Locally, the same:
+
+```bash
 python tools/appstore_release.py --version 1.10.0 --dry-run
 ```
+
+Note the difference from `--check-credentials`: a dry run still waits for a
+processed build to exist, so run it after Xcode Cloud has uploaded one.
 
 ## Versions
 

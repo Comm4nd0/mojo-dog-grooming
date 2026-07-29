@@ -92,13 +92,28 @@ def make_token():
     if '\\n' in private_key and '\n' not in private_key:
         private_key = private_key.replace('\\n', '\n')
 
+    if 'BEGIN PRIVATE KEY' not in private_key:
+        raise AppStoreError(
+            'APP_STORE_CONNECT_PRIVATE_KEY does not look like a .p8 file. It '
+            'wants the whole thing, including the "-----BEGIN PRIVATE KEY-----" '
+            'and "-----END PRIVATE KEY-----" lines — not just the middle, and '
+            'not the key ID.'
+        )
+
     now = int(time.time())
-    return jwt.encode(
-        {'iss': issuer, 'iat': now, 'exp': now + 15 * 60, 'aud': 'appstoreconnect-v1'},
-        private_key,
-        algorithm='ES256',
-        headers={'kid': key_id, 'typ': 'JWT'},
-    )
+    try:
+        return jwt.encode(
+            {'iss': issuer, 'iat': now, 'exp': now + 15 * 60, 'aud': 'appstoreconnect-v1'},
+            private_key,
+            algorithm='ES256',
+            headers={'kid': key_id, 'typ': 'JWT'},
+        )
+    except Exception as error:  # noqa: BLE001 — the crypto layer's errors are unreadable
+        raise AppStoreError(
+            f'Could not sign with that private key ({error}). The usual cause is '
+            'the .p8 losing its line breaks on the way into the secret — paste '
+            'the file contents whole, exactly as downloaded.'
+        ) from error
 
 
 class Client:
@@ -109,16 +124,19 @@ class Client:
 
     def _call(self, method, path, **kwargs):
         url = path if path.startswith('http') else f'{API}{path}'
-        response = self.session.request(
-            method,
-            url,
-            headers={
-                'Authorization': f'Bearer {self.token}',
-                'Content-Type': 'application/json',
-            },
-            timeout=60,
-            **kwargs,
-        )
+        try:
+            response = self.session.request(
+                method,
+                url,
+                headers={
+                    'Authorization': f'Bearer {self.token}',
+                    'Content-Type': 'application/json',
+                },
+                timeout=60,
+                **kwargs,
+            )
+        except requests.RequestException as error:
+            raise AppStoreError(f'Could not reach App Store Connect: {error}') from error
         if response.status_code >= 400:
             raise AppStoreError(
                 f'{method} {url} failed with {response.status_code}: '
@@ -379,9 +397,51 @@ def submit_for_review(client, app_id, version_id):
     )
 
 
+def check_credentials():
+    """Answer one question: is the key set up correctly?
+
+    Separate from --dry-run, which still waits for a build to exist. Getting the
+    key made, scoped and pasted in is the fiddly part of the setup, and finding
+    out whether it worked should not mean waiting an hour for an unrelated
+    failure about a missing build.
+    """
+    # Signing happens locally, so getting this far only proves the .p8 is a
+    # usable key — not that Apple has ever heard of it. Say exactly that; a
+    # premature "credentials accepted" is worse than no message when someone is
+    # working out which of three secrets is wrong.
+    client = Client(dry_run=True)
+    print('The private key is valid and signed a token.')
+    print('Asking App Store Connect whether it accepts it…')
+
+    app_id = find_app(client)
+    app = client.get(f'/apps/{app_id}')['data']['attributes']
+    print(f"Accepted. Found: {app.get('name')} ({BUNDLE_ID}), app id {app_id}")
+
+    # Reading apps needs only Developer access; submitting needs App Manager,
+    # and the difference does not show up until the very last call of a real
+    # release. Ask now, while it is cheap to fix.
+    try:
+        client.get('/reviewSubmissions', params={'filter[app]': app_id, 'limit': 1})
+        print('The key can read review submissions, so it has enough access to submit.')
+    except AppStoreError:
+        print(
+            '\nThe key can see the app but not its review submissions, which '
+            'usually means its access level is below App Manager. Change it in '
+            'App Store Connect → Users and Access → Integrations.'
+        )
+        return 1
+
+    print('\nAll three secrets are right. A tag will release.')
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--version', required=True, help='Marketing version, e.g. 1.10.0')
+    parser.add_argument(
+        '--check-credentials', action='store_true',
+        help='Verify the API key works and stop. Touches nothing, needs no build.',
+    )
+    parser.add_argument('--version', help='Marketing version, e.g. 1.10.0')
     parser.add_argument('--changelog', default='CHANGELOG.md')
     parser.add_argument(
         '--wait-minutes', type=int, default=60,
@@ -393,6 +453,16 @@ def main():
              'cannot be taken back.',
     )
     args = parser.parse_args()
+
+    if args.check_credentials:
+        try:
+            return check_credentials()
+        except AppStoreError as error:
+            print(f'\nCredentials not working: {error}', file=sys.stderr)
+            return 1
+
+    if not args.version:
+        parser.error('--version is required (or use --check-credentials)')
 
     version = args.version.lstrip('v')
 
