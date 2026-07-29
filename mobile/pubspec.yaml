@@ -16,6 +16,12 @@ dependencies:
   http: ^1.2.0
   flutter_secure_storage: ^9.2.4
 
+  # Face ID / fingerprint unlock. A local gate in front of the token that is
+  # already in secure storage — it does not re-authenticate against the API.
+  # Android needs FlutterFragmentActivity and iOS needs NSFaceIDUsageDescription;
+  # both are set, and neither is optional for this plugin.
+  local_auth: ^2.3.0
+
   # Dog photos
   image_picker: ^1.0.8
   cached_network_image: ^3.4.1

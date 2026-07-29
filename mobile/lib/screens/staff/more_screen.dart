@@ -7,6 +7,7 @@ import '../account_switcher.dart';
 import 'equipment_screen.dart';
 import 'intake_review_screen.dart';
 import 'invoices_screen.dart';
+import 'logins_screen.dart';
 import 'settings_screen.dart';
 import 'staff_shell.dart';
 
@@ -49,6 +50,17 @@ class MoreScreen extends StatelessWidget {
             subtitle: 'Opening hours, temperament limits, breeds',
             builder: (_) => const SettingsScreen(),
           ),
+          // Sending a reset link takes over an account, so it sits behind
+          // superuser rather than ordinary staff access. The server checks the
+          // same thing — hiding the tile is presentation, not protection.
+          if (user?.isSuperuser == true)
+            _tile(
+              context,
+              icon: Icons.key_outlined,
+              title: 'Logins',
+              subtitle: 'Send a password reset link, see who is locked out',
+              builder: (_) => const LoginsScreen(),
+            ),
           const Divider(height: 32),
           ListTile(
             leading: const Icon(Icons.switch_account_outlined, color: AppColors.primary),

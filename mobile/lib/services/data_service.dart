@@ -362,4 +362,43 @@ class DataService {
 
   Future<void> rejectClaim(int id, {String notes = ''}) =>
       _api.post('/claim-requests/$id/reject/', {'review_notes': notes});
+
+  // ── Logins and passwords (superuser only) ──────────────────────────
+
+  Future<List<AccountSummary>> getAccounts({String? search}) async {
+    final payload = await _api.get('/accounts/', query: {
+      'search': ?search,
+    });
+    return ApiClient.resultsOf(payload).map(AccountSummary.fromJson).toList();
+  }
+
+  Future<List<PasswordHelpRequest>> getPasswordHelpRequests({String? status}) async {
+    final payload = await _api.get('/password-reset-requests/', query: {
+      'status': ?status,
+    });
+    return ApiClient.resultsOf(payload).map(PasswordHelpRequest.fromJson).toList();
+  }
+
+  Future<void> dismissPasswordHelpRequest(int id) =>
+      _api.post('/password-reset-requests/$id/dismiss/');
+
+  /// Issue a single-use reset link.
+  ///
+  /// Exactly one of [accountId], [clientId] or [requestId] identifies who it
+  /// is for. The link comes back in the response and nowhere else, so whatever
+  /// calls this has to put it in front of Jess there and then.
+  Future<IssuedResetLink> issueResetLink({
+    int? accountId,
+    int? clientId,
+    int? requestId,
+    bool sendEmail = true,
+  }) async {
+    final payload = await _api.post('/password-resets/', {
+      'user_id': ?accountId,
+      'client_id': ?clientId,
+      'request_id': ?requestId,
+      'send_email': sendEmail,
+    });
+    return IssuedResetLink.fromJson(payload as Map<String, dynamic>);
+  }
 }

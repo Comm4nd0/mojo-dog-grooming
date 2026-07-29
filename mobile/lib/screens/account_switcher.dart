@@ -4,6 +4,7 @@ import '../constants/app_colors.dart';
 import '../services/api_client.dart';
 import '../services/auth_service.dart';
 import '../services/service_locator.dart';
+import '../widgets/biometric_toggle.dart';
 import 'login_screen.dart';
 
 /// The accounts remembered on this device, with a tap to switch between them.
@@ -69,7 +70,15 @@ class _AccountSwitcherSheetState extends State<_AccountSwitcherSheet> {
                       account.username == current ? FontWeight.w700 : FontWeight.w400,
                 ),
               ),
-              subtitle: Text(account.isStaff ? 'Staff' : 'Client'),
+              subtitle: Row(
+                children: [
+                  Text(account.isStaff ? 'Staff' : 'Client'),
+                  if (account.biometricsEnabled) ...[
+                    const SizedBox(width: 6),
+                    const Icon(Icons.fingerprint, size: 14, color: AppColors.primary),
+                  ],
+                ],
+              ),
               trailing: account.username == current
                   ? const Icon(Icons.check, color: AppColors.primary)
                   : IconButton(
@@ -80,6 +89,9 @@ class _AccountSwitcherSheetState extends State<_AccountSwitcherSheet> {
               onTap: _busy ? null : () => _switch(account),
             ),
           const Divider(height: 1),
+          // Both shells open this sheet, which makes it the one place a client
+          // and Jess can both reach — clients have no settings screen.
+          const BiometricToggle(),
           ListTile(
             leading: const Icon(Icons.add, color: AppColors.primary),
             title: const Text('Add another account'),

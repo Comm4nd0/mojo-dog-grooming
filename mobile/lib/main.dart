@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'constants/app_colors.dart';
 import 'screens/client/client_shell.dart';
+import 'screens/lock_screen.dart';
 import 'screens/login_screen.dart';
 import 'screens/staff/staff_shell.dart';
 import 'services/auth_service.dart';
@@ -55,6 +56,11 @@ class _MojoAppState extends State<MojoApp> {
     if (_auth.isRestoring) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
+    // A restored session waiting on a fingerprint or face. Checked before
+    // isSignedIn: the token is valid and the user is known, so sending them to
+    // the login form would ask for the password they turned biometrics on to
+    // stop typing.
+    if (_auth.isLocked) return const LockScreen();
     if (!_auth.isSignedIn) return const LoginScreen();
     // Staff and clients get entirely different shells — a client never sees
     // the management surface at all.

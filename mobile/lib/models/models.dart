@@ -37,6 +37,11 @@ class CurrentUser {
   final String username;
   final String email;
   final bool isStaff;
+
+  /// Gates the account-management screen. Handing out a password reset link is
+  /// a step past ordinary staff access, so the server checks it too — this
+  /// only decides whether the tile is worth showing.
+  final bool isSuperuser;
   final int? clientId;
 
   const CurrentUser({
@@ -44,6 +49,7 @@ class CurrentUser {
     required this.username,
     required this.email,
     required this.isStaff,
+    this.isSuperuser = false,
     this.clientId,
   });
 
@@ -52,6 +58,7 @@ class CurrentUser {
         username: json['username']?.toString() ?? '',
         email: json['email']?.toString() ?? '',
         isStaff: json['is_staff'] == true,
+        isSuperuser: json['is_superuser'] == true,
         clientId: json['client_id'] as int?,
       );
 
@@ -802,4 +809,129 @@ class ClaimRequest {
         matchedClientName: json['matched_client_name']?.toString(),
         status: json['status']?.toString() ?? 'PENDING',
       );
+}
+
+/// A login, as a superuser sees it when choosing who to send a reset link to.
+class AccountSummary {
+  final int id;
+  final String username;
+  final String email;
+  final String fullName;
+  final bool isStaff;
+  final bool isSuperuser;
+  final bool isActive;
+  final DateTime? lastLogin;
+
+  /// The client record this login is attached to, when there is one. Jess
+  /// looks people up by who they are, not by what they typed at sign-up, so a
+  /// list without this is unmatchable against her clients.
+  final String? clientName;
+  final String? clientUid;
+
+  const AccountSummary({
+    required this.id,
+    required this.username,
+    required this.email,
+    required this.fullName,
+    required this.isStaff,
+    required this.isSuperuser,
+    required this.isActive,
+    this.lastLogin,
+    this.clientName,
+    this.clientUid,
+  });
+
+  factory AccountSummary.fromJson(Map<String, dynamic> json) => AccountSummary(
+        id: json['id'] as int,
+        username: json['username']?.toString() ?? '',
+        email: json['email']?.toString() ?? '',
+        fullName: json['full_name']?.toString() ?? '',
+        isStaff: json['is_staff'] == true,
+        isSuperuser: json['is_superuser'] == true,
+        isActive: json['is_active'] != false,
+        lastLogin: DateTime.tryParse(json['last_login']?.toString() ?? ''),
+        clientName: json['client_name']?.toString(),
+        clientUid: json['client_uid']?.toString(),
+      );
+
+  /// What to show under the username: the client they are, falling back to
+  /// their own name, then their email.
+  String get subtitle {
+    if (clientName != null && clientName!.isNotEmpty) {
+      return clientUid == null || clientUid!.isEmpty ? clientName! : '$clientName · $clientUid';
+    }
+    if (fullName.isNotEmpty) return fullName;
+    return email.isEmpty ? 'No email on file' : email;
+  }
+}
+
+/// A reset link that has just been issued.
+///
+/// [link] is carried once, in the response that created it, and never appears
+/// in the history list — so this is the only chance to hand it over.
+class IssuedResetLink {
+  final String link;
+  final String email;
+  final bool emailed;
+  final bool emailConfigured;
+  final String? emailError;
+  final DateTime? expiresAt;
+
+  const IssuedResetLink({
+    required this.link,
+    required this.email,
+    required this.emailed,
+    required this.emailConfigured,
+    this.emailError,
+    this.expiresAt,
+  });
+
+  factory IssuedResetLink.fromJson(Map<String, dynamic> json) => IssuedResetLink(
+        link: json['link']?.toString() ?? '',
+        email: json['email']?.toString() ?? '',
+        emailed: json['emailed'] == true,
+        emailConfigured: json['email_configured'] == true,
+        emailError: json['email_error']?.toString(),
+        expiresAt: DateTime.tryParse(json['expires_at']?.toString() ?? ''),
+      );
+}
+
+/// Someone locked out, asking for a way back in.
+class PasswordHelpRequest {
+  final int id;
+
+  /// What they typed. Kept even when it matched nothing — someone typing the
+  /// wrong thing is exactly who needs help, and Jess can usually tell who they
+  /// meant from it.
+  final String identifier;
+  final String note;
+  final String? username;
+  final String? clientName;
+  final String status;
+  final DateTime? createdAt;
+
+  const PasswordHelpRequest({
+    required this.id,
+    required this.identifier,
+    required this.note,
+    required this.status,
+    this.username,
+    this.clientName,
+    this.createdAt,
+  });
+
+  factory PasswordHelpRequest.fromJson(Map<String, dynamic> json) => PasswordHelpRequest(
+        id: json['id'] as int,
+        identifier: json['identifier']?.toString() ?? '',
+        note: json['note']?.toString() ?? '',
+        username: json['username']?.toString(),
+        clientName: json['client_name']?.toString(),
+        status: json['status']?.toString() ?? 'PENDING',
+        createdAt: DateTime.tryParse(json['created_at']?.toString() ?? ''),
+      );
+
+  /// Whether the server could work out which account they meant. When it
+  /// couldn't, there is nothing to issue a link against and Jess has to
+  /// identify them herself.
+  bool get isMatched => username != null && username!.isNotEmpty;
 }

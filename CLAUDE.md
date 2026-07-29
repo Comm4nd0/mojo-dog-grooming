@@ -23,14 +23,21 @@ something should be done here, look at how p4td does it.
 
 ```
 api/                  Django app — models, serializers, views, scheduling, tests
+  auth_backends.py    sign in with a username or an email, either case
+  passwords.py        issuing, addressing and delivering reset links
 mojo_backend/         settings, urls, wsgi
+templates/
+  base.html           shared shell for every server-rendered page
+  intake/             the new-client form
+  account/            the password reset page
 mobile/lib/
   constants/          app_colors.dart — brand palette and theme
   models/             models.dart — API payload types
-  services/           api_client, auth_service, data_service, service_locator
-  screens/staff/      doguments, dog/client profiles, calendar, timers, invoices, equipment
+  services/           api_client, auth_service, biometric_service, data_service, service_locator
+  screens/            login_screen, lock_screen, account_switcher
+  screens/staff/      doguments, dog/client profiles, calendar, timers, invoices, equipment, logins
   screens/client/     my dogs, my bookings, my profile, claim profile
-  widgets/            common.dart, dog_silhouette.dart
+  widgets/            common.dart, dog_silhouette.dart, biometric_toggle.dart
 ```
 
 ## Commands
@@ -38,14 +45,16 @@ mobile/lib/
 Backend:
 ```bash
 python manage.py migrate && python manage.py seed_breeds
-python manage.py test api        # 81 tests
+python manage.py test api        # 150 tests
 python manage.py runserver 0.0.0.0:8000
+python manage.py accounts        # who can sign in — usernames live only in the DB
+python manage.py reset_link jess # a way back in when the superuser is locked out
 ```
 
 Mobile:
 ```bash
 cd mobile && flutter pub get
-flutter analyze && flutter test  # 33 tests
+flutter analyze && flutter test  # 62 tests
 flutter run --dart-define=MOJO_API_BASE=http://192.168.1.20:8000/api
 ```
 
@@ -106,6 +115,74 @@ Sampled from the live site, not invented:
 - Buttons: uppercase, weight 700, letter-spacing 3.0, **square corners** — the site rounds
   nothing, and softening it reads as a different brand.
 
+## Getting back in is a separate problem from getting in
+
+There is no SMTP configured on the box and there never has been — intake links
+have always been pasted into a message by hand. Password recovery follows the same
+shape rather than inventing a second one:
+
+- A **superuser** issues a single-use link (More → Logins). The response carries the
+  link so it can be sent however suits, and emails it as well when `EMAIL_HOST` is
+  set. `EMAIL_ENABLED` is reported to the app so it can say "copy this and send it"
+  instead of claiming an email is on its way that nobody will receive.
+- The link is returned **exactly once**, in the response that creates it.
+  `PasswordResetTokenSerializer` has no field for the token and the admin excludes
+  it. A link readable back out of the API is a link a stolen staff session can read.
+- A locked-out client asks from the login screen. That creates a
+  `PasswordResetRequest` for Jess — **not** an automatic email — and the public
+  endpoint answers identically whether or not the identifier matched. Confirming
+  "no such account" would make it a way to find out who Jess's clients are.
+- Issuing voids the account's outstanding links; using one deletes the account's
+  DRF tokens, because a reset is usually "someone else has my password" and changing
+  it alone leaves their session working.
+- `IsSuperUser`, not `IsAdminUser`. `is_staff` opens the management surface; handing
+  out a reset link takes over an account, so it sits with the `UserProfile`
+  capability flags on the superuser side.
+
+Two traps met on the way:
+
+- **`ScopedRateThrottle` reads its scope off the view on every request**, so a scope
+  assigned to a throttle instance in `get_throttles()` is silently discarded and the
+  limit never applies. `ForgottenPasswordThrottle` is a subclass with a fixed scope
+  instead — putting `throttle_scope` on the viewset would have applied 5/hour to the
+  superuser reading the queue as well.
+- **Loading the reset page and submitting it use separate throttle scopes**, exactly
+  as intake does, and for the same reason.
+
+Usernames exist only in the database — from `createsuperuser` or
+`DJANGO_SUPERUSER_USERNAME`. `manage.py accounts` lists them; `manage.py reset_link`
+covers the one case the in-app flow cannot, the superuser being the one locked out.
+
+## Biometric unlock is a local gate, not authentication
+
+`local_auth` guards the app, not the API. The token is already in the Keychain /
+EncryptedSharedPreferences and is what actually authenticates; a fingerprint prompt
+does not re-authenticate against Mojo and Co and cannot revoke anything. What it
+buys is that an unlocked phone handed across the salon counter does not show a
+client list. Say that plainly rather than implying more.
+
+The preference is **per account**, on `SavedAccount`, so Jess can lock her staff
+login while the test client login she flips into all day stays open.
+
+Four things that have to stay true:
+
+- `AuthService.restore()` sets the lock **before** the `/users/me` call and returns a
+  placeholder identity built from stored data. Fetching records and then hiding them
+  is not a lock.
+- `_rememberActive()` carries `biometricsEnabled` across. It runs after every
+  successful `/users/me`, including the one right after unlocking, so rebuilding the
+  entry without the flag makes the lock work exactly once and then stop silently.
+  There is a test for this.
+- `switchTo()` prompts for an account that asked for it — otherwise the account
+  switcher walks straight past the lock.
+- `LockScreen` always offers "Use a password instead". An account behind a check
+  that cannot pass, with no escape, is an account nobody can reach again. Turning
+  biometrics *on* prompts first for the same reason.
+
+Android needs `FlutterFragmentActivity` (the plugin's prompt is a fragment; on a
+plain `FlutterActivity` it builds fine and fails at the first unlock) and iOS needs
+`NSFaceIDUsageDescription`.
+
 ## The intake form is a web page, not an app screen
 
 `/intake/<token>/` is server-rendered HTML (`templates/intake/`), not a Flutter screen. That is
@@ -116,6 +193,8 @@ app installed, so a link into the app would be useless to them. The page posts J
 The page inlines `mobile/assets/dog_silhouette.svg` read straight off disk, so the web form and
 the app can never drift onto different-shaped dogs. `describe()` in `form.html` and
 `describeCell()` in `dog_silhouette.dart` label the same grid and must stay in step.
+
+`/reset/<token>/` is a web page for the same reason, and shares `templates/base.html` with it.
 
 Two things that bite on this page specifically:
 - The grid `<rect>`s share the artwork's 2605-unit viewBox, so `stroke-width: 1` renders at

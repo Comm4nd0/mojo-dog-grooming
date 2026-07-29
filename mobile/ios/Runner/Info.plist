@@ -34,6 +34,11 @@
 	<true/>
 	<key>NSCameraUsageDescription</key>
 	<string>Take photos of a dog before and after a groom, to keep on their profile.</string>
+	<!-- Required before Face ID can be prompted at all: without it the first
+	     unlock attempt fails and the app is rejected at review. Touch ID needs
+	     no equivalent key. -->
+	<key>NSFaceIDUsageDescription</key>
+	<string>Unlock Mojo and Co with Face ID instead of typing your password.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Add existing photos of a dog to their profile.</string>
 	<key>UIApplicationSceneManifest</key>
