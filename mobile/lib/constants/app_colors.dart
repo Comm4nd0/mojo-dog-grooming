@@ -11,6 +11,107 @@ import 'package:google_fonts/google_fonts.dart';
 /// One rule worth keeping: [primaryBright] carries **black** text, never
 /// white. White on that green fails contrast badly; black on it passes
 /// comfortably, and it matches the website's own button.
+/// The brand colours that cannot be one fixed value, because they only make
+/// sense relative to the background they sit on.
+///
+/// [AppColors] keeps the raw brand constants — they are the palette, and they
+/// do not change. But a *role* like "muted caption text" or "pale green block"
+/// resolves to a different constant in each theme, and hardcoding the light
+/// one is how the app ended up unreadable in dark mode. Read these through
+/// `context.mojo` rather than reaching for [AppColors.inkSecondary] and
+/// friends directly.
+@immutable
+class MojoPalette extends ThemeExtension<MojoPalette> {
+  const MojoPalette({
+    required this.muted,
+    required this.tint,
+    required this.onTint,
+    required this.tintWash,
+    required this.hairline,
+    required this.accent,
+  });
+
+  /// Secondary/caption text and inactive icons.
+  final Color muted;
+
+  /// Solid pale-green block — avatars, initials tiles, today's calendar cell.
+  final Color tint;
+
+  /// Text and icons drawn on a [tint] block.
+  final Color onTint;
+
+  /// The faint green band behind a profile header. Solid rather than a
+  /// translucent [tint]: composited over a dark scaffold, a 40% pale green
+  /// turns into a murky mid-tone that nothing reads well against.
+  final Color tintWash;
+
+  /// Borders, dividers and input outlines.
+  final Color hairline;
+
+  /// Brand green for text and icons on the page background. The deep green is
+  /// only legible on light; dark mode needs the bright one.
+  final Color accent;
+
+  static const MojoPalette light = MojoPalette(
+    muted: AppColors.inkSecondary,
+    tint: AppColors.surfaceTint,
+    onTint: AppColors.primary,
+    tintWash: Color(0xFFEDFFEE),
+    hairline: AppColors.hairline,
+    accent: AppColors.primary,
+  );
+
+  static const MojoPalette dark = MojoPalette(
+    muted: Color(0xFFB0B0B0),
+    tint: AppColors.primaryDark,
+    onTint: AppColors.primaryBright,
+    tintWash: Color(0xFF16301A),
+    hairline: Color(0xFF2E2E2E),
+    accent: AppColors.primaryBright,
+  );
+
+  @override
+  MojoPalette copyWith({
+    Color? muted,
+    Color? tint,
+    Color? onTint,
+    Color? tintWash,
+    Color? hairline,
+    Color? accent,
+  }) {
+    return MojoPalette(
+      muted: muted ?? this.muted,
+      tint: tint ?? this.tint,
+      onTint: onTint ?? this.onTint,
+      tintWash: tintWash ?? this.tintWash,
+      hairline: hairline ?? this.hairline,
+      accent: accent ?? this.accent,
+    );
+  }
+
+  @override
+  MojoPalette lerp(covariant MojoPalette? other, double t) {
+    if (other == null) return this;
+    return MojoPalette(
+      muted: Color.lerp(muted, other.muted, t)!,
+      tint: Color.lerp(tint, other.tint, t)!,
+      onTint: Color.lerp(onTint, other.onTint, t)!,
+      tintWash: Color.lerp(tintWash, other.tintWash, t)!,
+      hairline: Color.lerp(hairline, other.hairline, t)!,
+      accent: Color.lerp(accent, other.accent, t)!,
+    );
+  }
+}
+
+extension MojoPaletteContext on BuildContext {
+  /// The brand's brightness-dependent colours for the theme in force here.
+  ///
+  /// Falls back to the light palette rather than throwing, so a widget lifted
+  /// into a bare `MaterialApp` in a test still renders.
+  MojoPalette get mojo =>
+      Theme.of(this).extension<MojoPalette>() ?? MojoPalette.light;
+}
+
 class AppColors {
   AppColors._();
 
@@ -62,13 +163,21 @@ class AppColors {
   // ── Typography ─────────────────────────────────────────────────────
 
   /// Display face for screen titles and dog names, matching the site's h1.
+  ///
+  /// [color] is left null when not given, so the style inherits from the
+  /// ambient `DefaultTextStyle` — `Text` merges its own style over that — and
+  /// therefore lands on the theme's `onSurface`. It used to default to [ink],
+  /// which is the whole reason the wordmark and every screen title vanished in
+  /// dark mode: near-black text painted on a near-black background. Do not
+  /// reintroduce a default here; pass a colour explicitly at the call sites
+  /// that genuinely need one.
   static TextStyle display(double size, {Color? color, FontWeight? weight}) {
     return GoogleFonts.playfairDisplay(
       fontSize: size,
       height: 1.2,
       letterSpacing: 1.0,
       fontWeight: weight ?? FontWeight.w400,
-      color: color ?? ink,
+      color: color,
     );
   }
 
@@ -116,7 +225,8 @@ class AppColors {
       error: error,
       onError: Colors.white,
     );
-    return _base(scheme, background, _textTheme(ink, inkSecondary));
+    return _base(scheme, background, _textTheme(ink, MojoPalette.light.muted),
+        MojoPalette.light);
   }
 
   static ThemeData darkTheme() {
@@ -130,16 +240,23 @@ class AppColors {
       error: Color(0xFFEF9A9A),
       onError: Colors.black,
     );
-    return _base(scheme, darkBackground, _textTheme(Colors.white, const Color(0xFFB0B0B0)));
+    return _base(scheme, darkBackground, _textTheme(Colors.white, MojoPalette.dark.muted),
+        MojoPalette.dark);
   }
 
-  static ThemeData _base(ColorScheme scheme, Color scaffold, TextTheme text) {
+  static ThemeData _base(
+    ColorScheme scheme,
+    Color scaffold,
+    TextTheme text,
+    MojoPalette palette,
+  ) {
     final isLight = scheme.brightness == Brightness.light;
     return ThemeData(
       useMaterial3: true,
       colorScheme: scheme,
       scaffoldBackgroundColor: scaffold,
       textTheme: text,
+      extensions: <ThemeExtension<dynamic>>[palette],
       appBarTheme: AppBarTheme(
         backgroundColor: scheme.surface,
         foregroundColor: scheme.onSurface,
@@ -188,44 +305,50 @@ class AppColors {
         elevation: 0,
         margin: EdgeInsets.zero,
         shape: RoundedRectangleBorder(
-          side: BorderSide(color: isLight ? hairline : const Color(0xFF2E2E2E)),
+          side: BorderSide(color: palette.hairline),
         ),
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: isLight ? surface : darkSurface,
+        fillColor: scheme.surface,
         border: const OutlineInputBorder(borderRadius: BorderRadius.zero),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.zero,
-          borderSide: BorderSide(color: isLight ? hairline : const Color(0xFF3A3A3A)),
+          borderSide: BorderSide(color: isLight ? palette.hairline : const Color(0xFF3A3A3A)),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.zero,
           borderSide: BorderSide(color: scheme.primary, width: 2),
         ),
-        labelStyle: GoogleFonts.montserrat(color: isLight ? inkSecondary : const Color(0xFFB0B0B0)),
+        labelStyle: GoogleFonts.montserrat(color: palette.muted),
       ),
       chipTheme: ChipThemeData(
-        backgroundColor: isLight ? surfaceTint : primaryDark,
-        labelStyle: GoogleFonts.montserrat(fontSize: 12, fontWeight: FontWeight.w600),
+        backgroundColor: palette.tint,
+        labelStyle: GoogleFonts.montserrat(
+          fontSize: 12, fontWeight: FontWeight.w600, color: palette.onTint,
+        ),
+        iconTheme: IconThemeData(color: palette.onTint, size: 18),
         shape: const RoundedRectangleBorder(),
         side: BorderSide.none,
       ),
       dividerTheme: DividerThemeData(
-        color: isLight ? hairline : const Color(0xFF2E2E2E),
+        color: palette.hairline,
         thickness: 1,
         space: 1,
       ),
       navigationBarTheme: NavigationBarThemeData(
         backgroundColor: scheme.surface,
-        indicatorColor: isLight ? surfaceTint : primaryDark,
+        indicatorColor: palette.tint,
         indicatorShape: const RoundedRectangleBorder(),
         labelTextStyle: WidgetStatePropertyAll(
           GoogleFonts.montserrat(fontSize: 11.5, fontWeight: FontWeight.w600),
         ),
       ),
+      // A floating snackbar has to separate from the scaffold behind it. In
+      // light that means the near-black ink; in dark, ink is a shade off the
+      // background and the bar all but disappears, so it goes lighter instead.
       snackBarTheme: SnackBarThemeData(
-        backgroundColor: ink,
+        backgroundColor: isLight ? ink : const Color(0xFF383838),
         contentTextStyle: GoogleFonts.montserrat(color: Colors.white, fontSize: 14),
         shape: const RoundedRectangleBorder(),
         behavior: SnackBarBehavior.floating,

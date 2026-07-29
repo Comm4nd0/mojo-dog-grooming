@@ -145,7 +145,7 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
       padding: const EdgeInsets.all(12),
-      color: AppColors.surfaceTint.withValues(alpha: 0.35),
+      color: context.mojo.tintWash,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -488,7 +488,7 @@ class _ClientPickerSheetState extends State<_ClientPickerSheet> {
                   Text(
                     '${claim.username} claims to be ${claim.claimedName} — '
                     '${claim.claimedEmail} · ${claim.claimedPostcode}',
-                    style: const TextStyle(fontSize: 12.5, color: AppColors.inkSecondary),
+                    style: TextStyle(fontSize: 12.5, color: context.mojo.muted),
                   ),
                   const SizedBox(height: 12),
                   TextField(
@@ -508,7 +508,7 @@ class _ClientPickerSheetState extends State<_ClientPickerSheet> {
             // who was never entered as a client is an ordinary case, not a
             // failure of the list below.
             ListTile(
-              leading: const Icon(Icons.person_add_alt, color: AppColors.primary),
+              leading: Icon(Icons.person_add_alt, color: context.mojo.accent),
               title: const Text('Create a new client'),
               subtitle: Text('Not one of yours yet — make a record from ${claim.claimedName}'),
               onTap: () => Navigator.pop(context, const ClaimApproval.createNew()),
@@ -548,7 +548,7 @@ class _ClientPickerSheetState extends State<_ClientPickerSheet> {
             child: Text(
               '$_hiddenBecauseLinked client${_hiddenBecauseLinked == 1 ? '' : 's'} '
               'hidden — already linked to a login.',
-              style: const TextStyle(fontSize: 12, color: AppColors.inkSecondary),
+              style: TextStyle(fontSize: 12, color: context.mojo.muted),
             ),
           );
         }

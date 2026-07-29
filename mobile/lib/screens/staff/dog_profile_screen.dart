@@ -132,20 +132,20 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
   Widget _header(Dog dog) {
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 20),
-      color: AppColors.surfaceTint.withValues(alpha: 0.4),
+      color: context.mojo.tintWash,
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Container(
             width: 76,
             height: 76,
-            color: AppColors.surfaceTint,
+            color: context.mojo.tint,
             alignment: Alignment.center,
             child: dog.profileImage != null && dog.profileImage!.isNotEmpty
                 ? Image.network(dog.profileImage!, fit: BoxFit.cover, width: 76, height: 76)
                 : Text(
                     dog.name.isEmpty ? '?' : dog.name.characters.first.toUpperCase(),
-                    style: AppColors.display(32, color: AppColors.primary),
+                    style: AppColors.display(32, color: context.mojo.onTint),
                   ),
           ),
           const SizedBox(width: 16),
@@ -166,7 +166,7 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
                       InfoTag(label: dog.sex == 'M' ? 'Male' : 'Female'),
                     if (dog.isNeutered) const InfoTag(label: 'Neutered'),
                     if (!dog.isActive)
-                      const InfoTag(label: 'Inactive', color: AppColors.inkSecondary),
+                      InfoTag(label: 'Inactive', color: context.mojo.muted),
                   ],
                 ),
               ],
@@ -194,10 +194,10 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
                 label: dog.temperamentDisplay,
               ),
               const SizedBox(width: 10),
-              const Expanded(
+              Expanded(
                 child: Text(
                   'Not visible to the client',
-                  style: TextStyle(fontSize: 11.5, color: AppColors.inkSecondary),
+                  style: TextStyle(fontSize: 11.5, color: context.mojo.muted),
                 ),
               ),
             ],
@@ -242,11 +242,11 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
       children: [
         const SectionHeader(title: 'Grooming preferences'),
         if (filled.isEmpty)
-          const Padding(
+          Padding(
             padding: EdgeInsets.symmetric(horizontal: 16),
             child: Text(
               'Nothing recorded yet.',
-              style: TextStyle(color: AppColors.inkSecondary, fontSize: 13),
+              style: TextStyle(color: context.mojo.muted, fontSize: 13),
             ),
           )
         else
@@ -273,20 +273,20 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
             label: const Text('ADD'),
           ),
         ),
-        const Padding(
+        Padding(
           padding: EdgeInsets.symmetric(horizontal: 16),
           child: Text(
             'Not visible to the client',
-            style: TextStyle(fontSize: 11.5, color: AppColors.inkSecondary),
+            style: TextStyle(fontSize: 11.5, color: context.mojo.muted),
           ),
         ),
         const SizedBox(height: 8),
         if (areas.isEmpty)
-          const Padding(
+          Padding(
             padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             child: Text(
               'None marked.',
-              style: TextStyle(color: AppColors.inkSecondary, fontSize: 13),
+              style: TextStyle(color: context.mojo.muted, fontSize: 13),
             ),
           )
         else
@@ -342,11 +342,11 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
           ),
         ),
         if (_photos.isEmpty)
-          const Padding(
+          Padding(
             padding: EdgeInsets.symmetric(horizontal: 16),
             child: Text(
               'No photos yet.',
-              style: TextStyle(color: AppColors.inkSecondary, fontSize: 13),
+              style: TextStyle(color: context.mojo.muted, fontSize: 13),
             ),
           )
         else
@@ -369,7 +369,7 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
                         photo.imageUrl,
                         fit: BoxFit.cover,
                         errorBuilder: (_, _, _) => Container(
-                          color: AppColors.surfaceTint,
+                          color: context.mojo.tint,
                           child: const Icon(Icons.broken_image_outlined),
                         ),
                       ),
@@ -377,7 +377,7 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
                     const SizedBox(height: 3),
                     Text(
                       formatDate(photo.takenAt),
-                      style: const TextStyle(fontSize: 10.5, color: AppColors.inkSecondary),
+                      style: TextStyle(fontSize: 10.5, color: context.mojo.muted),
                     ),
                   ],
                 );

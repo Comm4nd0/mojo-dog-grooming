@@ -162,7 +162,7 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
         children: [
           Container(
             padding: const EdgeInsets.symmetric(vertical: 20),
-            color: AppColors.surfaceTint.withValues(alpha: 0.5),
+            color: context.mojo.tintWash,
             alignment: Alignment.center,
             child: Column(
               children: [
@@ -170,17 +170,17 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
                 const SizedBox(height: 4),
                 Text(
                   'Usual: ${models.formatDuration(widget.dog.groomMinutes)}',
-                  style: const TextStyle(fontSize: 12, color: AppColors.inkSecondary),
+                  style: TextStyle(fontSize: 12, color: context.mojo.muted),
                 ),
               ],
             ),
           ),
           const SizedBox(height: 8),
-          const Padding(
+          Padding(
             padding: EdgeInsets.symmetric(vertical: 8),
             child: Text(
               'Tap a phase to start or pause it. Skip any you did not do.',
-              style: TextStyle(fontSize: 12.5, color: AppColors.inkSecondary),
+              style: TextStyle(fontSize: 12.5, color: context.mojo.muted),
             ),
           ),
           for (final phase in models.PhaseTiming.phaseOrder) _phaseTile(phase),
@@ -198,10 +198,10 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
             child: const Text('SAVE WITHOUT CHANGING DEFAULT'),
           ),
           const SizedBox(height: 12),
-          const Text(
+          Text(
             "Setting the default changes how much diary time this dog's future "
             'bookings block out.',
-            style: TextStyle(fontSize: 12, color: AppColors.inkSecondary),
+            style: TextStyle(fontSize: 12, color: context.mojo.muted),
           ),
         ],
       ),
@@ -220,11 +220,11 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
         leading: Container(
           width: 44,
           height: 44,
-          color: isRunning ? AppColors.primaryBright : AppColors.surfaceTint,
+          color: isRunning ? AppColors.primaryBright : context.mojo.tint,
           alignment: Alignment.center,
           child: Icon(
             isRunning ? Icons.pause : Icons.play_arrow,
-            color: isRunning ? Colors.black : AppColors.primary,
+            color: isRunning ? Colors.black : context.mojo.onTint,
           ),
         ),
         title: Text(
@@ -241,7 +241,7 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
                 fontSize: 17,
                 fontWeight: FontWeight.w600,
                 fontFeatures: const [FontFeature.tabularFigures()],
-                color: used ? null : AppColors.inkSecondary,
+                color: used ? null : context.mojo.muted,
               ),
             ),
             IconButton(

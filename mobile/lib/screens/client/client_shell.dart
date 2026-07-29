@@ -137,13 +137,13 @@ class _MyDogsScreenState extends State<_MyDogsScreen> {
                             leading: Container(
                               width: 48,
                               height: 48,
-                              color: AppColors.surfaceTint,
+                              color: context.mojo.tint,
                               alignment: Alignment.center,
                               child: Text(
                                 dog.name.isEmpty
                                     ? '?'
                                     : dog.name.characters.first.toUpperCase(),
-                                style: AppColors.display(20, color: AppColors.primary),
+                                style: AppColors.display(20, color: context.mojo.onTint),
                               ),
                             ),
                             title: Text(dog.name),

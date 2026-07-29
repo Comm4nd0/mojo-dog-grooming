@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mojo_app/constants/app_colors.dart';
 import 'package:mojo_app/widgets/dog_silhouette.dart';
 
 /// Golden tests for the problem-area picker.
@@ -98,21 +99,39 @@ Future<({int inkPixels, int total})> _capture(WidgetTester tester) async {
   return result!;
 }
 
+/// Carries the brand palette, which a bare `ThemeData(brightness: …)` does not.
+///
+/// The picker reads its highlight colour from that palette, so without it the
+/// dark golden fell back to the light colours and passed while proving nothing
+/// about dark mode.
+///
+/// It attaches the palette to a stock ThemeData rather than using
+/// `AppColors.darkTheme()` wholesale, because the real theme builds its text
+/// styles through google_fonts, which tries to fetch over the network and
+/// makes the test fail offline. That the real themes carry these exact
+/// palettes is asserted in theme_test.dart instead.
 Widget _harness(Set<String> selected, {bool dark = false}) {
   return MaterialApp(
-    theme: ThemeData(brightness: dark ? Brightness.dark : Brightness.light),
+    theme: ThemeData(brightness: dark ? Brightness.dark : Brightness.light)
+        .copyWith(extensions: [dark ? MojoPalette.dark : MojoPalette.light]),
     home: Scaffold(
-      backgroundColor: dark ? const Color(0xFF121212) : Colors.white,
+      backgroundColor: dark ? AppColors.darkBackground : Colors.white,
       body: Center(
         child: SizedBox(
           width: 600,
           // RepaintBoundary so the capture covers the picker alone rather than
-          // the surrounding scaffold.
+          // the surrounding scaffold. The background goes inside it: the dark
+          // silhouette is painted in translucent white, so capturing it over a
+          // transparent backdrop produced a golden in which the dog was
+          // invisible and a missing asset would have looked identical.
           child: RepaintBoundary(
             key: _boundaryKey,
-            child: DogSilhouettePicker(
-              selectedCells: selected,
-              onChanged: (_) {},
+            child: ColoredBox(
+              color: dark ? AppColors.darkBackground : Colors.white,
+              child: DogSilhouettePicker(
+                selectedCells: selected,
+                onChanged: (_) {},
+              ),
             ),
           ),
         ),

@@ -83,12 +83,12 @@ class _DogPhotosScreenState extends State<DogPhotosScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
-              leading: const Icon(Icons.camera_alt_outlined, color: AppColors.primary),
+              leading: Icon(Icons.camera_alt_outlined, color: context.mojo.accent),
               title: const Text('Take a photo'),
               onTap: () => Navigator.pop(context, ImageSource.camera),
             ),
             ListTile(
-              leading: const Icon(Icons.photo_library_outlined, color: AppColors.primary),
+              leading: Icon(Icons.photo_library_outlined, color: context.mojo.accent),
               title: const Text('Choose from library'),
               onTap: () => Navigator.pop(context, ImageSource.gallery),
             ),
@@ -167,7 +167,7 @@ class _DogPhotosScreenState extends State<DogPhotosScreen> {
                                     photo.imageUrl,
                                     fit: BoxFit.cover,
                                     errorBuilder: (_, _, _) => Container(
-                                      color: AppColors.surfaceTint,
+                                      color: context.mojo.tint,
                                       child: const Icon(Icons.broken_image_outlined),
                                     ),
                                   ),

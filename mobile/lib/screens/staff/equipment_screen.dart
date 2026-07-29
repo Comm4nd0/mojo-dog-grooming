@@ -101,7 +101,7 @@ class _EquipmentScreenState extends State<EquipmentScreen> {
                                     icon: Icons.content_cut,
                                     color: item.lastSharpened == null
                                         ? AppColors.warning
-                                        : AppColors.primary,
+                                        : context.mojo.accent,
                                   ),
                                   InfoTag(
                                     label: item.patTested ? 'PAT tested' : 'Not PAT tested',
@@ -109,7 +109,7 @@ class _EquipmentScreenState extends State<EquipmentScreen> {
                                     color: item.patTested ? AppColors.success : AppColors.warning,
                                   ),
                                   if (!item.isActive)
-                                    const InfoTag(label: 'Retired', color: AppColors.inkSecondary),
+                                    InfoTag(label: 'Retired', color: context.mojo.muted),
                                 ],
                               ),
                             ],

@@ -278,11 +278,11 @@ class _DogFormScreenState extends State<DogFormScreen> {
             ),
 
             const SectionHeader(title: 'Temperament'),
-            const Padding(
+            Padding(
               padding: EdgeInsets.only(bottom: 8),
               child: Text(
                 'Drives the per-day booking limit. Never shown to the client.',
-                style: TextStyle(fontSize: 12, color: AppColors.inkSecondary),
+                style: TextStyle(fontSize: 12, color: context.mojo.muted),
               ),
             ),
             SegmentedButton<String>(
@@ -309,7 +309,7 @@ class _DogFormScreenState extends State<DogFormScreen> {
                 breed == null
                     ? 'No breed selected, so fill these in directly.'
                     : 'Leave blank to use the ${breed.name} defaults.',
-                style: const TextStyle(fontSize: 12, color: AppColors.inkSecondary),
+                style: TextStyle(fontSize: 12, color: context.mojo.muted),
               ),
             ),
             TextFormField(

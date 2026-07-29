@@ -70,10 +70,22 @@
   .banner.error { background: #fdecec; border-color: var(--error); color: #7d1a1a; }
   .banner.ok { background: var(--tint); border-color: var(--green); color: var(--green-dark); }
   footer.legal { text-align: center; color: var(--ink-2); font-size: 12px; padding: 8px 16px 40px; }
+  /* Mirrors MojoPalette.dark in mobile/lib/constants/app_colors.dart. The
+     neutrals alone are not enough: --green is a foreground here (the DOG
+     GROOMING line, the secondary button, focus rings), and the deep green is
+     only legible on a light page — on #121212 it is about 2:1 and effectively
+     invisible, which is the same defect the app had. --tint swaps the other
+     way, from a pale block to a dark one, so --green stays readable on it. */
   @media (prefers-color-scheme: dark) {
-    :root { --surface: #1B1B1B; --bg: #121212; --ink: #fff; --ink-2: #B0B0B0; --hairline: #333; }
+    :root {
+      --surface: #1B1B1B; --bg: #121212; --ink: #fff; --ink-2: #B0B0B0; --hairline: #333;
+      --green: #02D42C; --tint: #015412; --error: #EF9A9A;
+    }
     .banner.error { background: #3a1414; color: #ffb4b4; }
-    .banner.ok { background: #123317; color: var(--tint); }
+    /* --tint is the dark green *block* in this scheme, so it cannot also be
+       the text on one. --green is the foreground role and reads about 6.9:1
+       here; var(--tint) would be 1.1:1, invisible. */
+    .banner.ok { background: #123317; color: var(--green); }
   }
 </style>
 {% block head_extra %}{% endblock %}

@@ -133,18 +133,20 @@ class _CalendarScreenState extends State<CalendarScreen> {
                     formatButtonShowsNext: false,
                     titleTextStyle: AppColors.display(20),
                     formatButtonDecoration: BoxDecoration(
-                      border: Border.all(color: AppColors.primary),
+                      border: Border.all(color: context.mojo.accent),
                     ),
-                    formatButtonTextStyle: const TextStyle(
-                      fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.primary,
+                    formatButtonTextStyle: TextStyle(
+                      fontSize: 12, fontWeight: FontWeight.w600, color: context.mojo.accent,
                     ),
                   ),
-                  calendarStyle: const CalendarStyle(
+                  calendarStyle: CalendarStyle(
                     todayDecoration: BoxDecoration(
-                      color: AppColors.surfaceTint,
+                      color: context.mojo.tint,
                       shape: BoxShape.rectangle,
                     ),
-                    todayTextStyle: TextStyle(color: AppColors.primary, fontWeight: FontWeight.w700),
+                    todayTextStyle: TextStyle(
+                      color: context.mojo.onTint, fontWeight: FontWeight.w700,
+                    ),
                     selectedDecoration: BoxDecoration(
                       color: AppColors.primary,
                       shape: BoxShape.rectangle,
@@ -202,7 +204,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
               ),
               Text(
                 formatDuration(appointment.durationMinutes),
-                style: const TextStyle(fontSize: 11, color: AppColors.inkSecondary),
+                style: TextStyle(fontSize: 11, color: context.mojo.muted),
               ),
             ],
           ),
@@ -249,7 +251,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               child: Row(
                 children: [
-                  const Icon(Icons.checklist, size: 20, color: AppColors.primary),
+                  Icon(Icons.checklist, size: 20, color: context.mojo.accent),
                   const SizedBox(width: 10),
                   Text('To-do', style: Theme.of(context).textTheme.titleMedium),
                   const SizedBox(width: 8),
@@ -268,11 +270,11 @@ class _CalendarScreenState extends State<CalendarScreen> {
             ConstrainedBox(
               constraints: const BoxConstraints(maxHeight: 240),
               child: _todos.isEmpty
-                  ? const Padding(
+                  ? Padding(
                       padding: EdgeInsets.fromLTRB(16, 0, 16, 16),
                       child: Text(
                         'Nothing on the list.',
-                        style: TextStyle(color: AppColors.inkSecondary, fontSize: 13),
+                        style: TextStyle(color: context.mojo.muted, fontSize: 13),
                       ),
                     )
                   : ListView(
@@ -303,7 +305,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                 todo.text,
                                 style: TextStyle(
                                   decoration: todo.isDone ? TextDecoration.lineThrough : null,
-                                  color: todo.isDone ? AppColors.inkSecondary : null,
+                                  color: todo.isDone ? context.mojo.muted : null,
                                 ),
                               ),
                               subtitle: todo.dueDate == null
@@ -352,13 +354,13 @@ class _CalendarScreenState extends State<CalendarScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
-              leading: const Icon(Icons.event_outlined, color: AppColors.primary),
+              leading: Icon(Icons.event_outlined, color: context.mojo.accent),
               title: const Text('New booking'),
               subtitle: Text(formatDate(_selectedDay)),
               onTap: () => Navigator.pop(context, 'booking'),
             ),
             ListTile(
-              leading: const Icon(Icons.checklist, color: AppColors.primary),
+              leading: Icon(Icons.checklist, color: context.mojo.accent),
               title: const Text('New to-do'),
               subtitle: const Text('Added to the list at the bottom'),
               onTap: () => Navigator.pop(context, 'todo'),

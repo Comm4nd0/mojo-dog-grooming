@@ -170,7 +170,7 @@ class _MyProfileScreenState extends State<MyProfileScreen> {
                     if (_client != null) ...[
                       Container(
                         padding: const EdgeInsets.fromLTRB(16, 20, 16, 20),
-                        color: AppColors.surfaceTint.withValues(alpha: 0.4),
+                        color: context.mojo.tintWash,
                         child: Text(_client!.fullName, style: AppColors.display(26)),
                       ),
                       const SectionHeader(title: 'Contact'),
@@ -182,11 +182,11 @@ class _MyProfileScreenState extends State<MyProfileScreen> {
                     if (_settings?.invoicingVisibleToClients ?? false) ...[
                       const SectionHeader(title: 'Invoices'),
                       if (_invoices.isEmpty)
-                        const Padding(
+                        Padding(
                           padding: EdgeInsets.symmetric(horizontal: 16),
                           child: Text(
                             'Nothing outstanding.',
-                            style: TextStyle(color: AppColors.inkSecondary, fontSize: 13),
+                            style: TextStyle(color: context.mojo.muted, fontSize: 13),
                           ),
                         )
                       else
@@ -226,8 +226,8 @@ class _MyProfileScreenState extends State<MyProfileScreen> {
                           if ((_settings?.contactPhone ?? '').isNotEmpty)
                             Text(
                               _settings!.contactPhone,
-                              style: const TextStyle(
-                                fontSize: 13, color: AppColors.inkSecondary,
+                              style: TextStyle(
+                                fontSize: 13, color: context.mojo.muted,
                               ),
                             ),
                         ],

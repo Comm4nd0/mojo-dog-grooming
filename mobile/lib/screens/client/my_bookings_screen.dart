@@ -93,9 +93,9 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
               Text('Request an appointment',
                   style: Theme.of(context).textTheme.headlineSmall),
               const SizedBox(height: 6),
-              const Text(
+              Text(
                 'Mojo and Co will confirm a time with you.',
-                style: TextStyle(fontSize: 12.5, color: AppColors.inkSecondary),
+                style: TextStyle(fontSize: 12.5, color: context.mojo.muted),
               ),
               const SizedBox(height: 16),
               DropdownButtonFormField<int>(
@@ -198,11 +198,11 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
                     children: [
                       const SectionHeader(title: 'Upcoming'),
                       if (_upcoming.isEmpty)
-                        const Padding(
+                        Padding(
                           padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                           child: Text(
                             'Nothing booked in.',
-                            style: TextStyle(color: AppColors.inkSecondary, fontSize: 13),
+                            style: TextStyle(color: context.mojo.muted, fontSize: 13),
                           ),
                         )
                       else
@@ -221,7 +221,7 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
     return ListTile(
       leading: Icon(
         appointment.status == 'REQUESTED' ? Icons.hourglass_empty : Icons.event,
-        color: past ? AppColors.inkSecondary : AppColors.primary,
+        color: past ? context.mojo.muted : context.mojo.accent,
       ),
       title: Text(
         appointment.dogName,
@@ -240,7 +240,7 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
                 'REQUESTED' => AppColors.warning,
                 'CONFIRMED' => AppColors.success,
                 'CANCELLED' || 'NO_SHOW' => AppColors.error,
-                _ => AppColors.inkSecondary,
+                _ => context.mojo.muted,
               },
             ),
     );

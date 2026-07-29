@@ -129,7 +129,7 @@ class _ClientProfileScreenState extends State<ClientProfileScreen> {
         children: [
           Container(
             padding: const EdgeInsets.fromLTRB(16, 20, 16, 20),
-            color: AppColors.surfaceTint.withValues(alpha: 0.4),
+            color: context.mojo.tintWash,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -158,11 +158,11 @@ class _ClientProfileScreenState extends State<ClientProfileScreen> {
           DetailRow(label: 'Postcode', value: client.postcode),
 
           const SectionHeader(title: 'Staff flags'),
-          const Padding(
+          Padding(
             padding: EdgeInsets.symmetric(horizontal: 16),
             child: Text(
               'Not visible to the client',
-              style: TextStyle(fontSize: 11.5, color: AppColors.inkSecondary),
+              style: TextStyle(fontSize: 11.5, color: context.mojo.muted),
             ),
           ),
           SwitchListTile(
@@ -192,17 +192,17 @@ class _ClientProfileScreenState extends State<ClientProfileScreen> {
             ),
           ),
           if (_dogs.isEmpty)
-            const Padding(
+            Padding(
               padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               child: Text(
                 'No dogs yet.',
-                style: TextStyle(color: AppColors.inkSecondary, fontSize: 13),
+                style: TextStyle(color: context.mojo.muted, fontSize: 13),
               ),
             )
           else
             for (final dog in _dogs)
               ListTile(
-                leading: const Icon(Icons.pets_outlined, color: AppColors.primary),
+                leading: Icon(Icons.pets_outlined, color: context.mojo.accent),
                 title: Text(dog.name),
                 subtitle: Text(
                   '${dog.breedLabel} · ${formatDuration(dog.groomMinutes)} · '

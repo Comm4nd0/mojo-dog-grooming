@@ -116,7 +116,7 @@ class _DogSilhouettePickerState extends State<DogSilhouettePicker> {
 
   @override
   Widget build(BuildContext context) {
-    final tint = widget.highlightColor ?? AppColors.primary;
+    final tint = widget.highlightColor ?? context.mojo.accent;
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final ink = isDark ? Colors.white : AppColors.ink;
     final gridLine = ink.withValues(alpha: 0.12);

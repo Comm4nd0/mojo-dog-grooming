@@ -170,10 +170,10 @@ class _ClaimProfileScreenState extends State<ClaimProfileScreen> {
             child: Text(_busy ? 'SENDING…' : 'REQUEST ACCESS'),
           ),
           const SizedBox(height: 16),
-          const Text(
+          Text(
             'Your request is checked by Mojo and Co before anything is shared.',
             textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 12, color: AppColors.inkSecondary),
+            style: TextStyle(fontSize: 12, color: context.mojo.muted),
           ),
         ],
       ),

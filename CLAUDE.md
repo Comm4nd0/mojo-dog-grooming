@@ -116,6 +116,37 @@ Sampled from the live site, not invented:
 - Buttons: uppercase, weight 700, letter-spacing 3.0, **square corners** — the site rounds
   nothing, and softening it reads as a different brand.
 
+### Light and dark are both first-class
+
+The palette above is the *light* half. Anything whose correct value depends on the background
+it lands on is a **role**, not a constant, and lives on `MojoPalette` — a `ThemeExtension` in
+`app_colors.dart` read through `context.mojo`:
+
+| Role | Use | Light | Dark |
+|---|---|---|---|
+| `muted` | captions, inactive icons | `#5E5E5E` | `#B0B0B0` |
+| `accent` | brand green for text/icons on the page | `#01821B` | `#02D42C` |
+| `tint` | solid pale-green block (avatars, today's cell) | `#D2FFD4` | `#015412` |
+| `onTint` | text/icons drawn on a `tint` block | `#01821B` | `#02D42C` |
+| `tintWash` | faint band behind a profile header | `#EDFFEE` | `#16301A` |
+| `hairline` | borders, dividers, input outlines | `#E2E2E2` | `#2E2E2E` |
+
+Do not reach for `AppColors.inkSecondary`, `surfaceTint`, `hairline`, or bare `primary` as a
+foreground in a widget — those are the light values, and using them directly is what made the
+app unreadable in dark mode. The deep green in particular is about 2:1 on `#121212`.
+
+`AppColors.display()` deliberately leaves its colour **null** so `Text` inherits `onSurface`
+from the theme. It used to default to `ink`, which is why the login wordmark and every screen
+title were invisible in dark mode — near-black on near-black. Never give it a default again.
+
+`templates/base.html` mirrors the same roles as CSS variables, and its
+`prefers-color-scheme: dark` block must override `--green`, `--tint` and `--error` as well as
+the neutrals, for exactly the same reason. Every server-rendered page extends it — the intake
+form and the password-reset pages both — so a role fixed there is fixed for all of them.
+
+`test/theme_test.dart` holds the line: display text must resolve to the theme's colour, and
+every role must clear WCAG AA against the surface it is used on.
+
 ## Getting back in is a separate problem from getting in
 
 There is no SMTP configured on the box and there never has been — intake links

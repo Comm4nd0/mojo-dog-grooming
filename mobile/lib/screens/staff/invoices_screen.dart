@@ -73,14 +73,14 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
                     Container(
                       width: double.infinity,
                       padding: const EdgeInsets.all(12),
-                      color: (visible ? AppColors.success : AppColors.inkSecondary)
+                      color: (visible ? AppColors.success : context.mojo.muted)
                           .withValues(alpha: 0.08),
                       child: Row(
                         children: [
                           Icon(
                             visible ? Icons.visibility_outlined : Icons.visibility_off_outlined,
                             size: 18,
-                            color: visible ? AppColors.success : AppColors.inkSecondary,
+                            color: visible ? AppColors.success : context.mojo.muted,
                           ),
                           const SizedBox(width: 8),
                           Expanded(
@@ -129,9 +129,9 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
                                         label: invoice.status,
                                         color: switch (invoice.status) {
                                           'PAID' => AppColors.success,
-                                          'VOID' => AppColors.inkSecondary,
+                                          'VOID' => context.mojo.muted,
                                           'SENT' => AppColors.warning,
-                                          _ => AppColors.inkSecondary,
+                                          _ => context.mojo.muted,
                                         },
                                       ),
                                     ],
@@ -170,7 +170,7 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
             const Divider(height: 1),
             if (invoice.balance > 0)
               ListTile(
-                leading: const Icon(Icons.payments_outlined, color: AppColors.primary),
+                leading: Icon(Icons.payments_outlined, color: context.mojo.accent),
                 title: const Text('Record payment'),
                 onTap: () async {
                   Navigator.pop(context);
@@ -180,7 +180,7 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
                 },
               ),
             ListTile(
-              leading: const Icon(Icons.send_outlined, color: AppColors.primary),
+              leading: Icon(Icons.send_outlined, color: context.mojo.accent),
               title: const Text('Mark as sent'),
               onTap: () async {
                 Navigator.pop(context);
@@ -316,7 +316,7 @@ class _InvoiceFormScreenState extends State<_InvoiceFormScreen> {
                 dense: true,
                 title: Text('${appointment.dogName} — ${formatDate(appointment.startAt)}'),
                 trailing: Text(formatMoney(appointment.priceQuoted ?? 0)),
-                leading: const Icon(Icons.add_circle_outline, color: AppColors.primary),
+                leading: Icon(Icons.add_circle_outline, color: context.mojo.accent),
                 onTap: () => setState(() {
                   _lines.add(InvoiceLine(
                     description: '${appointment.dogName} groom, '
@@ -338,11 +338,11 @@ class _InvoiceFormScreenState extends State<_InvoiceFormScreen> {
             ),
           ),
           if (_lines.isEmpty)
-            const Padding(
+            Padding(
               padding: EdgeInsets.symmetric(horizontal: 4),
               child: Text(
                 'No lines yet.',
-                style: TextStyle(color: AppColors.inkSecondary, fontSize: 13),
+                style: TextStyle(color: context.mojo.muted, fontSize: 13),
               ),
             )
           else

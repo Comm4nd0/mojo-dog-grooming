@@ -53,7 +53,7 @@ class InfoTag extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final tint = color ?? AppColors.primary;
+    final tint = color ?? context.mojo.accent;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
@@ -156,7 +156,7 @@ class EmptyState extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 48, color: AppColors.inkSecondary.withValues(alpha: 0.5)),
+            Icon(icon, size: 48, color: context.mojo.muted.withValues(alpha: 0.5)),
             const SizedBox(height: 16),
             Text(
               title,
@@ -245,9 +245,13 @@ void showSnack(BuildContext context, String message, {bool isError = false}) {
   ScaffoldMessenger.of(context)
     ..hideCurrentSnackBar()
     ..showSnackBar(
+      // Only the error colour is forced. The ordinary background comes from
+      // snackBarTheme, which picks a shade that separates from the scaffold in
+      // whichever theme is in force — passing ink here unconditionally made the
+      // bar all but invisible in dark mode.
       SnackBar(
         content: Text(message),
-        backgroundColor: isError ? AppColors.error : AppColors.ink,
+        backgroundColor: isError ? AppColors.error : null,
       ),
     );
 }

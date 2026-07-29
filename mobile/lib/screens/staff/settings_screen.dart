@@ -79,12 +79,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
 
                     const SectionHeader(title: 'Temperament limits'),
-                    const Padding(
+                    Padding(
                       padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
                       child: Text(
                         'How many of each type you will take in a day. Going over only '
                         'warns you — it never stops the booking.',
-                        style: TextStyle(fontSize: 12.5, color: AppColors.inkSecondary),
+                        style: TextStyle(fontSize: 12.5, color: context.mojo.muted),
                       ),
                     ),
                     for (final limit in _limits)
@@ -103,11 +103,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
 
                     const SectionHeader(title: 'Opening hours'),
-                    const Padding(
+                    Padding(
                       padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
                       child: Text(
                         'You can still book outside these — the app just warns you.',
-                        style: TextStyle(fontSize: 12.5, color: AppColors.inkSecondary),
+                        style: TextStyle(fontSize: 12.5, color: context.mojo.muted),
                       ),
                     ),
                     for (final day in _hours)
@@ -119,7 +119,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           children: [
                             Text(
                               _hoursLabel(day),
-                              style: const TextStyle(color: AppColors.inkSecondary),
+                              style: TextStyle(color: context.mojo.muted),
                             ),
                             const SizedBox(width: 10),
                             const Icon(Icons.edit_outlined, size: 18),
@@ -130,7 +130,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
                     const SectionHeader(title: 'Breeds'),
                     ListTile(
-                      leading: const Icon(Icons.list_alt_outlined, color: AppColors.primary),
+                      leading: Icon(Icons.list_alt_outlined, color: context.mojo.accent),
                       title: const Text('Breed times and prices'),
                       subtitle: const Text('Review the defaults new dogs inherit'),
                       trailing: const Icon(Icons.chevron_right),

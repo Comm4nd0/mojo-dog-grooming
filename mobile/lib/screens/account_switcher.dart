@@ -40,7 +40,7 @@ class _AccountSwitcherSheetState extends State<_AccountSwitcherSheet> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Padding(
+          Padding(
             padding: EdgeInsets.fromLTRB(16, 20, 16, 4),
             child: Row(
               children: [
@@ -50,7 +50,7 @@ class _AccountSwitcherSheetState extends State<_AccountSwitcherSheet> {
                     fontSize: 11,
                     letterSpacing: 3,
                     fontWeight: FontWeight.w700,
-                    color: AppColors.inkSecondary,
+                    color: context.mojo.muted,
                   ),
                 ),
               ],
@@ -61,7 +61,7 @@ class _AccountSwitcherSheetState extends State<_AccountSwitcherSheet> {
             ListTile(
               leading: Icon(
                 account.isStaff ? Icons.content_cut : Icons.person_outline,
-                color: account.username == current ? AppColors.primary : AppColors.inkSecondary,
+                color: account.username == current ? context.mojo.accent : context.mojo.muted,
               ),
               title: Text(
                 account.username,
@@ -80,7 +80,7 @@ class _AccountSwitcherSheetState extends State<_AccountSwitcherSheet> {
                 ],
               ),
               trailing: account.username == current
-                  ? const Icon(Icons.check, color: AppColors.primary)
+                  ? Icon(Icons.check, color: context.mojo.accent)
                   : IconButton(
                       icon: const Icon(Icons.close, size: 18),
                       tooltip: 'Forget this account',
@@ -93,7 +93,7 @@ class _AccountSwitcherSheetState extends State<_AccountSwitcherSheet> {
           // and Jess can both reach — clients have no settings screen.
           const BiometricToggle(),
           ListTile(
-            leading: const Icon(Icons.add, color: AppColors.primary),
+            leading: Icon(Icons.add, color: context.mojo.accent),
             title: const Text('Add another account'),
             onTap: _busy ? null : _add,
           ),

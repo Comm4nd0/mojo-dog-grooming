@@ -288,7 +288,7 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
           ),
           Text(
             'Ends at ${formatTime(_endAt)}',
-            style: const TextStyle(fontSize: 12, color: AppColors.inkSecondary),
+            style: TextStyle(fontSize: 12, color: context.mojo.muted),
           ),
 
           const SectionHeader(title: 'Type'),

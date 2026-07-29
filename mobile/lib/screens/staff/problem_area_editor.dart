@@ -74,14 +74,14 @@ class _ProblemAreaEditorState extends State<ProblemAreaEditor> {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
         children: [
-          const Text(
+          Text(
             'Tap the squares covering the area. Tap again to unselect.',
-            style: TextStyle(fontSize: 13, color: AppColors.inkSecondary),
+            style: TextStyle(fontSize: 13, color: context.mojo.muted),
           ),
           const SizedBox(height: 16),
           Container(
             padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(border: Border.all(color: AppColors.hairline)),
+            decoration: BoxDecoration(border: Border.all(color: context.mojo.hairline)),
             child: DogSilhouettePicker(
               selectedCells: _cells,
               onChanged: (cells) => setState(() => _cells = cells),
@@ -93,7 +93,7 @@ class _ProblemAreaEditorState extends State<ProblemAreaEditor> {
             _cells.isEmpty
                 ? 'Nothing selected'
                 : '${_cells.length} square${_cells.length == 1 ? '' : 's'} selected',
-            style: const TextStyle(fontSize: 12, color: AppColors.inkSecondary),
+            style: TextStyle(fontSize: 12, color: context.mojo.muted),
           ),
           const SizedBox(height: 20),
           TextField(
@@ -111,9 +111,9 @@ class _ProblemAreaEditorState extends State<ProblemAreaEditor> {
             child: Text(_busy ? 'SAVING…' : 'SAVE AREA'),
           ),
           const SizedBox(height: 12),
-          const Text(
+          Text(
             'Add one entry per area. Not visible to the client.',
-            style: TextStyle(fontSize: 12, color: AppColors.inkSecondary),
+            style: TextStyle(fontSize: 12, color: context.mojo.muted),
           ),
         ],
       ),

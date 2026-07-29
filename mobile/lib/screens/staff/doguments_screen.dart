@@ -89,13 +89,13 @@ class _DogumentsScreenState extends State<DogumentsScreen> {
           children: [
             const SizedBox(height: 8),
             ListTile(
-              leading: const Icon(Icons.person_add_outlined, color: AppColors.primary),
+              leading: Icon(Icons.person_add_outlined, color: context.mojo.accent),
               title: const Text('Add client'),
               subtitle: const Text('A new owner, with or without a login'),
               onTap: () => Navigator.pop(context, 'client'),
             ),
             ListTile(
-              leading: const Icon(Icons.pets_outlined, color: AppColors.primary),
+              leading: Icon(Icons.pets_outlined, color: context.mojo.accent),
               title: const Text('Add dog'),
               subtitle: const Text('A new dog against an existing client'),
               onTap: () => Navigator.pop(context, 'dog'),
@@ -258,7 +258,7 @@ class _DogRow extends StatelessWidget {
                 ],
               ),
             ),
-            const Icon(Icons.chevron_right, color: AppColors.inkSecondary),
+            Icon(Icons.chevron_right, color: context.mojo.muted),
           ],
         ),
       ),
@@ -277,11 +277,11 @@ class _Fact extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(icon, size: 13, color: AppColors.inkSecondary),
+        Icon(icon, size: 13, color: context.mojo.muted),
         const SizedBox(width: 3),
         Text(
           text,
-          style: const TextStyle(fontSize: 12, color: AppColors.inkSecondary),
+          style: TextStyle(fontSize: 12, color: context.mojo.muted),
         ),
       ],
     );
@@ -303,21 +303,21 @@ class _Avatar extends StatelessWidget {
         child: Image.network(
           url!,
           fit: BoxFit.cover,
-          errorBuilder: (_, _, _) => _initials(),
+          errorBuilder: (_, _, _) => _initials(context),
         ),
       );
     }
-    return _initials();
+    return _initials(context);
   }
 
-  Widget _initials() => Container(
+  Widget _initials(BuildContext context) => Container(
         width: 52,
         height: 52,
-        color: AppColors.surfaceTint,
+        color: context.mojo.tint,
         alignment: Alignment.center,
         child: Text(
           name.isEmpty ? '?' : name.characters.first.toUpperCase(),
-          style: AppColors.display(22, color: AppColors.primary),
+          style: AppColors.display(22, color: context.mojo.onTint),
         ),
       );
 }

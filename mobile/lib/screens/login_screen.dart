@@ -316,7 +316,7 @@ class _LoginScreenState extends State<LoginScreen> {
     return [
       const SizedBox(height: 20),
       const Divider(),
-      const Padding(
+      Padding(
         padding: EdgeInsets.only(top: 10, bottom: 2),
         child: Text(
           'SIGNED IN BEFORE',
@@ -324,7 +324,7 @@ class _LoginScreenState extends State<LoginScreen> {
             fontSize: 11,
             letterSpacing: 3,
             fontWeight: FontWeight.w700,
-            color: AppColors.inkSecondary,
+            color: context.mojo.muted,
           ),
         ),
       ),
@@ -333,7 +333,7 @@ class _LoginScreenState extends State<LoginScreen> {
           contentPadding: EdgeInsets.zero,
           leading: Icon(
             account.isStaff ? Icons.content_cut : Icons.person_outline,
-            color: AppColors.primary,
+            color: context.mojo.accent,
           ),
           title: Text(account.username),
           subtitle: Text(
@@ -508,7 +508,10 @@ class _Wordmark extends StatelessWidget {
           child: const Icon(Icons.pets, size: 34, color: Colors.black),
         ),
         const SizedBox(height: 18),
-        Text('Mojo and Co', style: AppColors.display(34)),
+        Text(
+          'Mojo and Co',
+          style: AppColors.display(34, color: Theme.of(context).colorScheme.onSurface),
+        ),
         const SizedBox(height: 6),
         Text(
           'DOG GROOMING',
@@ -516,7 +519,7 @@ class _Wordmark extends StatelessWidget {
             fontSize: 11,
             letterSpacing: 4,
             fontWeight: FontWeight.w700,
-            color: AppColors.primary,
+            color: context.mojo.accent,
           ),
         ),
       ],

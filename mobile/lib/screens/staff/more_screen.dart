@@ -63,7 +63,7 @@ class MoreScreen extends StatelessWidget {
             ),
           const Divider(height: 32),
           ListTile(
-            leading: const Icon(Icons.switch_account_outlined, color: AppColors.primary),
+            leading: Icon(Icons.switch_account_outlined, color: context.mojo.accent),
             title: const Text('Switch account'),
             subtitle: const Text('Check what a client sees, without signing out'),
             trailing: const Icon(Icons.chevron_right),
@@ -76,13 +76,13 @@ class MoreScreen extends StatelessWidget {
             onTap: () => confirmSignOut(context),
           ),
           const SizedBox(height: 24),
-          const Center(
+          Center(
             child: Padding(
               padding: EdgeInsets.all(16),
               child: Text(
                 'Mojo and Co',
                 style: TextStyle(
-                  fontSize: 11, letterSpacing: 3, color: AppColors.inkSecondary,
+                  fontSize: 11, letterSpacing: 3, color: context.mojo.muted,
                 ),
               ),
             ),
@@ -100,7 +100,7 @@ class MoreScreen extends StatelessWidget {
     required WidgetBuilder builder,
   }) {
     return ListTile(
-      leading: Icon(icon, color: AppColors.primary),
+      leading: Icon(icon, color: context.mojo.accent),
       title: Text(title),
       subtitle: Text(subtitle),
       trailing: const Icon(Icons.chevron_right),
