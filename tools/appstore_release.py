@@ -15,8 +15,8 @@ waits for free.
 Usage (see .github/workflows/release.yml, which is what normally runs it):
 
     export APP_STORE_CONNECT_ISSUER_ID=... KEY_ID=... PRIVATE_KEY="$(cat key.p8)"
-    python tools/appstore_release.py --version 1.10.0
-    python tools/appstore_release.py --version 1.10.0 --dry-run
+    python tools/appstore_release.py --version 1.0.0
+    python tools/appstore_release.py --version 1.0.0 --dry-run
 
 --dry-run does every read, prints exactly what it would change, and submits
 nothing. Use it the first time: a submission cannot be taken back, and Apple
@@ -441,7 +441,7 @@ def main():
         '--check-credentials', action='store_true',
         help='Verify the API key works and stop. Touches nothing, needs no build.',
     )
-    parser.add_argument('--version', help='Marketing version, e.g. 1.10.0')
+    parser.add_argument('--version', help='Marketing version, e.g. 1.0.0')
     parser.add_argument('--changelog', default='CHANGELOG.md')
     parser.add_argument(
         '--wait-minutes', type=int, default=60,

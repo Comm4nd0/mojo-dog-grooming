@@ -5,9 +5,15 @@ The `## [x.y.z]` section for a version is what customers read on the App Store.
 and posts it as "What's New in This Version", so write it for Jess's clients,
 not for whoever is reading the diff. Apple caps it at 4000 characters.
 
-A release will not start unless the version being tagged has a section here.
+Add what you change under **Unreleased** as you go. `tools/release.sh` renames
+that heading to the version being cut, so there is nothing to remember at
+release time — but it refuses to release with nothing under it, because blank
+release notes on the App Store are worse than a delayed release.
 
-## [1.10.0] - unreleased
+Mojo and Co has not been released to the App Store yet. Everything below is
+either on TestFlight or waiting for the first tag.
+
+## [Unreleased]
 
 Getting back into your account no longer means starting again.
 
@@ -20,8 +26,3 @@ Getting back into your account no longer means starting again.
   lock one and not another.
 - Creating an account now asks for your password twice, so a typo can't leave
   you locked out of an account you just made.
-
-## [1.9.13]
-
-The last version released before this changelog was started. Earlier history is
-in the git log.

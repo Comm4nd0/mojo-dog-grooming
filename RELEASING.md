@@ -1,21 +1,26 @@
 # Releasing
 
-Live is on the App Store. TestFlight is for Jess to try things before customers
-see them. **A tag is the only thing that reaches customers** — pushing to `main`
-never does.
+TestFlight is for Jess to try things before customers see them. **A tag is the
+only thing that reaches customers** — pushing to `main` never does.
+
+Nothing has gone to the App Store yet; `pubspec.yaml` is at `0.1.0`, which is a
+TestFlight number. Whatever the first tag says is the version customers see for
+good, because App Store Connect will not accept a version string below one
+already released. `1.0.0` is the obvious first one.
 
 ## Cutting a release
 
 ```bash
-# 1. Write what customers will read, under a new "## [1.11.0]" heading.
+# 1. Add what changed under "## [Unreleased]" in the changelog.
 $EDITOR CHANGELOG.md
 
 # 2. Tag it.
-./tools/release.sh 1.11.0
+./tools/release.sh 1.0.0
 ```
 
-That is the whole job. The script sets `mobile/pubspec.yaml`, dates the
-changelog entry, commits, tags and pushes. From there:
+That is the whole job. The script renames the `[Unreleased]` heading to the
+version and dates it, sets `mobile/pubspec.yaml`, commits, tags and pushes. From
+there:
 
 1. **Xcode Cloud** sees the tag, builds, and uploads to App Store Connect.
 2. **`.github/workflows/release.yml`** waits for Apple to finish processing that
@@ -121,7 +126,7 @@ Once the credentials check passes and a build has been uploaded, rehearse the
 release itself:
 
 GitHub → Actions → **Release to the App Store** → Run workflow → version
-`1.10.0`, dry run **true**.
+`1.0.0`, dry run **true**.
 
 It authenticates, finds the app, waits for the build, reads the changelog and
 prints every change it *would* make without making any. Worth doing once: a
@@ -130,7 +135,7 @@ submission cannot be withdrawn without it counting against you.
 Locally, the same:
 
 ```bash
-python tools/appstore_release.py --version 1.10.0 --dry-run
+python tools/appstore_release.py --version 1.0.0 --dry-run
 ```
 
 Note the difference from `--check-credentials`: a dry run still waits for a
@@ -157,19 +162,19 @@ repeat.
 
 ## If something goes wrong
 
-**"Version 1.11.0 is already PENDING_DEVELOPER_RELEASE"** — someone started the
+**"Version 1.0.0 is already PENDING_DEVELOPER_RELEASE"** — someone started the
 release by hand in App Store Connect. The script refuses to write over a version
 it did not create. Finish or delete it there, then re-run the workflow.
 
-**"No processed build for 1.11.0 after 60 minutes"** — the Xcode Cloud build
+**"No processed build for 1.0.0 after 60 minutes"** — the Xcode Cloud build
 failed or never started. Check the Report navigator in Xcode; the tag pattern
 `v*` on the Release workflow is the usual culprit.
 
 **Tag pushed by mistake** — delete it before Xcode Cloud finishes:
 
 ```bash
-git push origin :refs/tags/v1.11.0
-git tag -d v1.11.0
+git push origin :refs/tags/v1.0.0
+git tag -d v1.0.0
 ```
 
 Once the review submission is in, cancel it in App Store Connect instead.

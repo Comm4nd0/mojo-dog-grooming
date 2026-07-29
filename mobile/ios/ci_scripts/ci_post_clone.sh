@@ -40,11 +40,11 @@ cd "$CI_PRIMARY_REPOSITORY_PATH/mobile"
 # Two kinds of build reach this script and they must not be stamped the same:
 #
 #   * a push to main, which goes to TestFlight for Jess to try;
-#   * a v1.10.0 tag, which goes to the App Store for customers.
+#   * a v1.0.0 tag, which goes to the App Store for customers.
 #
 # The version users see comes from pubspec.yaml via $(FLUTTER_BUILD_NAME) in
 # Info.plist. On a tag build the tag is authoritative and pubspec must agree
-# with it — a tag that says 1.10.0 producing a binary that says 1.9.13 is the
+# with it — a tag that says 1.0.0 producing a binary that says 0.1.0 is the
 # kind of mistake nobody notices until a customer reports the old bug is back.
 PUBSPEC_VERSION=$(grep '^version:' pubspec.yaml | head -1 | sed 's/^version:[[:space:]]*//' | cut -d'+' -f1)
 

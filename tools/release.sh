@@ -2,7 +2,7 @@
 #
 # Cut a release.
 #
-#     ./tools/release.sh 1.10.0
+#     ./tools/release.sh 1.0.0
 #
 # Sets the version in pubspec.yaml, dates the changelog entry, commits, tags and
 # pushes. The tag is what starts everything else: Xcode Cloud builds and uploads
@@ -57,9 +57,31 @@ if git rev-parse "v$VERSION" >/dev/null 2>&1; then
     exit 1
 fi
 
-if ! grep -q "^## \[$VERSION\]" CHANGELOG.md; then
-    echo "!!! No '## [$VERSION]' section in CHANGELOG.md."
-    echo "!!! That text is what customers read on the App Store — write it first."
+# The notes come from a section headed with this version, or from Unreleased,
+# which this script then renames. Writing notes as you go and having the release
+# pick them up beats remembering to retitle a heading on the day.
+section_text() {
+    awk -v prefix="$1" '
+        index($0, prefix) == 1 && !capture { capture = 1; next }
+        capture && /^## / { exit }
+        capture { print }
+    ' CHANGELOG.md
+}
+
+if grep -q "^## \[$VERSION\]" CHANGELOG.md; then
+    HEADING="## [$VERSION]"
+elif grep -q '^## \[Unreleased\]' CHANGELOG.md; then
+    HEADING='## [Unreleased]'
+else
+    echo "!!! CHANGELOG.md has neither a '## [$VERSION]' nor a '## [Unreleased]'"
+    echo "!!! section. That text is what customers read on the App Store."
+    exit 1
+fi
+
+NOTES=$(section_text "$HEADING")
+if [ -z "$(printf '%s' "$NOTES" | tr -d '[:space:]')" ]; then
+    echo "!!! The '$HEADING' section in CHANGELOG.md is empty."
+    echo "!!! Blank release notes on the App Store are worse than a delayed release."
     exit 1
 fi
 
@@ -77,8 +99,9 @@ fi
 # ── Do it ──────────────────────────────────────────────────────────────
 
 echo "Releasing $VERSION (previous tag: ${PREVIOUS:-none})"
+echo 'What customers will read on the App Store:'
 echo
-sed -n "/^## \[$VERSION\]/,/^## /p" CHANGELOG.md | sed '$d' | sed 's/^/    /'
+printf '%s\n' "$NOTES" | sed 's/^/    /'
 echo
 
 read -r -p "Tag and push this? Once Apple approves it, it goes live. [y/N] " REPLY
@@ -93,7 +116,13 @@ sed -i.bak -E "s/^version: [0-9]+\.[0-9]+\.[0-9]+\+[0-9]+$/version: $VERSION+1/"
 rm -f mobile/pubspec.yaml.bak
 
 TODAY=$(date +%Y-%m-%d)
-sed -i.bak -E "s/^## \[$VERSION\].*$/## [$VERSION] - $TODAY/" CHANGELOG.md
+if [ "$HEADING" = '## [Unreleased]' ]; then
+    # Rename rather than insert: appstore_release.py looks the section up by
+    # version, so what ships as "What's New" is exactly what was shown above.
+    sed -i.bak -E "s/^## \[Unreleased\].*$/## [$VERSION] - $TODAY/" CHANGELOG.md
+else
+    sed -i.bak -E "s/^## \[$VERSION\].*$/## [$VERSION] - $TODAY/" CHANGELOG.md
+fi
 rm -f CHANGELOG.md.bak
 
 git add mobile/pubspec.yaml CHANGELOG.md

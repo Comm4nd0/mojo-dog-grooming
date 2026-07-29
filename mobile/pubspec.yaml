@@ -6,16 +6,17 @@ publish_to: 'none'
 # CFBundleShortVersionString from $(FLUTTER_BUILD_NAME), which comes from here,
 # so this number is what appears on the App Store listing.
 #
-# It was 0.1.0 while 1.9.13 was live — a build from that would have been
-# rejected, because App Store Connect will not take a version string below the
-# one already released. Change it with `tools/release.sh`, which keeps it in
-# step with the git tag and the changelog rather than leaving three places to
-# remember.
+# Mojo and Co has not been released to the App Store yet — this has only ever
+# gone to TestFlight. Whatever number is here when the first tag is cut is what
+# customers see for good: App Store Connect will not take a version string below
+# one already released, so it can go up and never down. `tools/release.sh 1.0.0`
+# is the likely first release, and it sets this, the tag and the changelog
+# together rather than leaving three places to remember.
 #
 # The build number after the + is a placeholder. CI replaces it with a
 # monotonic one, because App Store Connect refuses a build number it has
 # already seen and this file would otherwise upload as build 1 every time.
-version: 1.10.0+1
+version: 0.1.0+1
 
 environment:
   sdk: ^3.11.4

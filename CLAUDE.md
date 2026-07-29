@@ -61,7 +61,7 @@ flutter run --dart-define=MOJO_API_BASE=http://192.168.1.20:8000/api
 Deploy:
 ```bash
 ./deploy.sh                      # backend, to the Hetzner host
-./tools/release.sh 1.11.0        # the app, to the App Store — see RELEASING.md
+./tools/release.sh 1.0.0        # the app, to the App Store — see RELEASING.md
 ```
 
 ## Two rules that matter
@@ -241,7 +241,7 @@ reading the parent's selection each time would drop all but the last.
 
 ## A tag is the release
 
-Pushing to `main` goes to TestFlight. Pushing a `v1.11.0` tag goes to customers —
+Pushing to `main` goes to TestFlight. Pushing a `v1.0.0` tag goes to customers —
 Xcode Cloud builds it, `.github/workflows/release.yml` waits for the upload to finish
 processing, writes "What's New" from `CHANGELOG.md`, and submits for review with
 `releaseType: AFTER_APPROVAL`. Cut one with `./tools/release.sh`; the full setup is in
@@ -251,9 +251,10 @@ Three things about this that are not obvious:
 
 - **The version users see comes from `pubspec.yaml`**, through `$(FLUTTER_BUILD_NAME)`
   in `Info.plist`. `MARKETING_VERSION` in the Xcode project is on the *test* target and
-  ships nothing. pubspec said `0.1.0` while `1.9.13` was live, so any release built from
-  it would have been rejected — App Store Connect will not take a version string below
-  the one already out.
+  ships nothing, so changing it there looks right and does nothing. Nothing has been
+  released to the App Store yet; whatever `pubspec.yaml` says when the first tag is cut
+  is what customers see for good, because App Store Connect will not take a version
+  string below one already out.
 - **Build numbers are minutes since 2026-01-01, not `CI_BUILD_NUMBER`.** That variable
   counts per Xcode Cloud workflow, so the TestFlight and Release workflows each start at
   1 and collide, and Apple rejects a build number it has seen before for a version.

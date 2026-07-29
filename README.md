@@ -81,7 +81,7 @@ A record pointing at the host before a certificate can be issued.
 
 ```bash
 $EDITOR CHANGELOG.md          # what customers read on the App Store
-./tools/release.sh 1.11.0
+./tools/release.sh 1.0.0
 ```
 
 Xcode Cloud builds the tag and uploads it; `.github/workflows/release.yml` then writes the
