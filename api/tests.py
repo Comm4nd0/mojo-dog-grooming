@@ -30,6 +30,8 @@ from .models import (
     IntakeInvite,
     Invoice,
     OpeningHours,
+    PasswordResetRequest,
+    PasswordResetToken,
     PhaseTiming,
     ProblemArea,
     Temperament,
@@ -1152,6 +1154,451 @@ class BreedInheritanceTests(BaseAPITestCase):
         response = self.staff_client.get(f'/api/dogs/{self.bob_dog.pk}/suggested_next_groom/')
         expected = (timezone.localtime(start).date() + timedelta(weeks=6)).isoformat()
         self.assertEqual(response.data['due_date'], expected)
+
+
+class RegistrationTests(BaseAPITestCase):
+    """Registration is the one endpoint a stranger writes to the User table
+    through, and the one place a bad account can be created that nobody can
+    later sign in to."""
+
+    def setUp(self):
+        super().setUp()
+        self.alice_user.email = 'alice@example.com'
+        self.alice_user.save()
+        self.public = APIClient()
+
+    def register(self, **overrides):
+        body = {
+            'username': 'carol',
+            'email': 'carol@example.com',
+            'password': 'Grooming-2026!',
+        }
+        body.update(overrides)
+        return self.public.post('/api/auth/users/', body)
+
+    def test_a_new_client_can_sign_up(self):
+        response = self.register()
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(User.objects.filter(username='carol').exists())
+
+    def test_email_is_required(self):
+        """An account with no email cannot be sent a reset link, and gives
+        Jess nothing to recognise the person by."""
+        response = self.register(email='')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('email', response.data)
+
+    def test_an_email_already_in_use_is_refused(self):
+        response = self.register(email='ALICE@example.com')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('email', response.data)
+
+    def test_an_email_on_an_unclaimed_client_record_is_fine(self):
+        """A client Jess entered by hand signing up for the first time is the
+        normal path, not a duplicate — they claim the record afterwards."""
+        Client.objects.create(
+            uid='MOJO-060', first_name='Carol', last_name='Clark', email='carol@example.com',
+        )
+        self.assertEqual(self.register().status_code, status.HTTP_201_CREATED)
+
+    def test_a_username_differing_only_by_case_is_refused(self):
+        """Django's uniqueness is exact, so "Alice" and "alice" would both
+        exist — and then neither can sign in, because the backend refuses an
+        ambiguous identifier."""
+        response = self.register(username='Alice')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('username', response.data)
+        self.assertFalse(User.objects.filter(username='Alice').exists())
+
+    def test_a_very_short_username_is_refused(self):
+        self.assertEqual(self.register(username='cj').status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_a_username_with_spaces_is_refused(self):
+        self.assertEqual(
+            self.register(username='carol jones').status_code, status.HTTP_400_BAD_REQUEST,
+        )
+
+    def test_a_weak_password_is_refused(self):
+        response = self.register(password='password')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('password', response.data)
+
+    def test_a_password_built_from_the_email_is_refused(self):
+        """djoser validates against a User carrying only the username, so a
+        password made of the email address used to sail through."""
+        response = self.register(email='sunflower@example.com', password='sunflower@example')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('password', response.data)
+
+    def test_registration_cannot_grant_staff(self):
+        self.register(is_staff=True, is_superuser=True)
+        carol = User.objects.get(username='carol')
+        self.assertFalse(carol.is_staff)
+        self.assertFalse(carol.is_superuser)
+
+
+class SignInTests(BaseAPITestCase):
+    """Clients type whatever they remember weeks later, on a keyboard that
+    capitalises the first letter."""
+
+    def setUp(self):
+        super().setUp()
+        # The fixtures hold the address on the client record, which is where
+        # it lived before registration required one on the login too.
+        self.alice_user.email = 'alice@example.com'
+        self.alice_user.save()
+        self.public = APIClient()
+
+    def sign_in(self, username, password='pw'):
+        return self.public.post(
+            '/api/auth/token/login/', {'username': username, 'password': password},
+        )
+
+    def test_the_username_signs_in(self):
+        self.assertEqual(self.sign_in('alice').status_code, status.HTTP_200_OK)
+
+    def test_the_email_signs_in_too(self):
+        self.assertEqual(self.sign_in('alice@example.com').status_code, status.HTTP_200_OK)
+
+    def test_case_does_not_matter(self):
+        self.assertEqual(self.sign_in('Alice').status_code, status.HTTP_200_OK)
+        self.assertEqual(self.sign_in('ALICE@EXAMPLE.COM').status_code, status.HTTP_200_OK)
+
+    def test_surrounding_space_is_ignored(self):
+        self.assertEqual(self.sign_in('  alice  ').status_code, status.HTTP_200_OK)
+
+    def test_a_wrong_password_still_fails(self):
+        self.assertEqual(
+            self.sign_in('alice', password='wrong').status_code, status.HTTP_400_BAD_REQUEST,
+        )
+
+    def test_a_username_beats_someone_elses_email(self):
+        """Nobody should be able to intercept another account's sign-in by
+        registering their email address as a username."""
+        impostor = User.objects.create_user('alice@example.com', password='impostor-pw')
+        response = self.sign_in('alice@example.com', password='impostor-pw')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        token = response.data['auth_token']
+        me = APIClient()
+        me.credentials(HTTP_AUTHORIZATION=f'Token {token}')
+        self.assertEqual(me.get('/api/auth/users/me/').data['id'], impostor.pk)
+
+    def test_an_ambiguous_identifier_signs_nobody_in(self):
+        """Two accounts sharing an email — possible on rows predating the
+        uniqueness check — must fail closed rather than pick one."""
+        User.objects.create_user('alice2', password='pw', email='alice@example.com')
+        self.assertEqual(self.sign_in('alice@example.com').status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_a_disabled_account_cannot_sign_in(self):
+        self.alice_user.is_active = False
+        self.alice_user.save()
+        self.assertEqual(self.sign_in('alice').status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class PasswordResetIssuingTests(BaseAPITestCase):
+    """Only a superuser may hand out a link, and the link itself is returned
+    exactly once."""
+
+    def setUp(self):
+        super().setUp()
+        self.manager = User.objects.create_user('manager', password='pw', is_staff=True)
+        self.manager_client = APIClient()
+        self.manager_client.force_authenticate(self.manager)
+
+    def issue(self, client=None, **body):
+        return (client or self.staff_client).post('/api/password-resets/', body or {'username': 'alice'})
+
+    def test_a_superuser_can_issue_a_link(self):
+        response = self.issue()
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIn('/reset/', response.data['link'])
+        self.assertTrue(response.data['token'])
+
+    def test_staff_who_are_not_superusers_cannot(self):
+        """is_staff opens the management surface; taking over an account is a
+        step past that."""
+        self.assertEqual(self.issue(self.manager_client).status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_a_client_cannot_issue_a_link_for_anyone(self):
+        response = self.issue(self.alice_client, username='bob')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(PasswordResetToken.objects.exists())
+
+    def test_the_link_can_be_asked_for_by_client_record(self):
+        """Jess picks people out of her client list, not out of a list of
+        usernames."""
+        response = self.issue(client_id=self.alice.pk)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(PasswordResetToken.objects.get().user, self.alice_user)
+
+    def test_a_client_record_with_no_login_says_so(self):
+        orphan = Client.objects.create(uid='MOJO-050', first_name='Nobody', last_name='Yet')
+        response = self.issue(client_id=orphan.pk)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('no login', response.data['detail'])
+
+    def test_naming_no_account_at_all_is_a_clear_error(self):
+        response = self.staff_client.post('/api/password-resets/', {})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_issuing_a_second_link_voids_the_first(self):
+        first = self.issue().data['token']
+        self.issue()
+        self.assertEqual(
+            self.public_get(first).status_code, status.HTTP_410_GONE,
+        )
+
+    def public_get(self, token):
+        return APIClient().get(f'/api/password-reset/{token}/')
+
+    def test_the_history_never_carries_the_token(self):
+        """A link readable out of the API is a link a stolen staff session
+        can read out too."""
+        token = self.issue().data['token']
+        listing = self.staff_client.get('/api/password-resets/')
+        self.assertEqual(listing.status_code, status.HTTP_200_OK)
+        self.assertNotIn(token, listing.content.decode())
+        self.assertEqual(listing.data['results'][0]['username'], 'alice')
+
+    def test_it_reports_that_email_is_not_configured(self):
+        """The app has to say "copy this and send it" rather than claim an
+        email is on its way that nobody will receive."""
+        response = self.issue()
+        self.assertFalse(response.data['emailed'])
+        self.assertFalse(response.data['email_configured'])
+
+
+class PasswordResetUseTests(BaseAPITestCase):
+    def setUp(self):
+        super().setUp()
+        self.alice_user.email = 'alice@example.com'
+        self.alice_user.save()
+        self.reset = PasswordResetToken.issue(self.alice_user, created_by=self.staff)
+        self.public = APIClient()
+
+    def use(self, password='Brand-New-2026!', token=None):
+        return self.public.post(
+            f'/api/password-reset/{token or self.reset.token}/', {'password': password},
+        )
+
+    def test_it_sets_the_password(self):
+        self.assertEqual(self.use().status_code, status.HTTP_200_OK)
+        self.alice_user.refresh_from_db()
+        self.assertTrue(self.alice_user.check_password('Brand-New-2026!'))
+
+    def test_a_get_shows_who_the_link_is_for(self):
+        response = self.public.get(f'/api/password-reset/{self.reset.token}/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['username'], 'alice')
+
+    def test_the_link_works_only_once(self):
+        self.use()
+        self.assertEqual(self.use(password='Second-Try-2026!').status_code, status.HTTP_410_GONE)
+
+    def test_an_expired_link_is_refused(self):
+        self.reset.expires_at = timezone.now() - timedelta(hours=1)
+        self.reset.save()
+        self.assertEqual(self.use().status_code, status.HTTP_410_GONE)
+
+    def test_an_unknown_token_is_404(self):
+        self.assertEqual(self.use(token='not-a-real-token').status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_a_weak_password_is_refused_and_the_link_survives(self):
+        response = self.use(password='12345678')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.reset.refresh_from_db()
+        self.assertTrue(self.reset.is_usable, 'a rejected attempt must not burn the link')
+
+    def test_the_password_is_checked_against_the_right_account(self):
+        """The user comes from the token, not the request body, so the
+        similarity validator sees the details of the account being reset —
+        including its email, which is not in the request at all."""
+        self.assertEqual(
+            self.use(password='alice@example.com').status_code, status.HTTP_400_BAD_REQUEST,
+        )
+
+    def test_using_a_link_signs_the_account_out_everywhere(self):
+        """A reset is often "someone else has my password" — changing it alone
+        would leave their session working."""
+        from rest_framework.authtoken.models import Token
+
+        Token.objects.create(user=self.alice_user)
+        self.use()
+        self.assertFalse(Token.objects.filter(user=self.alice_user).exists())
+
+    def test_nothing_else_is_signed_out(self):
+        from rest_framework.authtoken.models import Token
+
+        bobs = Token.objects.create(user=self.bob_user)
+        self.use()
+        self.assertTrue(Token.objects.filter(pk=bobs.pk).exists())
+
+
+class PasswordResetPageTests(BaseAPITestCase):
+    """The reset page is a web page for the same reason the intake form is:
+    whoever opens it cannot get into the app — that is the problem."""
+
+    def setUp(self):
+        super().setUp()
+        self.reset = PasswordResetToken.issue(self.alice_user)
+        self.public = APIClient()
+
+    def test_the_link_resolves(self):
+        response = self.public.get(f'/reset/{self.reset.token}/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('text/html', response['Content-Type'])
+
+    def test_it_works_without_a_trailing_slash(self):
+        self.assertEqual(
+            self.public.get(f'/reset/{self.reset.token}').status_code, status.HTTP_200_OK,
+        )
+
+    def test_the_page_says_whose_account_it_is(self):
+        html = self.public.get(f'/reset/{self.reset.token}/').content.decode()
+        self.assertIn('alice', html)
+        # The token reaches the script through json_script, and the page posts
+        # it back to the tested API rather than reimplementing any of it.
+        self.assertIn(self.reset.token, html)
+        self.assertIn('/api/password-reset/', html)
+
+    def test_the_page_is_not_indexable(self):
+        html = self.public.get(f'/reset/{self.reset.token}/').content.decode()
+        self.assertIn('noindex', html)
+
+    def test_a_used_link_explains_itself_rather_than_erroring(self):
+        self.reset.used_at = timezone.now()
+        self.reset.save()
+        response = self.public.get(f'/reset/{self.reset.token}/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('already been used', response.content.decode())
+
+    def test_an_expired_link_explains_itself(self):
+        self.reset.expires_at = timezone.now() - timedelta(hours=1)
+        self.reset.save()
+        self.assertIn('expired', self.public.get(f'/reset/{self.reset.token}/').content.decode())
+
+    def test_an_unknown_token_is_404_not_a_crash(self):
+        self.assertEqual(
+            self.public.get('/reset/not-a-real-token/').status_code, status.HTTP_404_NOT_FOUND,
+        )
+
+    def test_loading_the_page_does_not_spend_the_submission_budget(self):
+        """Separate throttle scopes, exactly as for intake: reloading must not
+        lock someone out of actually setting a password."""
+        for _ in range(25):
+            self.public.get(f'/reset/{self.reset.token}/')
+        response = self.public.post(
+            f'/api/password-reset/{self.reset.token}/', {'password': 'Brand-New-2026!'},
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+
+class PasswordResetRequestTests(BaseAPITestCase):
+    """"I've forgotten my password", from someone who cannot sign in."""
+
+    def setUp(self):
+        super().setUp()
+        self.public = APIClient()
+
+    def ask(self, identifier, note=''):
+        return self.public.post(
+            '/api/password-reset-requests/', {'identifier': identifier, 'note': note},
+        )
+
+    def test_anyone_can_ask(self):
+        response = self.ask('alice')
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+        self.assertEqual(PasswordResetRequest.objects.get().user, self.alice_user)
+
+    def test_the_email_on_the_client_record_resolves_too(self):
+        """Anyone who signed up before an email was required has one only on
+        their client record — and that is the address they will type."""
+        self.ask('ALICE@example.com')
+        self.assertEqual(PasswordResetRequest.objects.get().user, self.alice_user)
+
+    def test_an_unknown_name_answers_identically(self):
+        """Otherwise this is a way to find out who has an account."""
+        known = self.ask('alice')
+        cache.clear()
+        unknown = self.ask('nobody-at-all')
+        self.assertEqual(known.status_code, unknown.status_code)
+        self.assertEqual(known.data, unknown.data)
+
+    def test_an_unmatched_request_is_still_recorded(self):
+        """Someone typing the wrong thing is exactly who needs help; Jess sees
+        what they typed and can work out who they are."""
+        self.ask('alicce')
+        request = PasswordResetRequest.objects.get()
+        self.assertIsNone(request.user)
+        self.assertEqual(request.identifier, 'alicce')
+
+    def test_the_reply_never_says_whether_it_matched(self):
+        body = str(self.ask('alice').data)
+        self.assertNotIn('alice', body)
+
+    def test_a_client_cannot_read_the_queue(self):
+        self.ask('alice')
+        self.assertEqual(
+            self.alice_client.get('/api/password-reset-requests/').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    def test_a_superuser_sees_who_it_resolved_to(self):
+        self.ask('alice')
+        response = self.staff_client.get('/api/password-reset-requests/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['results'][0]['username'], 'alice')
+        self.assertEqual(response.data['results'][0]['client_name'], 'Alice Adams')
+
+    def test_issuing_a_link_closes_the_request(self):
+        self.ask('alice')
+        request = PasswordResetRequest.objects.get()
+        response = self.staff_client.post('/api/password-resets/', {'request_id': request.pk})
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        request.refresh_from_db()
+        self.assertEqual(request.status, PasswordResetRequest.Status.SENT)
+        self.assertIsNotNone(request.issued_token)
+
+    def test_an_unmatched_request_cannot_be_turned_into_a_link(self):
+        self.ask('nobody-at-all')
+        request = PasswordResetRequest.objects.get()
+        response = self.staff_client.post('/api/password-resets/', {'request_id': request.pk})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_it_can_be_dismissed(self):
+        self.ask('alice')
+        request = PasswordResetRequest.objects.get()
+        response = self.staff_client.post(f'/api/password-reset-requests/{request.pk}/dismiss/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        request.refresh_from_db()
+        self.assertEqual(request.status, PasswordResetRequest.Status.DISMISSED)
+
+    def test_asking_repeatedly_is_throttled(self):
+        """Each one puts a row in front of Jess, so this is a nuisance vector
+        as much as a security one."""
+        codes = [self.ask('alice').status_code for _ in range(8)]
+        self.assertIn(status.HTTP_429_TOO_MANY_REQUESTS, codes)
+
+
+class AccountListTests(BaseAPITestCase):
+    def test_a_superuser_can_look_up_who_has_a_login(self):
+        response = self.staff_client.get('/api/accounts/', {'search': 'MOJO-001'})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['results'][0]['username'], 'alice')
+        self.assertEqual(response.data['results'][0]['client_name'], 'Alice Adams')
+
+    def test_a_client_cannot(self):
+        self.assertEqual(
+            self.alice_client.get('/api/accounts/').status_code, status.HTTP_403_FORBIDDEN,
+        )
+
+    def test_the_list_carries_no_credentials(self):
+        body = self.staff_client.get('/api/accounts/').content.decode()
+        self.assertNotIn('password', body)
+
+    def test_me_reports_superuser_so_the_app_can_gate_the_screen(self):
+        self.assertTrue(self.staff_client.get('/api/auth/users/me/').data['is_superuser'])
+        self.assertFalse(self.alice_client.get('/api/auth/users/me/').data['is_superuser'])
 
 
 class HealthTests(APITestCase):

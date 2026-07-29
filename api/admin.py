@@ -17,6 +17,8 @@ from .models import (
     Invoice,
     InvoiceLine,
     OpeningHours,
+    PasswordResetRequest,
+    PasswordResetToken,
     Payment,
     PhaseTiming,
     ProblemArea,
@@ -119,6 +121,29 @@ class IntakeSubmissionAdmin(admin.ModelAdmin):
 class ClientClaimRequestAdmin(admin.ModelAdmin):
     list_display = ['user', 'claimed_name', 'claimed_email', 'claimed_postcode', 'matched_client', 'status']
     list_filter = ['status']
+
+
+@admin.register(PasswordResetToken)
+class PasswordResetTokenAdmin(admin.ModelAdmin):
+    """Read-only. The token column is deliberately absent — see the note on
+    :class:`~api.views.PasswordResetViewSet`; a link that can be read back out
+    of a stolen admin session is a link that has been handed over."""
+
+    list_display = ['user', 'created_at', 'expires_at', 'used_at', 'created_by']
+    list_filter = ['created_at']
+    search_fields = ['user__username', 'user__email']
+    readonly_fields = ['user', 'expires_at', 'used_at', 'created_by', 'sent_to', 'created_at']
+    exclude = ['token']
+
+    def has_add_permission(self, request):
+        return False
+
+
+@admin.register(PasswordResetRequest)
+class PasswordResetRequestAdmin(admin.ModelAdmin):
+    list_display = ['identifier', 'user', 'status', 'created_at', 'handled_by', 'handled_at']
+    list_filter = ['status']
+    search_fields = ['identifier', 'user__username']
 
 
 @admin.register(TemperamentLimit)

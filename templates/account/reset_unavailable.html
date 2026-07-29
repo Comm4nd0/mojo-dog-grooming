@@ -4,19 +4,19 @@
 
 {% block content %}
 <div class="card">
-  <h1>Sorry, this link can't be opened</h1>
+  <h1>This password link can't be opened</h1>
   <p>{{ message }}</p>
   <p class="hint">
-    Each form link works once and then expires, so this may simply mean your details
-    are already with us.
+    Reset links work once and then expire, so this may simply mean the password
+    has already been changed — try signing in with the new one first.
   </p>
   {% if settings.contact_phone or settings.contact_email %}
     <p>
-      If you're not sure, get in touch
+      If you still can't get in, get in touch
       {% if settings.contact_phone %}on <a href="tel:{{ settings.contact_phone }}">{{ settings.contact_phone }}</a>{% endif %}
       {% if settings.contact_phone and settings.contact_email %}or{% endif %}
       {% if settings.contact_email %}at <a href="mailto:{{ settings.contact_email }}">{{ settings.contact_email }}</a>{% endif %}
-      and we'll send a fresh one.
+      and we'll send a fresh link.
     </p>
   {% endif %}
 </div>

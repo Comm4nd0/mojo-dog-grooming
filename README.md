@@ -23,6 +23,27 @@ python manage.py runserver 0.0.0.0:8000
 
 Runs on SQLite with no services to start. The admin is at `/admin/`.
 
+## Accounts
+
+Usernames live in the database, not in this repository — they come from `createsuperuser` or
+from `DJANGO_SUPERUSER_USERNAME` on first boot. To see what exists, and to get someone back in
+when they are locked out:
+
+```bash
+python manage.py accounts            # list logins: username, email, role, last sign-in
+python manage.py reset_link jess     # single-use link to set a new password
+```
+
+In production, run these inside the container:
+
+```bash
+docker compose -f docker-compose.prod.yml exec web python manage.py accounts
+```
+
+Day to day a superuser does the same thing from the app — **More → Logins** — which also shows
+anyone who has asked for help getting back in. `reset_link` is the way in when the superuser is
+the one locked out, since the in-app version needs them signed in already.
+
 **Mobile**
 
 ```bash
@@ -36,8 +57,8 @@ Without `--dart-define` the app points at `https://app.mojoandco.uk/api`.
 ## Tests
 
 ```bash
-python manage.py test api     # 81 backend tests
-cd mobile && flutter test     # 33 widget, model and golden tests
+python manage.py test api     # 150 backend tests
+cd mobile && flutter test     # 48 widget, model and golden tests
 ```
 
 The backend suite covers the access-control rules the design rests on: a client can only reach

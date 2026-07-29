@@ -1,0 +1,175 @@
+{% extends "base.html" %}
+
+{% block title %}Set a new password — {{ settings.business_name }}{% endblock %}
+
+{% block head_extra %}
+<style>
+  .who { background: var(--tint); color: var(--green-dark); padding: 10px 12px; font-size: 13.5px; margin-bottom: 18px; }
+  .who strong { font-weight: 700; }
+  .pw-wrap { position: relative; }
+  .pw-wrap input { padding-right: 78px; }
+  .reveal {
+    position: absolute; right: 0; top: 0; height: 100%; width: auto; padding: 0 12px;
+    background: none; color: var(--green); letter-spacing: 1px; font-size: 11px;
+  }
+  .rules { list-style: none; padding: 0; margin: 8px 0 0; font-size: 12.5px; color: var(--ink-2); }
+  .rules li { padding-left: 20px; position: relative; margin-bottom: 3px; }
+  .rules li::before { content: "○"; position: absolute; left: 4px; }
+  .rules li.met { color: var(--green); }
+  .rules li.met::before { content: "●"; }
+  .done { text-align: center; padding: 30px 10px; }
+  .done .tick { width: 60px; height: 60px; background: var(--tint); color: var(--green); display: grid; place-items: center; margin: 0 auto 18px; font-size: 30px; }
+  [hidden] { display: none !important; }
+</style>
+{% endblock %}
+
+{% block content %}
+
+<div id="form-view">
+  <h1>Set a new password</h1>
+
+  <div class="who">
+    You're setting the password for <strong>{{ username }}</strong>.
+    If that isn't you, close this page and let us know.
+  </div>
+
+  <div id="error-banner" class="banner error" hidden></div>
+
+  <form id="reset-form" novalidate>
+    <div class="card">
+      <div class="field">
+        <label for="password">New password <span class="req">*</span></label>
+        <div class="pw-wrap">
+          {# autocomplete=new-password is what tells a password manager to offer
+             to generate and save one, rather than filling the old one back in. #}
+          <input type="password" id="password" name="password" autocomplete="new-password"
+                 autocapitalize="off" autocorrect="off" spellcheck="false" required>
+          <button type="button" class="reveal" id="reveal" aria-label="Show password">SHOW</button>
+        </div>
+        <ul class="rules" id="rules">
+          <li data-rule="length">At least 8 characters</li>
+          <li data-rule="notnumeric">Not all numbers</li>
+          <li data-rule="notname">Doesn't contain your username</li>
+        </ul>
+      </div>
+
+      <div class="field">
+        <label for="confirm">Type it again <span class="req">*</span></label>
+        <div class="pw-wrap">
+          <input type="password" id="confirm" name="confirm" autocomplete="new-password"
+                 autocapitalize="off" autocorrect="off" spellcheck="false" required>
+        </div>
+      </div>
+
+      <button type="submit" id="submit">SAVE PASSWORD</button>
+      <p class="hint" style="margin: 12px 0 0">
+        This link works once. After saving, sign in on the {{ settings.business_name }} app
+        with your new password.
+      </p>
+    </div>
+  </form>
+</div>
+
+<div id="done-view" class="card done" hidden>
+  <div class="tick">&check;</div>
+  <h2>Password saved</h2>
+  <p>You can sign in to the {{ settings.business_name }} app now, as <strong>{{ username }}</strong>.</p>
+  <p class="hint">
+    Any device that was signed in as you has been signed out, so you'll need the
+    new password there too.
+  </p>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+{{ token|json_script:"reset-token" }}
+{{ username|json_script:"reset-username" }}
+<script>
+(function () {
+  var token = JSON.parse(document.getElementById('reset-token').textContent);
+  var username = JSON.parse(document.getElementById('reset-username').textContent);
+  var form = document.getElementById('reset-form');
+  var password = document.getElementById('password');
+  var confirm = document.getElementById('confirm');
+  var banner = document.getElementById('error-banner');
+  var submit = document.getElementById('submit');
+  var rules = document.getElementById('rules');
+
+  // Mirrors of Django's validators, for live feedback only. The server is
+  // still the authority — it also checks the password against a list of
+  // common ones, which is not something to ship to the browser.
+  var checks = {
+    length: function (value) { return value.length >= 8; },
+    notnumeric: function (value) { return !/^\d+$/.test(value); },
+    notname: function (value) {
+      return value.length > 0 && value.toLowerCase().indexOf(username.toLowerCase()) === -1;
+    }
+  };
+
+  function paintRules() {
+    var value = password.value;
+    Array.prototype.forEach.call(rules.querySelectorAll('li'), function (item) {
+      item.classList.toggle('met', checks[item.dataset.rule](value));
+    });
+  }
+  password.addEventListener('input', paintRules);
+
+  document.getElementById('reveal').addEventListener('click', function () {
+    var showing = password.type === 'text';
+    password.type = confirm.type = showing ? 'password' : 'text';
+    this.textContent = showing ? 'SHOW' : 'HIDE';
+  });
+
+  function fail(message) {
+    banner.textContent = message;
+    banner.hidden = false;
+    banner.scrollIntoView({ block: 'center' });
+  }
+
+  form.addEventListener('submit', function (event) {
+    event.preventDefault();
+    banner.hidden = true;
+
+    if (password.value !== confirm.value) {
+      fail('Those two passwords are different. Check and try again.');
+      return;
+    }
+
+    submit.disabled = true;
+    submit.textContent = 'SAVING…';
+
+    fetch('/api/password-reset/' + encodeURIComponent(token) + '/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({ password: password.value })
+    }).then(function (response) {
+      return response.json().catch(function () { return {}; }).then(function (body) {
+        return { ok: response.ok, body: body };
+      });
+    }).then(function (result) {
+      if (result.ok) {
+        document.getElementById('form-view').hidden = true;
+        document.getElementById('done-view').hidden = false;
+        window.scrollTo(0, 0);
+        return;
+      }
+      // DRF answers with {"detail": "..."} or {"password": ["...", ...]}.
+      var body = result.body || {};
+      var message = body.detail
+        || (Array.isArray(body.password) ? body.password.join(' ') : null)
+        || 'That password was not accepted. Please try a different one.';
+      fail(message);
+      submit.disabled = false;
+      submit.textContent = 'SAVE PASSWORD';
+    }).catch(function () {
+      fail('Could not reach {{ settings.business_name|escapejs }}. Check your connection and try again.');
+      submit.disabled = false;
+      submit.textContent = 'SAVE PASSWORD';
+    });
+  });
+
+  paintRules();
+})();
+</script>
+{% endblock %}

@@ -11,10 +11,14 @@ Field gating is only half the protection: the viewsets also scope querysets so
 a client can never address another client's row at all. See ``api/views.py``.
 """
 
+import re
 from decimal import Decimal
 
 from django.contrib.auth.models import User
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils import timezone
+from djoser.serializers import UserCreateSerializer as DjoserUserCreateSerializer
 from rest_framework import serializers
 
 from .models import (
@@ -34,6 +38,8 @@ from .models import (
     Invoice,
     InvoiceLine,
     OpeningHours,
+    PasswordResetRequest,
+    PasswordResetToken,
     Payment,
     PhaseTiming,
     ProblemArea,
@@ -83,13 +89,20 @@ class DjoserUserSerializer(serializers.ModelSerializer):
     """What ``/api/auth/users/me/`` returns — drives role routing in the app."""
 
     is_staff = serializers.BooleanField(read_only=True)
+    # The app hides the account-management surface unless this is true, so it
+    # has to come down with the rest of the identity rather than from a
+    # separate call the login screen would have to wait on.
+    is_superuser = serializers.BooleanField(read_only=True)
     client_id = serializers.SerializerMethodField()
     has_client_record = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'is_staff', 'client_id', 'has_client_record']
-        read_only_fields = ['id', 'username', 'is_staff']
+        fields = [
+            'id', 'username', 'email', 'first_name', 'last_name',
+            'is_staff', 'is_superuser', 'client_id', 'has_client_record',
+        ]
+        read_only_fields = ['id', 'username', 'is_staff', 'is_superuser']
 
     def get_client_id(self, obj):
         client = getattr(obj, 'client', None)
@@ -97,6 +110,79 @@ class DjoserUserSerializer(serializers.ModelSerializer):
 
     def get_has_client_record(self, obj):
         return getattr(obj, 'client', None) is not None
+
+
+USERNAME_PATTERN = re.compile(r'^[\w.@+-]+$')
+
+
+class MojoUserCreateSerializer(DjoserUserCreateSerializer):
+    """Registration — the one endpoint where a stranger writes to the User table.
+
+    Three things beyond djoser's defaults, each from a way the old form went
+    wrong in practice:
+
+    * **Email is required and unique.** It was optional, so accounts arrived
+      with no address at all — and an account with no email cannot be matched
+      to a client record, cannot be sent a reset link, and gives Jess nothing
+      to recognise the person by when they ask for help getting back in.
+    * **Names and emails are compared case-insensitively.** Django's uniqueness
+      is exact, so "Jess" and "jess" are two accounts. Nobody remembers which
+      capitalisation they used, and :mod:`api.auth_backends` has to refuse to
+      sign either of them in once both exist. Refusing the second registration
+      is far kinder than the login failure it would otherwise cause.
+    * **Passwords are checked against the account's own details.** Django's
+      validators do this via ``UserAttributeSimilarityValidator``, but only
+      when they can see the username and email, which is why they are passed
+      an unsaved User below rather than run bare.
+    """
+
+    class Meta(DjoserUserCreateSerializer.Meta):
+        model = User
+        fields = ['id', 'username', 'email', 'password', 'first_name', 'last_name']
+        extra_kwargs = {
+            'email': {'required': True, 'allow_blank': False},
+            'first_name': {'required': False},
+            'last_name': {'required': False},
+        }
+
+    def validate_username(self, value):
+        username = value.strip()
+        if len(username) < 3:
+            raise serializers.ValidationError('Pick a username of at least 3 characters.')
+        if not USERNAME_PATTERN.match(username):
+            raise serializers.ValidationError(
+                'Usernames can use letters, numbers and . @ + - _ only.'
+            )
+        if User.objects.filter(username__iexact=username).exists():
+            raise serializers.ValidationError('That username is taken. Try another.')
+        return username
+
+    def validate_email(self, value):
+        email = value.strip()
+        if User.objects.filter(email__iexact=email).exists():
+            raise serializers.ValidationError(
+                'There is already an account with that email address. '
+                'Sign in with it, or ask Mojo and Co to send you a reset link.'
+            )
+        return email
+
+    def validate(self, attrs):
+        # Deliberately not calling super().validate(): djoser runs Django's
+        # password validators against a User built from the username alone, so
+        # a password containing the email address sails through. Building the
+        # candidate here gives UserAttributeSimilarityValidator both.
+        password = attrs.get('password') or ''
+        candidate = User(
+            username=attrs.get('username', ''),
+            email=attrs.get('email', ''),
+            first_name=attrs.get('first_name', ''),
+            last_name=attrs.get('last_name', ''),
+        )
+        try:
+            validate_password(password, candidate)
+        except DjangoValidationError as error:
+            raise serializers.ValidationError({'password': list(error.messages)})
+        return attrs
 
 
 class UserProfileSerializer(serializers.ModelSerializer):
@@ -130,6 +216,112 @@ class UserProfileSerializer(serializers.ModelSerializer):
         if user_data:
             instance.user.save()
         return super().update(instance, validated_data)
+
+
+# ── Accounts and passwords ─────────────────────────────────────────────
+
+class AccountSerializer(serializers.ModelSerializer):
+    """A login, as a superuser sees it when choosing who to send a link to.
+
+    Read-only, and superuser-only at the view. ``client_name`` is what makes
+    the list usable: Jess thinks in "Alice with the two cockapoos", not in
+    usernames, and a list of bare logins is unmatchable against her clients.
+    """
+
+    client_name = serializers.SerializerMethodField()
+    client_uid = serializers.SerializerMethodField()
+    full_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = [
+            'id', 'username', 'email', 'full_name', 'is_staff', 'is_superuser',
+            'is_active', 'last_login', 'date_joined', 'client_name', 'client_uid',
+        ]
+
+    def get_full_name(self, obj):
+        return obj.get_full_name()
+
+    def get_client_name(self, obj):
+        client = getattr(obj, 'client', None)
+        return client.full_name if client else None
+
+    def get_client_uid(self, obj):
+        client = getattr(obj, 'client', None)
+        return client.uid if client else None
+
+
+class PasswordResetTokenSerializer(serializers.ModelSerializer):
+    """A reset link's *record*, never the link itself.
+
+    The token is the whole credential, so it is returned exactly once — in the
+    response to the call that creates it — and this serializer, which backs the
+    history list, deliberately has no field for it.
+    """
+
+    username = serializers.CharField(source='user.username', read_only=True)
+    issued_by = serializers.CharField(source='created_by.username', read_only=True, default=None)
+    is_usable = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = PasswordResetToken
+        fields = ['id', 'username', 'issued_by', 'sent_to', 'expires_at', 'used_at', 'is_usable', 'created_at']
+
+
+class PasswordResetRequestSerializer(serializers.ModelSerializer):
+    """A "I've forgotten my password" note, as staff see it."""
+
+    username = serializers.CharField(source='user.username', read_only=True, default=None)
+    email = serializers.CharField(source='user.email', read_only=True, default=None)
+    client_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PasswordResetRequest
+        fields = [
+            'id', 'identifier', 'note', 'username', 'email', 'client_name',
+            'status', 'handled_at', 'created_at',
+        ]
+        read_only_fields = fields
+
+    def get_client_name(self, obj):
+        client = getattr(obj.user, 'client', None) if obj.user_id else None
+        return client.full_name if client else None
+
+
+class PublicPasswordResetRequestSerializer(serializers.Serializer):
+    """What a signed-out person submits. Never echoed back to them.
+
+    There is no ``user`` field and no confirmation of whether the identifier
+    matched: the view answers identically either way, so this cannot be used to
+    discover who has an account.
+    """
+
+    identifier = serializers.CharField(max_length=254)
+    note = serializers.CharField(max_length=300, required=False, allow_blank=True, default='')
+
+    def validate_identifier(self, value):
+        identifier = value.strip()
+        if not identifier:
+            raise serializers.ValidationError('Enter the username or email you sign in with.')
+        return identifier
+
+
+class SetPasswordSerializer(serializers.Serializer):
+    """A new password, arriving with a reset token instead of the old one.
+
+    ``user`` comes from the token, not the request body — the password is
+    validated against the account it is actually for, so someone cannot set
+    their own username as their password by resetting from a link.
+    """
+
+    password = serializers.CharField(write_only=True)
+
+    def validate_password(self, value):
+        try:
+            validate_password(value, self.context.get('user'))
+        except DjangoValidationError as error:
+            raise serializers.ValidationError(list(error.messages))
+        return value
 
 
 # ── Reference data ─────────────────────────────────────────────────────

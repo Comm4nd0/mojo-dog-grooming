@@ -101,9 +101,22 @@ else:
 
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
-    {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator'},
+    {
+        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
+        # The app has always told people "at least 8 characters"; Django's
+        # default of 8 matches, but pin it so the two can't drift apart.
+        'OPTIONS': {'min_length': 8},
+    },
     {'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator'},
     {'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator'},
+]
+
+# Clients type their email as often as their username when signing back in,
+# and phone keyboards capitalise. See api/auth_backends.py for why an exact
+# username match still wins and why an ambiguous identifier fails closed.
+AUTHENTICATION_BACKENDS = [
+    'api.auth_backends.UsernameOrEmailBackend',
+    'django.contrib.auth.backends.ModelBackend',
 ]
 
 LANGUAGE_CODE = 'en-gb'
@@ -154,6 +167,19 @@ REST_FRAMEWORK = {
         # bucket with the submission would let ordinary reloading lock someone
         # out of actually sending their details.
         'intake_form': '120/hour',
+        # Sign-in. Loose enough that a household on one IP, or Jess flipping
+        # between her staff and a test client login, never notices; tight
+        # enough that guessing passwords at scale is not worth starting.
+        'login': '12/min',
+        # Setting a new password from a reset link. The same split as intake,
+        # and for the same reason: opening the page must not spend the budget
+        # for submitting it.
+        'password_reset': '20/hour',
+        'password_reset_form': '120/hour',
+        # Asking for help getting back in. Deliberately mean — each one puts a
+        # row in front of Jess, so this is a nuisance vector as much as a
+        # security one.
+        'password_reset_request': '5/hour',
     },
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 100,
@@ -168,6 +194,10 @@ DJOSER = {
     'SERIALIZERS': {
         'current_user': 'api.serializers.DjoserUserSerializer',
         'user': 'api.serializers.DjoserUserSerializer',
+        # Registration is the one place a stranger writes to the User table.
+        # The custom serializer requires an email and refuses names or
+        # addresses that only differ from an existing account by case.
+        'user_create': 'api.serializers.MojoUserCreateSerializer',
     },
 }
 
@@ -186,8 +216,38 @@ if env_bool('DJANGO_SECURE_HTTPS', False):
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
 
+# ── Email ──────────────────────────────────────────────────────────────
+# Optional throughout. With no EMAIL_HOST the backend discards mail rather
+# than erroring, and every feature that can email something also hands the
+# link back so it can be sent by hand — which is how Mojo and Co has always
+# delivered intake forms. Set EMAIL_HOST to turn real sending on.
+EMAIL_HOST = os.getenv('EMAIL_HOST', '')
+EMAIL_PORT = int(os.getenv('EMAIL_PORT', '587'))
+EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
+EMAIL_USE_TLS = env_bool('EMAIL_USE_TLS', True)
+DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'Mojo and Co <info@mojoandco.uk>')
+
+if EMAIL_HOST:
+    EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+elif DEBUG:
+    EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+else:
+    EMAIL_BACKEND = 'django.core.mail.backends.dummy.EmailBackend'
+
+# Whether anything will actually be delivered. The API reports this so the app
+# can say "copy this link and send it yourself" instead of claiming an email
+# is on its way that nobody will ever receive.
+EMAIL_ENABLED = bool(EMAIL_HOST)
+
 # ── Business defaults ──────────────────────────────────────────────────
 # How many appointments a BookingSeries materialises ahead of today.
 BOOKING_SERIES_HORIZON_WEEKS = int(os.getenv('BOOKING_SERIES_HORIZON_WEEKS', '26'))
 # How long an emailed intake form link stays valid.
 INTAKE_INVITE_TTL_DAYS = int(os.getenv('INTAKE_INVITE_TTL_DAYS', '30'))
+# How long a password reset link stays valid. Short by design — it is handed
+# over WhatsApp or read down the phone as often as it is emailed.
+PASSWORD_RESET_TTL_HOURS = int(os.getenv('PASSWORD_RESET_TTL_HOURS', '24'))
+# Where links point when nothing built them from a live request — the
+# management commands, and any email sent from a shell.
+PUBLIC_BASE_URL = os.getenv('PUBLIC_BASE_URL', 'https://app.mojoandco.uk').rstrip('/')

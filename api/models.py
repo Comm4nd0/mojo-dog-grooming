@@ -213,6 +213,103 @@ class ClientClaimRequest(models.Model):
         return f'Claim by {self.user.username} → {self.matched_client or "unmatched"} ({self.status})'
 
 
+# ── Passwords ──────────────────────────────────────────────────────────
+
+def generate_reset_token():
+    return secrets.token_urlsafe(32)
+
+
+class PasswordResetToken(models.Model):
+    """A single-use link that sets a new password without knowing the old one.
+
+    Issued by a superuser from the app, or from the command line when nobody
+    can get in at all (``manage.py reset_link``). Like an intake invite, the
+    token *is* the credential: single-use, time-limited, and long enough not to
+    be guessable — so it is never listed back out of the API after the moment
+    it is created.
+
+    Issuing a new one voids the user's outstanding tokens, and using one drops
+    their API tokens, so a reset also signs the account out everywhere. That
+    matters when the reason for the reset is "someone else has my password".
+    """
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='password_reset_tokens')
+    token = models.CharField(max_length=64, unique=True, default=generate_reset_token)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name='issued_password_resets',
+        help_text='The superuser who issued it. Blank when issued from the command line.',
+    )
+    sent_to = models.EmailField(
+        blank=True, help_text='Where the link was emailed, when email is configured.',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'Password reset for {self.user.username}'
+
+    def save(self, *args, **kwargs):
+        if not self.expires_at:
+            self.expires_at = timezone.now() + timedelta(hours=settings.PASSWORD_RESET_TTL_HOURS)
+        super().save(*args, **kwargs)
+
+    @property
+    def is_usable(self):
+        return self.used_at is None and self.expires_at > timezone.now()
+
+    @classmethod
+    def issue(cls, user, created_by=None):
+        """Void any outstanding links for this user, then mint a fresh one."""
+        cls.objects.filter(user=user, used_at__isnull=True).update(used_at=timezone.now())
+        return cls.objects.create(user=user, created_by=created_by)
+
+
+class PasswordResetRequest(models.Model):
+    """Someone signed out saying they have forgotten their password.
+
+    There is no automated email path in this deployment, so a request is not a
+    reset — it is a note that lands in the app for Jess, who checks it is really
+    them and issues a link. That is the honest shape for a one-groomer business
+    where she knows every client by name.
+
+    ``identifier`` is whatever they typed. ``user`` is resolved server-side and
+    is never echoed back to the person who asked: the public endpoint answers
+    identically whether or not the account exists, so it cannot be used to find
+    out who has an account.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = 'PENDING', 'Pending'
+        SENT = 'SENT', 'Link sent'
+        DISMISSED = 'DISMISSED', 'Dismissed'
+
+    identifier = models.CharField(max_length=254, help_text='The username or email they typed.')
+    user = models.ForeignKey(
+        User, on_delete=models.CASCADE, null=True, blank=True, related_name='password_reset_requests',
+        help_text='Resolved from the identifier. Null when nothing matched.',
+    )
+    note = models.CharField(max_length=300, blank=True, help_text='Anything they added, e.g. a phone number.')
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
+    handled_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name='handled_password_resets',
+    )
+    handled_at = models.DateTimeField(null=True, blank=True)
+    issued_token = models.ForeignKey(
+        PasswordResetToken, on_delete=models.SET_NULL, null=True, blank=True, related_name='requests',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'Password help for {self.identifier} ({self.status})'
+
+
 # ── Breeds and dogs ────────────────────────────────────────────────────
 
 class Breed(models.Model):

@@ -17,17 +17,20 @@ from functools import lru_cache
 from pathlib import Path
 
 from django.conf import settings as django_settings
+from django.contrib.auth.models import User
 from django.db import transaction
 from django.db.models import Q, Value
 from django.db.models.functions import Replace, Upper
 from django.utils import timezone
 from django.utils.safestring import mark_safe
+from djoser.views import TokenCreateView
 from rest_framework import status, viewsets
+from rest_framework.authtoken.models import Token
 from rest_framework.decorators import action, api_view, permission_classes, throttle_classes
-from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
+from rest_framework.permissions import AllowAny, BasePermission, IsAdminUser, IsAuthenticated
 from rest_framework.renderers import TemplateHTMLRenderer
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
+from rest_framework.throttling import AnonRateThrottle, ScopedRateThrottle
 from rest_framework.views import APIView
 
 
@@ -68,6 +71,8 @@ from .models import (
     IntakeSubmission,
     Invoice,
     OpeningHours,
+    PasswordResetRequest,
+    PasswordResetToken,
     Payment,
     ProblemArea,
     ReviewStatus,
@@ -75,8 +80,10 @@ from .models import (
     TodoItem,
     UserProfile,
 )
+from .passwords import build_reset_link, send_reset_email
 from .scheduling import booking_warnings
 from .serializers import (
+    AccountSerializer,
     AppSettingsSerializer,
     AppointmentCheckSerializer,
     AppointmentSerializer,
@@ -94,9 +101,13 @@ from .serializers import (
     IntakeSubmissionSerializer,
     InvoiceSerializer,
     OpeningHoursSerializer,
+    PasswordResetRequestSerializer,
+    PasswordResetTokenSerializer,
     PaymentSerializer,
     ProblemAreaSerializer,
     PublicIntakeSubmissionSerializer,
+    PublicPasswordResetRequestSerializer,
+    SetPasswordSerializer,
     TemperamentLimitSerializer,
     TodoItemSerializer,
     UserProfileSerializer,
@@ -112,6 +123,36 @@ class IsStaffOrReadOnly(IsAuthenticated):
         if request.method in ('GET', 'HEAD', 'OPTIONS'):
             return True
         return bool(request.user and request.user.is_staff)
+
+
+class ForgottenPasswordThrottle(AnonRateThrottle):
+    """Rate limit for "I've forgotten my password", separate from ordinary
+    anonymous traffic.
+
+    A subclass rather than :class:`ScopedRateThrottle` with a scope set in
+    ``get_throttles``: ScopedRateThrottle reads the scope off the *view* on
+    every request, so a scope assigned to the throttle instance is silently
+    thrown away — and putting ``throttle_scope`` on the view would apply the
+    5/hour limit to the superuser reading the queue as well, locking Jess out
+    of her own list.
+    """
+
+    scope = 'password_reset_request'
+
+
+class IsSuperUser(BasePermission):
+    """Superusers only — a strictly narrower gate than ``IsAdminUser``.
+
+    ``IsAdminUser`` means ``is_staff``, which is the gate on the whole
+    management surface. Handing out a password reset link is not management,
+    it is taking over an account, so it sits with the capability flags in
+    :class:`~api.models.UserProfile` on the superuser side of the line.
+    """
+
+    message = 'Only an account owner can do that.'
+
+    def has_permission(self, request, view):
+        return bool(request.user and request.user.is_authenticated and request.user.is_superuser)
 
 
 class ClientScopedMixin:
@@ -202,6 +243,313 @@ class MyProfileView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data)
+
+
+# ── Accounts and passwords ─────────────────────────────────────────────
+
+class ThrottledTokenCreateView(TokenCreateView):
+    """Sign-in, with a rate limit of its own.
+
+    djoser's view inherits the default anonymous throttle, which is sized for
+    ordinary API traffic and far too generous for password guessing. The scoped
+    limit is layered on top rather than replacing it — see the ``login`` rate in
+    settings for why it is set where it is.
+    """
+
+    throttle_classes = [AnonRateThrottle, ScopedRateThrottle]
+    throttle_scope = 'login'
+
+
+class AccountViewSet(viewsets.ReadOnlyModelViewSet):
+    """The list of logins, for choosing who to send a reset link to.
+
+    Superuser-only and read-only: nothing here edits an account. Search covers
+    the client name and UID as well as the username, because Jess looks people
+    up by who they are, not by what they typed when they signed up.
+    """
+
+    queryset = User.objects.select_related('client').order_by('username')
+    serializer_class = AccountSerializer
+    permission_classes = [IsSuperUser]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        search = self.request.query_params.get('search')
+        if search:
+            queryset = queryset.filter(
+                Q(username__icontains=search)
+                | Q(email__icontains=search)
+                | Q(first_name__icontains=search)
+                | Q(last_name__icontains=search)
+                | Q(client__first_name__icontains=search)
+                | Q(client__last_name__icontains=search)
+                | Q(client__uid__icontains=search)
+            )
+        return queryset
+
+
+class PasswordResetViewSet(viewsets.ModelViewSet):
+    """Issuing reset links.
+
+    Creating one returns the link itself — once, in that response and nowhere
+    else. The list is a history of what has been issued and whether it was
+    used; it has no field for the token, because a link that can be read back
+    out of the API is a link that a stolen staff session can read out too.
+
+    Email is attempted when it is configured, but the response always carries
+    the link, and ``email_configured`` tells the app whether to say "sent" or
+    "copy this and send it yourself". This deployment normally has no SMTP at
+    all, which is the same reason intake forms are delivered by hand.
+    """
+
+    queryset = PasswordResetToken.objects.select_related('user', 'created_by')
+    serializer_class = PasswordResetTokenSerializer
+    permission_classes = [IsSuperUser]
+    http_method_names = ['get', 'post', 'head', 'options']
+
+    def resolve_user(self, data):
+        """Find the account a link is being asked for. Returns (user, error)."""
+        if data.get('user_id'):
+            user = User.objects.filter(pk=data['user_id']).first()
+            return user, None if user else 'No account with that id.'
+        if data.get('username'):
+            user = User.objects.filter(username__iexact=str(data['username']).strip()).first()
+            return user, None if user else 'No account with that username.'
+        if data.get('client_id'):
+            client = Client.objects.filter(pk=data['client_id']).select_related('user').first()
+            if client is None:
+                return None, 'No client with that id.'
+            if client.user_id is None:
+                return None, f'{client.full_name} has no login yet — nothing to reset.'
+            return client.user, None
+        if data.get('request_id'):
+            reset_request = PasswordResetRequest.objects.filter(pk=data['request_id']).first()
+            if reset_request is None:
+                return None, 'No such request.'
+            if reset_request.user_id is None:
+                return None, 'That request never matched an account.'
+            return reset_request.user, None
+        return None, 'Say which account to reset: user_id, username, client_id or request_id.'
+
+    def create(self, request, *args, **kwargs):
+        user, error = self.resolve_user(request.data)
+        if user is None:
+            return Response({'detail': error}, status=status.HTTP_400_BAD_REQUEST)
+
+        reset = PasswordResetToken.issue(user, created_by=request.user)
+        link = build_reset_link(reset.token, request=request)
+
+        # Not sending is the default here only when there is nowhere to send
+        # to; otherwise try, and report honestly either way.
+        wants_email = request.data.get('send_email', True)
+        address = (request.data.get('email') or '').strip()
+        sent, email_error = (False, None)
+        if wants_email:
+            sent, email_error = send_reset_email(
+                user, link, AppSettings.get().business_name, address=address or None,
+            )
+        if sent:
+            reset.sent_to = address or user.email
+            reset.save(update_fields=['sent_to'])
+
+        # Close off whatever the client asked for, so the request stops
+        # sitting in Jess's list once she has acted on it.
+        if request.data.get('request_id'):
+            PasswordResetRequest.objects.filter(pk=request.data['request_id']).update(
+                status=PasswordResetRequest.Status.SENT,
+                handled_by=request.user,
+                handled_at=timezone.now(),
+                issued_token=reset,
+            )
+
+        return Response(
+            {
+                **PasswordResetTokenSerializer(reset).data,
+                'token': reset.token,
+                'link': link,
+                'email': user.email,
+                'emailed': sent,
+                'email_configured': django_settings.EMAIL_ENABLED,
+                'email_error': email_error,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class PasswordResetRequestViewSet(viewsets.ModelViewSet):
+    """"I've forgotten my password", from someone who cannot sign in.
+
+    Creating one is open to anyone — that is the point, they are locked out —
+    so it is throttled hard and answers identically whether or not the
+    identifier matched anything. Confirming "no such account" would turn this
+    into a way to find out who banks with Mojo and Co.
+
+    Reading the list is superuser-only, and it is the one place the resolved
+    account is visible, because acting on a request means knowing whose it is.
+    """
+
+    queryset = PasswordResetRequest.objects.select_related('user', 'user__client')
+    serializer_class = PasswordResetRequestSerializer
+    permission_classes = [IsSuperUser]
+    http_method_names = ['get', 'post', 'head', 'options']
+
+    def get_permissions(self):
+        if self.action == 'create':
+            return [AllowAny()]
+        return super().get_permissions()
+
+    def get_throttles(self):
+        if self.action == 'create':
+            return [ForgottenPasswordThrottle()]
+        return super().get_throttles()
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        status_filter = self.request.query_params.get('status')
+        return queryset.filter(status=status_filter) if status_filter else queryset
+
+    def create(self, request, *args, **kwargs):
+        serializer = PublicPasswordResetRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        identifier = serializer.validated_data['identifier']
+
+        # The client record's email counts as well as the login's. Someone
+        # asking for help types the address Jess has on file for them, which
+        # for anyone who signed up before registration required an email is
+        # the only address that exists anywhere.
+        match = User.objects.filter(
+            Q(username__iexact=identifier)
+            | Q(email__iexact=identifier)
+            | Q(client__email__iexact=identifier)
+        ).first()
+        PasswordResetRequest.objects.create(
+            identifier=identifier,
+            user=match,
+            note=serializer.validated_data.get('note', ''),
+        )
+        # Same answer, matched or not. Worded so it is true either way.
+        return Response(
+            {
+                'detail': 'Thanks — Mojo and Co will be in touch with a link to set a '
+                          'new password. If you have a phone number on file, expect it there.',
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+    @action(detail=True, methods=['post'])
+    def dismiss(self, request, pk=None):
+        reset_request = self.get_object()
+        reset_request.status = PasswordResetRequest.Status.DISMISSED
+        reset_request.handled_by = request.user
+        reset_request.handled_at = timezone.now()
+        reset_request.save(update_fields=['status', 'handled_by', 'handled_at'])
+        return Response(self.get_serializer(reset_request).data)
+
+
+class PublicPasswordResetView(APIView):
+    """Setting a new password from a link. No login — the token is the credential.
+
+    Single-use and time-limited for the same reason an intake invite is: it
+    arrives over WhatsApp or email, both of which keep copies forever. A GET
+    reveals only the username the link is for, so the person can see they have
+    the right one before typing a password into it.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'password_reset'
+
+    def get_token(self, token):
+        return PasswordResetToken.objects.filter(token=token).select_related('user').first()
+
+    def unusable_response(self, reset):
+        if reset is None:
+            return Response({'detail': 'This link is not valid.'}, status=status.HTTP_404_NOT_FOUND)
+        reason = 'already been used' if reset.used_at else 'expired'
+        return Response(
+            {'detail': f'This link has {reason}. Please ask Mojo and Co for a new one.'},
+            status=status.HTTP_410_GONE,
+        )
+
+    def get(self, request, token):
+        reset = self.get_token(token)
+        if reset is None or not reset.is_usable:
+            return self.unusable_response(reset)
+        return Response({
+            'username': reset.user.username,
+            'expires_at': reset.expires_at,
+            'business_name': AppSettings.get().business_name,
+        })
+
+    def post(self, request, token):
+        reset = self.get_token(token)
+        if reset is None or not reset.is_usable:
+            return self.unusable_response(reset)
+
+        serializer = SetPasswordSerializer(data=request.data, context={'user': reset.user})
+        serializer.is_valid(raise_exception=True)
+
+        with transaction.atomic():
+            user = reset.user
+            user.set_password(serializer.validated_data['password'])
+            user.save(update_fields=['password'])
+            reset.used_at = timezone.now()
+            reset.save(update_fields=['used_at'])
+            # A reset is often "someone else has my password". Dropping the API
+            # tokens signs that someone out of every device they took it to,
+            # which changing the password alone would not do.
+            Token.objects.filter(user=user).delete()
+
+        return Response({
+            'detail': 'Your password is set. Sign in with it on the Mojo and Co app.',
+            'username': user.username,
+        })
+
+
+class PasswordResetFormView(APIView):
+    """The reset page, as a web page rather than an app screen.
+
+    Same reasoning as the intake form: whoever opens this cannot get into the
+    app — that is the whole problem — so the fix has to work in a browser, from
+    a link in a message, with nothing installed.
+
+    It posts to :class:`PublicPasswordResetView`, so expiry, single use and
+    password validation all stay in the tested API. The throttle scope is
+    separate from the submission's, because reloading the page must not spend
+    the budget for using it.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'password_reset_form'
+    renderer_classes = [TemplateHTMLRenderer]
+
+    def get(self, request, token):
+        reset = PasswordResetToken.objects.filter(token=token).select_related('user').first()
+        settings_row = AppSettings.get()
+
+        if reset is None or not reset.is_usable:
+            if reset is None:
+                message = 'This link is not valid.'
+            elif reset.used_at:
+                message = 'This link has already been used.'
+            else:
+                message = 'This link has expired.'
+            return Response(
+                {'message': message, 'settings': settings_row},
+                template_name='account/reset_unavailable.html',
+                status=status.HTTP_200_OK if reset else status.HTTP_404_NOT_FOUND,
+            )
+
+        return Response(
+            {
+                'token': token,
+                'username': reset.user.username,
+                'expires_at': reset.expires_at,
+                'settings': settings_row,
+            },
+            template_name='account/reset.html',
+        )
 
 
 # ── Clients ────────────────────────────────────────────────────────────
