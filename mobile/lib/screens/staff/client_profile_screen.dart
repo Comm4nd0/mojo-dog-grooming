@@ -203,7 +203,10 @@ class _ClientProfileScreenState extends State<ClientProfileScreen> {
             for (final dog in _dogs)
               ListTile(
                 leading: Icon(Icons.pets_outlined, color: context.mojo.accent),
-                title: Text(dog.name),
+                // Raised, but not to the size used where a dogs list is the
+                // whole screen — these sit under a section header on someone
+                // else's profile and shouldn't out-shout the client's own name.
+                title: Text(dog.name, style: AppColors.display(19, weight: FontWeight.w600)),
                 subtitle: Text(
                   '${dog.breedLabel} · ${formatDuration(dog.groomMinutes)} · '
                   '${formatMoney(dog.price)}',

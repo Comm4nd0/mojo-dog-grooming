@@ -146,7 +146,11 @@ class _MyDogsScreenState extends State<_MyDogsScreen> {
                                 style: AppColors.display(20, color: context.mojo.onTint),
                               ),
                             ),
-                            title: Text(dog.name),
+                            // The dog leads the row here the same way it does in
+                            // Doguments — a shade smaller because a ListTile is
+                            // tighter than that screen's hand-built row. No
+                            // colour, so it inherits onSurface.
+                            title: Text(dog.name, style: AppColors.display(21, weight: FontWeight.w600)),
                             subtitle: Text(
                               '${dog.breedLabel} · '
                               'groom every ${dog.scheduleWeeks} weeks',

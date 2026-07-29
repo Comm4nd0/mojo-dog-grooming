@@ -231,7 +231,10 @@ class _DogRow extends StatelessWidget {
                   Row(
                     children: [
                       Expanded(
-                        child: Text(dog.name, style: AppColors.display(19)),
+                        // The dog's name is what you scan this list for, so it
+                        // leads: a clear step up from the breed line under it
+                        // rather than a near-match in the same weight.
+                        child: Text(dog.name, style: AppColors.display(23, weight: FontWeight.w600)),
                       ),
                       // Null for a client login; the chip renders nothing.
                       TemperamentChip(
