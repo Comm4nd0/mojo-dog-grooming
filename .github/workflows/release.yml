@@ -1,0 +1,112 @@
+name: Release to the App Store
+
+# Tagging is the release. Pushing v1.10.0 starts an Xcode Cloud build (its own
+# start condition watches tags) and starts this, which waits for that build to
+# land in App Store Connect and then submits it for review with the release
+# notes from CHANGELOG.md.
+#
+# Ordinary pushes to main are untouched: they go to TestFlight, and nothing
+# reaches a customer without a tag.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, e.g. 1.10.0'
+        required: true
+      dry_run:
+        description: 'Read everything, submit nothing'
+        type: boolean
+        default: true
+
+concurrency:
+  # Two releases running at once would fight over the same App Store version.
+  group: appstore-release
+  cancel-in-progress: false
+
+jobs:
+  # The tag is a promise that this code is fit to ship. Checking takes two
+  # minutes; a bad release costs a day of Apple review to undo.
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install backend dependencies
+        run: pip install -r requirements.txt
+
+      - name: Backend tests
+        run: python manage.py test api
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.9'
+          channel: stable
+
+      - name: Flutter analyze and test
+        working-directory: mobile
+        run: |
+          flutter pub get
+          flutter analyze
+          flutter test
+
+  submit:
+    name: Submit to App Store Connect
+    needs: test
+    runs-on: ubuntu-latest
+    # No macOS runner needed: Xcode Cloud does the building, this only talks to
+    # the App Store Connect API.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install "PyJWT[crypto]" requests
+
+      - name: Work out which version this is
+        id: version
+        env:
+          # Through the environment rather than interpolated into the script:
+          # `${{ }}` is substituted as text before bash sees it, so an input
+          # containing a quote and a semicolon would run as commands here.
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          if [ -n "$INPUT_VERSION" ]; then
+            VERSION="${INPUT_VERSION#v}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          # The tag and pubspec.yaml must agree, or the binary Xcode Cloud
+          # builds carries a different version to the one being released here.
+          PUBSPEC=$(grep '^version:' mobile/pubspec.yaml | head -1 | sed 's/^version:[[:space:]]*//' | cut -d'+' -f1)
+          if [ "$VERSION" != "$PUBSPEC" ]; then
+            echo "::error::Releasing $VERSION but mobile/pubspec.yaml says $PUBSPEC. Use tools/release.sh."
+            exit 1
+          fi
+
+      - name: Submit
+        env:
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+          VERSION: ${{ steps.version.outputs.version }}
+          # A manual run defaults to a dry run; only a tag submits for real
+          # without anyone having to think about it.
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: |
+          ARGS=""
+          if [ "$DRY_RUN" = "true" ]; then ARGS="--dry-run"; fi
+          python tools/appstore_release.py --version "$VERSION" --wait-minutes 60 $ARGS

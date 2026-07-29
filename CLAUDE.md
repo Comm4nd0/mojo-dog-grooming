@@ -60,7 +60,8 @@ flutter run --dart-define=MOJO_API_BASE=http://192.168.1.20:8000/api
 
 Deploy:
 ```bash
-./deploy.sh
+./deploy.sh                      # backend, to the Hetzner host
+./tools/release.sh 1.11.0        # the app, to the App Store — see RELEASING.md
 ```
 
 ## Two rules that matter
@@ -237,6 +238,33 @@ each. The gesture uses `DragStartBehavior.down`; the default reports the positio
 ~18dp touch slop, which skips the cell the user actually pressed. Cells accumulate in the
 widget's own state during a drag, because several pointer moves can land in one frame and
 reading the parent's selection each time would drop all but the last.
+
+## A tag is the release
+
+Pushing to `main` goes to TestFlight. Pushing a `v1.11.0` tag goes to customers —
+Xcode Cloud builds it, `.github/workflows/release.yml` waits for the upload to finish
+processing, writes "What's New" from `CHANGELOG.md`, and submits for review with
+`releaseType: AFTER_APPROVAL`. Cut one with `./tools/release.sh`; the full setup is in
+`RELEASING.md`.
+
+Three things about this that are not obvious:
+
+- **The version users see comes from `pubspec.yaml`**, through `$(FLUTTER_BUILD_NAME)`
+  in `Info.plist`. `MARKETING_VERSION` in the Xcode project is on the *test* target and
+  ships nothing. pubspec said `0.1.0` while `1.9.13` was live, so any release built from
+  it would have been rejected — App Store Connect will not take a version string below
+  the one already out.
+- **Build numbers are minutes since 2026-01-01, not `CI_BUILD_NUMBER`.** That variable
+  counts per Xcode Cloud workflow, so the TestFlight and Release workflows each start at
+  1 and collide, and Apple rejects a build number it has seen before for a version.
+- **Submission runs on a Linux runner, not in Xcode Cloud.** A fresh upload sits in
+  PROCESSING for minutes to half an hour and nothing can be attached to a version until
+  it finishes. Xcode Cloud bills that wait and times out.
+
+The tag, `pubspec.yaml` and the `CHANGELOG.md` heading must agree — both CI scripts stop
+rather than ship a binary whose version contradicts its tag.
+
+Android is not shippable: `build.gradle.kts` signs release builds with the debug key.
 
 ## Host constraints
 

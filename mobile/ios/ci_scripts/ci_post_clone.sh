@@ -35,18 +35,56 @@ flutter precache --ios
 
 cd "$CI_PRIMARY_REPOSITORY_PATH/mobile"
 
+# ── Which version is being built ───────────────────────────────────────
+#
+# Two kinds of build reach this script and they must not be stamped the same:
+#
+#   * a push to main, which goes to TestFlight for Jess to try;
+#   * a v1.10.0 tag, which goes to the App Store for customers.
+#
+# The version users see comes from pubspec.yaml via $(FLUTTER_BUILD_NAME) in
+# Info.plist. On a tag build the tag is authoritative and pubspec must agree
+# with it — a tag that says 1.10.0 producing a binary that says 1.9.13 is the
+# kind of mistake nobody notices until a customer reports the old bug is back.
+PUBSPEC_VERSION=$(grep '^version:' pubspec.yaml | head -1 | sed 's/^version:[[:space:]]*//' | cut -d'+' -f1)
+
+if [ -n "$CI_TAG" ]; then
+    TAG_VERSION=$(echo "$CI_TAG" | sed 's/^v//')
+    if [ "$TAG_VERSION" != "$PUBSPEC_VERSION" ]; then
+        echo "!!! Tag $CI_TAG says $TAG_VERSION but pubspec.yaml says $PUBSPEC_VERSION."
+        echo "!!! Use tools/release.sh, which sets both together."
+        exit 1
+    fi
+    BUILD_NAME="$TAG_VERSION"
+    echo "=== Release build of $BUILD_NAME (tag $CI_TAG) ==="
+else
+    BUILD_NAME="$PUBSPEC_VERSION"
+    echo "=== TestFlight build of $BUILD_NAME (branch ${CI_BRANCH:-unknown}) ==="
+fi
+
+# CI_BUILD_NUMBER counts *per Xcode Cloud workflow*, so the TestFlight workflow
+# and the release workflow each start at 1 and will collide — and App Store
+# Connect rejects a build number it has already seen for a version. Minutes
+# since 2026-01-01 is monotonic, shared by every workflow and machine, and
+# cannot repeat, which is the only property that actually matters here.
+BUILD_NUMBER=$(( ($(date +%s) - 1767225600) / 60 ))
+
+echo "=== Checking the app still works before building it ==="
+# Cheap (a few seconds) next to an Xcode archive, and the last chance to stop a
+# broken build reaching customers without anyone looking at it.
+flutter pub get
+flutter analyze
+flutter test
+
 echo "=== Configuring the iOS build ==="
 # --config-only stops after writing Generated.xcconfig and running pod install,
-# which is all Xcode Cloud needs before it takes over with xcodebuild.
-#
-# --build-number is the part that matters for TestFlight. pubspec.yaml pins
-# `version: 0.1.0+1`, so every build would otherwise be uploaded as build 1 and
-# App Store Connect rejects a build number it has already seen — the second
-# upload onwards would fail. CI_BUILD_NUMBER increments per Xcode Cloud build,
-# and reaches CFBundleVersion through FLUTTER_BUILD_NUMBER in Generated.xcconfig.
+# which is all Xcode Cloud needs before it takes over with xcodebuild. Both
+# version fields reach the binary through that xcconfig.
 flutter build ios \
     --config-only \
     --release \
-    --build-number="$CI_BUILD_NUMBER"
+    --build-name="$BUILD_NAME" \
+    --build-number="$BUILD_NUMBER"
 
-echo "=== Ready: $(grep FLUTTER_BUILD_NUMBER ios/Flutter/Generated.xcconfig) ==="
+echo "=== Ready: $BUILD_NAME ($BUILD_NUMBER) ==="
+grep 'FLUTTER_BUILD_NAME\|FLUTTER_BUILD_NUMBER' ios/Flutter/Generated.xcconfig

@@ -67,7 +67,7 @@ notes) never appear in a client-facing payload.
 
 ## Deploying
 
-Target is the Hetzner host, port 8010, behind Caddy.
+**Backend** — the Hetzner host, port 8010, behind Caddy.
 
 ```bash
 cp .env.example .env          # fill in the secrets
@@ -76,6 +76,19 @@ cp .env.example .env          # fill in the secrets
 
 Then add the block from `Caddyfile` to the host's Caddy config. `app.mojoandco.uk` needs a DNS
 A record pointing at the host before a certificate can be issued.
+
+**App** — a tag is the release, and the only thing that reaches customers.
+
+```bash
+$EDITOR CHANGELOG.md          # what customers read on the App Store
+./tools/release.sh 1.11.0
+```
+
+Xcode Cloud builds the tag and uploads it; `.github/workflows/release.yml` then writes the
+release notes, attaches the build and submits for review, and it goes live on approval.
+Pushes to `main` go to TestFlight only. See [RELEASING.md](RELEASING.md) — including the
+one-time Xcode Cloud and App Store Connect API key setup, which has to be done before any of
+this runs.
 
 ## Notes for whoever picks this up
 

@@ -1,0 +1,68 @@
+name: Tests
+
+# Runs on everything that lands on main and on every pull request, so a broken
+# main is found in minutes rather than at the moment someone tries to cut a
+# release from it.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Django checks
+        run: python manage.py check
+
+      - name: Migrations are committed
+        # A model change without a migration runs fine locally against an
+        # already-migrated database and fails on the deploy, which is the worst
+        # place to find out.
+        run: python manage.py makemigrations --check --dry-run
+
+      - name: Tests
+        run: python manage.py test api
+
+  mobile:
+    name: Mobile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          # The same SDK ci_post_clone.sh pins, so CI and the App Store build
+          # cannot disagree about what compiles.
+          flutter-version: '3.41.9'
+          channel: stable
+          cache: true
+
+      - name: Dependencies
+        working-directory: mobile
+        run: flutter pub get
+
+      - name: Analyze
+        working-directory: mobile
+        run: flutter analyze
+
+      - name: Tests
+        working-directory: mobile
+        # Includes the silhouette goldens, which are the only check that the
+        # artwork still renders and the grid still lands on the right anatomy.
+        run: flutter test

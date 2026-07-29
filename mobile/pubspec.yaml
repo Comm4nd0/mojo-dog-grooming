@@ -1,7 +1,21 @@
 name: mojo_app
 description: "Mojo and Co — dog grooming management for staff and clients."
 publish_to: 'none'
-version: 0.1.0+1
+
+# The single source of truth for the version users see. `Info.plist` takes
+# CFBundleShortVersionString from $(FLUTTER_BUILD_NAME), which comes from here,
+# so this number is what appears on the App Store listing.
+#
+# It was 0.1.0 while 1.9.13 was live — a build from that would have been
+# rejected, because App Store Connect will not take a version string below the
+# one already released. Change it with `tools/release.sh`, which keeps it in
+# step with the git tag and the changelog rather than leaving three places to
+# remember.
+#
+# The build number after the + is a placeholder. CI replaces it with a
+# monotonic one, because App Store Connect refuses a build number it has
+# already seen and this file would otherwise upload as build 1 every time.
+version: 1.10.0+1
 
 environment:
   sdk: ^3.11.4
