@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../constants/app_colors.dart';
@@ -25,6 +27,7 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
 
   List<IntakeSubmission> _submissions = const [];
   List<ClaimRequest> _claims = const [];
+  List<ChangeRequest> _changes = const [];
   bool _loading = true;
   Object? _error;
 
@@ -39,10 +42,12 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
     try {
       final submissions = await _data.getIntakeSubmissions();
       final claims = await _data.getClaimRequests();
+      final changes = await _data.getChangeRequests(status: 'PENDING');
       if (!mounted) return;
       setState(() {
         _submissions = submissions;
         _claims = claims;
+        _changes = changes;
         _loading = false;
         _error = null;
       });
@@ -62,14 +67,16 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
     final pendingClaims = _claims.where((c) => c.status == 'PENDING').toList();
 
     return DefaultTabController(
-      length: 2,
+      length: 3,
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('Intake'),
+          title: const Text('Waiting for you'),
           bottom: TabBar(
+            isScrollable: true,
             tabs: [
               Tab(text: 'Forms (${pendingSubmissions.length})'),
               Tab(text: 'Claims (${pendingClaims.length})'),
+              Tab(text: 'Changes (${_changes.length})'),
             ],
           ),
         ),
@@ -81,10 +88,71 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
                     children: [
                       _submissionList(pendingSubmissions),
                       _claimList(pendingClaims),
+                      _changeList(),
                     ],
                   ),
       ),
     );
+  }
+
+  /// Clients asking Jess to correct their own details.
+  Widget _changeList() {
+    if (_changes.isEmpty) {
+      return const EmptyState(
+        icon: Icons.edit_note_outlined,
+        title: 'Nothing to check',
+        message: 'When a client edits their details it lands here first.',
+      );
+    }
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: ListView.separated(
+        itemCount: _changes.length,
+        separatorBuilder: (_, _) => const Divider(height: 1),
+        itemBuilder: (context, index) {
+          final change = _changes[index];
+          return ListTile(
+            isThreeLine: true,
+            title: Text(change.clientName),
+            subtitle: Text(change.summary),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  tooltip: 'Leave it as it is',
+                  onPressed: () => _decideChange(change, approve: false),
+                ),
+                IconButton(
+                  icon: Icon(Icons.check, color: context.mojo.accent),
+                  tooltip: 'Apply it',
+                  onPressed: () => _decideChange(change, approve: true),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _decideChange(ChangeRequest change, {required bool approve}) async {
+    try {
+      if (approve) {
+        await _data.approveChangeRequest(change.id);
+      } else {
+        await _data.rejectChangeRequest(change.id);
+      }
+    } catch (error) {
+      if (mounted) showSnack(context, error.toString(), isError: true);
+      return;
+    }
+    if (mounted) {
+      showSnack(context, approve ? 'Details updated.' : 'Left as they were.');
+    }
+    _load();
+    // Keep the badge on More honest without waiting for a resume.
+    unawaited(_data.getPending());
   }
 
   Widget _submissionList(List<IntakeSubmission> pending) {
@@ -453,7 +521,7 @@ class _ClientPickerSheetState extends State<_ClientPickerSheet> {
         : [
             for (final client in _clients)
               if (client.fullName.toLowerCase().contains(query) ||
-                  client.uid.toLowerCase().contains(query) ||
+                  (client.uid?.toLowerCase().contains(query) ?? false) ||
                   _squash(client.postcode).contains(_squash(query)))
                 client,
           ];

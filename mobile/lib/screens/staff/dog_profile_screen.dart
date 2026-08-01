@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../../constants/app_colors.dart';
 import '../../models/models.dart';
@@ -11,6 +12,7 @@ import '../../widgets/dog_silhouette.dart';
 import 'booking_form_screen.dart';
 import 'client_profile_screen.dart';
 import 'dog_form_screen.dart';
+import 'document_viewer_screen.dart';
 import 'dog_photos_screen.dart';
 import 'groom_timer_screen.dart';
 import 'problem_area_editor.dart';
@@ -31,6 +33,7 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
 
   Dog? _dog;
   List<DogPhoto> _photos = const [];
+  List<DogDocument> _documents = const [];
   List<GroomSession> _visits = const [];
   String? _nextGroomDue;
   bool _loading = true;
@@ -50,6 +53,14 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
     try {
       final dog = await _data.getDog(widget.dogId);
       final photos = await _data.getDogPhotos(widget.dogId);
+      // Clients see only what Jess has marked visible; the server filters
+      // that in the queryset, so this call is safe either way.
+      var documents = const <DogDocument>[];
+      try {
+        documents = await _data.getDogDocuments(widget.dogId);
+      } catch (_) {
+        // Paperwork is a nice-to-have on this screen, not the point of it.
+      }
       String? due;
       var visits = const <GroomSession>[];
       if (_isStaff) {
@@ -68,6 +79,7 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
       setState(() {
         _dog = dog;
         _photos = photos;
+        _documents = documents;
         _visits = visits;
         _nextGroomDue = due;
         _loading = false;
@@ -139,6 +151,7 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
           _healthSection(dog),
           if (_isStaff) _problemAreasSection(dog),
           _photosSection(dog),
+          _documentsSection(dog),
           if (_isStaff) _visitsSection(dog),
           if (dog.client != null) _ownerSection(dog.client!),
           _notesSection(dog),
@@ -392,6 +405,116 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
             ),
       ],
     );
+  }
+
+  /// Scanned paperwork — the original intake form, vaccination cards.
+  ///
+  /// Shown to the owner as well, which is what Jess asked for. Anything she
+  /// has marked private is filtered out server-side, so a client never even
+  /// sees the row.
+  Widget _documentsSection(Dog dog) {
+    if (!_isStaff && _documents.isEmpty) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SectionHeader(
+          title: 'Paperwork',
+          action: _isStaff
+              ? TextButton(onPressed: () => _addDocument(dog), child: const Text('ADD'))
+              : null,
+        ),
+        if (_documents.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Text(
+              'Nothing filed yet. Photograph the paper form and it lives here.',
+              style: TextStyle(fontSize: 12.5, color: context.mojo.muted),
+            ),
+          ),
+        for (final document in _documents)
+          ListTile(
+            leading: Icon(
+              document.contentType.contains('pdf')
+                  ? Icons.picture_as_pdf_outlined
+                  : Icons.image_outlined,
+              color: context.mojo.accent,
+            ),
+            title: Text(document.title),
+            subtitle: Text(
+              [
+                document.kindDisplay,
+                document.sizeLabel,
+                if (_isStaff && !document.visibleToClient) 'Not shown to the owner',
+              ].join(' · '),
+            ),
+            trailing: _isStaff
+                ? IconButton(
+                    icon: const Icon(Icons.delete_outline),
+                    tooltip: 'Delete',
+                    onPressed: () => _deleteDocument(document),
+                  )
+                : const Icon(Icons.download_outlined),
+            onTap: () => openDocument(context, document),
+          ),
+      ],
+    );
+  }
+
+  Future<void> _addDocument(Dog dog) async {
+    final picked = await ImagePicker().pickImage(
+      source: ImageSource.camera,
+      imageQuality: 85,
+    );
+    if (picked == null || !mounted) return;
+
+    final title = await promptForText(
+      context,
+      title: 'What is it?',
+      initialValue: 'Signed intake form',
+      confirmLabel: 'FILE IT',
+    );
+    if (title == null || title.isEmpty) return;
+
+    try {
+      await _data.uploadDogDocument(
+        dogId: dog.id,
+        filePath: picked.path,
+        title: title,
+      );
+    } catch (error) {
+      if (mounted) showSnack(context, error.toString(), isError: true);
+      return;
+    }
+    _load();
+  }
+
+  Future<void> _deleteDocument(DogDocument document) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Delete ${document.title}?'),
+        content: const Text('The file goes with it. This cannot be undone.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('KEEP IT'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            style: TextButton.styleFrom(foregroundColor: AppColors.error),
+            child: const Text('DELETE'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await _data.deleteDogDocument(document.id);
+    } catch (error) {
+      if (mounted) showSnack(context, error.toString(), isError: true);
+      return;
+    }
+    _load();
   }
 
   Widget _photosSection(Dog dog) {

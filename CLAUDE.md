@@ -38,11 +38,14 @@ mobile/lib/
   services/           api_client, auth_service, biometric_service, data_service, service_locator
   screens/            login_screen, lock_screen, account_switcher
   screens/staff/      doguments, dog/client profiles, calendar, timers, visit records,
-                      invoices, equipment, to-dos, logins
+                      invoices, services, equipment, to-dos, documents, logins
   screens/client/     my dogs, my bookings, my profile, claim profile
   widgets/            common.dart, dog_silhouette.dart, biometric_toggle.dart,
                       searchable_picker.dart, duration_picker.dart,
-                      contact_actions.dart, temperament_picker.dart
+                      contact_actions.dart, temperament_picker.dart,
+                      service_picker.dart
+  widgets/calendar/   the time-axis diary — metrics, layout, painter,
+                      day and week timelines
 ```
 
 ## Commands
@@ -50,7 +53,7 @@ mobile/lib/
 Backend:
 ```bash
 python manage.py migrate && python manage.py seed_breeds
-python manage.py test api        # 198 tests
+python manage.py test api        # 283 tests
 python manage.py runserver 0.0.0.0:8000
 python manage.py accounts        # who can sign in — usernames live only in the DB
 python manage.py reset_link jess # a way back in when the superuser is locked out
@@ -59,7 +62,7 @@ python manage.py reset_link jess # a way back in when the superuser is locked ou
 Mobile:
 ```bash
 cd mobile && flutter pub get
-flutter analyze && flutter test  # 106 tests
+flutter analyze && flutter test  # 135 tests
 flutter run --dart-define=MOJO_API_BASE=http://192.168.1.20:8000/api
 ```
 
@@ -375,6 +378,96 @@ Things worth knowing:
   things. Same rule as everywhere else here: null is not false, on both sides.
 - **`final_body` / `final_feet` / `final_tail` are what was *done*.** The `pref_*` fields on the
   dog are what the owner asked for at intake. Do not conflate them.
+
+## Services are a catalogue; ServiceType is still the category
+
+Jess listed thirteen things she does — Full Groom, Nail Clipping, Hand Stripping and the
+rest. They are `Service` rows, seeded by `seed_breeds`. A dog carries `default_services`
+(what it usually has); an appointment carries `services` (what is being done), and that
+drives the length and the quote through `resolve_slot()`.
+
+**`ServiceType` was not replaced by it**, and must not be. It stays as the coarse category
+for three reasons: `GroomSession.visit_type` is a *paper-card discriminator* and one model
+exists precisely so a dog's history isn't split; `apply_to_dog()` needs something to hang a
+guard off; and keeping it makes the whole thing additive — **an appointment with no services
+resolves byte-identically to one from before the catalogue existed**, which is the property
+that let it deploy ahead of the app build.
+
+Four things that are easy to get wrong:
+
+- **`Appointment.save()` cannot read `self.services`.** On a create there is no pk yet, and
+  DRF sets many-to-manys *after* `.save()`. Resolution happens in `apply_service_defaults()`,
+  called once the relation exists — from the serializer, from `BookingSeriesViewSet._materialise`
+  and from the admin's `save_related()`. Miss `_materialise` and a standing nail-trim series
+  blocks out three hours a fortnight forever.
+- **`save()` only defaults on insert.** It used to default on every save, so
+  `apply_service_defaults` would carefully work out "no price" and `save()` would immediately
+  replace it with the dog's groom price — quoting £50 for an unpriced service.
+- **`apply_to_dog()` guards on more than the visit type now.** Before the catalogue a GROOM
+  visit was always a whole groom; a 25-minute Tidy Up is one too, and letting that overwrite
+  a 105-minute `Dog.groom_minutes` is the old bug in a new coat.
+- **Every price and duration seeds blank** except Full Groom, which takes the dog's. Her price
+  list covers full grooms only. `get_or_create(code=...)` means a price she sets survives a
+  redeploy, and unlike breeds, **`--overwrite` must not touch price or duration** — for breeds
+  the grid is her source of truth, for services she is.
+
+`Dog.default_services` is **not** staff-only: it is what the owner asked for, and a client
+needs it to request the right kind of booking.
+
+## The diary is a time axis, not a list
+
+Jess: *"have it blocked out, as booking in multiple dogs it's a bit hard to continue booking
+without seeing the blocked out time for the clash, if you could hold to 'slide' a blocked out
+groom up and down"*. `widgets/calendar/` is that, built rather than pulled in.
+
+No package, deliberately. Every candidate imposes its own rounded-corner theming on an app
+whose brand rule is square, and — decisively — they expose `onDragEnd(newTime)` as
+accept-or-revert, which cannot express *show the server's warnings and move it anyway*.
+
+- `timeline_metrics.dart` — one `scale` drives every dimension. **72dp an hour** at scale 1.0;
+  a 20-minute nail visit clamps to `minBlockHeight` (26dp) so it stays tappable, a lie of
+  under two minutes of axis. Drags snap to **5** minutes, not 15 — she books 09:10.
+- `timeline_layout.dart` — pure, and the part worth testing directly. Overlapping bookings
+  form clusters and take lanes by **greedy first-fit**: each takes the lowest-numbered lane
+  free by the time it starts. Get that wrong and 09:00–10:00 / 09:30–10:30 / 10:15–11:00 looks
+  three deep when it is only ever two. ≤3 lanes cascade at 18dp so the earlier block's leading
+  edge stays visible (Jess's "still able to overlap a bit"); beyond that they split evenly.
+- Dragging is **not** `LongPressDraggable` — its feedback follows the finger in two dimensions
+  and cannot snap, so the block floats free then teleports. `Positioned.top` is driven from
+  state instead.
+- **Week view is read-only.** At ~49dp columns a two-axis drag is a coin flip between "move to
+  Tuesday" and "move 30 minutes", and Jess's own framing splits them: week to see, day to
+  slide.
+
+`next_available_slots()` in `scheduling.py` is her "next available appointment". It is the
+first code ever to read `AppSettings.booking_slot_buffer_minutes` — that setting existed from
+the start with no screen and no reader, which is exactly how it stayed dead; Settings now has
+a row for it. It returns `reason: 'no_opening_hours'` when the table is empty, because an
+empty list would read as "fully booked" when the real answer is "set your hours up".
+
+## Scanned paperwork is not a photo
+
+`DogDocument` is a separate model from `DogPhoto`, and its files live in
+`PRIVATE_MEDIA_ROOT` — a **sibling** of `MEDIA_ROOT`, never a child.
+
+Caddy serves `/media/*` with `file_server` and no authentication whatsoever. A dog photo is
+low stakes; a scanned intake form carries the client's name, address, postcode, phone,
+emergency contact, vet and **signature**, and obscurity fails the moment a URL lands in a
+browser history or a screenshot. They go out through a gated download view instead, and the
+serializer never emits `file` — a `FileField` would serialise a `MEDIA_URL` path that 404s but
+still discloses the layout.
+
+Uploads are checked by **magic bytes, not the browser's content type**, SVG is refused
+outright (scriptable, and inline rendering would be stored XSS on the API's own origin), and
+`upload_to` produces a random token so the filename cannot leak a client's name into a log.
+
+Two deployment facts: `docker-compose.prod.yml` mounts `./private-media` and Caddy must **not**;
+`deploy.sh`'s pre-deploy `pg_dump` covers the database only, so documents are not backed up.
+
+One trap found by its own test: **DRF turns a missing boolean into `False` for multipart form
+data.** `visible_to_client` arrived `False` on every upload, so every document Jess filed would
+have been invisible to the client — silently, and the opposite of the point.
+`AbsentMeansDefaultBooleanField` exists for that.
 
 ## A nails visit is not priced off the breed grid
 

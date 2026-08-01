@@ -5,11 +5,26 @@ import '../../constants/app_colors.dart';
 import '../../models/models.dart';
 import '../../services/data_service.dart';
 import '../../services/service_locator.dart';
+import '../../widgets/calendar/day_timeline.dart';
+import '../../widgets/calendar/timeline_metrics.dart';
+import '../../widgets/calendar/week_timeline.dart';
 import '../../widgets/common.dart';
 import 'booking_form_screen.dart';
 import 'dog_profile_screen.dart';
 
-/// The diary. Month and day views over the same data.
+/// How much of the diary is on screen at once.
+enum CalendarView { day, week, month }
+
+/// The diary.
+///
+/// Three views over the same data. **Day is the default**: it is the one Jess
+/// works from, and it is the one she asked to have blocked out on a time axis
+/// so a clash is visible while she is still booking.
+///
+/// The month grid is still `table_calendar` — it handles the six-week layout
+/// and the leading and trailing days of adjacent months correctly, and
+/// rewriting that buys nothing. The day and week views are built here, because
+/// no package could express "show the server's warnings and move it anyway".
 ///
 /// The to-do list used to be docked at the bottom of this screen; it lives
 /// under More now — see [TodosScreen] for why.
@@ -23,11 +38,16 @@ class CalendarScreen extends StatefulWidget {
 class _CalendarScreenState extends State<CalendarScreen> {
   final _data = getIt<DataService>();
 
-  CalendarFormat _format = CalendarFormat.month;
+  CalendarView _view = CalendarView.day;
   DateTime _focusedDay = DateTime.now();
   DateTime _selectedDay = DateTime.now();
 
   Map<DateTime, List<Appointment>> _byDay = {};
+  Map<int, (int, int)> _hoursByWeekday = const {};
+  Set<DateTime> _closures = const {};
+  TimelineMetrics _metrics = const TimelineMetrics();
+  DateTime _loadedMonth = DateTime(DateTime.now().year, DateTime.now().month);
+  int? _movingId;
   bool _loading = true;
   Object? _error;
 
@@ -45,9 +65,20 @@ class _CalendarScreenState extends State<CalendarScreen> {
       _error = null;
     });
     try {
-      final from = DateTime(_focusedDay.year, _focusedDay.month - 1, 1);
-      final to = DateTime(_focusedDay.year, _focusedDay.month + 2, 0);
+      final from = DateTime(_loadedMonth.year, _loadedMonth.month - 1, 1);
+      final to = DateTime(_loadedMonth.year, _loadedMonth.month + 2, 0);
       final appointments = await _data.getAppointments(from: from, to: to);
+      // Opening hours shade the closed parts of the day, and closures wash
+      // the whole thing. Both are advisory — a booking on a closed day still
+      // renders, because the rule warns and never blocks.
+      var hours = _hoursByWeekday;
+      var closures = _closures;
+      try {
+        hours = await _data.getOpeningHoursByWeekday();
+        closures = await _data.getClosureDates();
+      } catch (_) {
+        // The grid is still readable without the shading.
+      }
       if (!mounted) return;
 
       final grouped = <DateTime, List<Appointment>>{};
@@ -57,6 +88,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
       }
       setState(() {
         _byDay = grouped;
+        _hoursByWeekday = hours;
+        _closures = closures;
         _loading = false;
       });
     } catch (error) {
@@ -85,7 +118,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Calendar'),
+        title: Text(_title),
         actions: [
           IconButton(
             icon: const Icon(Icons.today_outlined),
@@ -96,6 +129,22 @@ class _CalendarScreenState extends State<CalendarScreen> {
             }),
           ),
         ],
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(48),
+          child: Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: SegmentedButton<CalendarView>(
+              segments: const [
+                ButtonSegment(value: CalendarView.day, label: Text('Day')),
+                ButtonSegment(value: CalendarView.week, label: Text('Week')),
+                ButtonSegment(value: CalendarView.month, label: Text('Month')),
+              ],
+              selected: {_view},
+              showSelectedIcon: false,
+              onSelectionChanged: (value) => setState(() => _view = value.first),
+            ),
+          ),
+        ),
       ),
       floatingActionButton: FloatingActionButton(
         // Straight to a new booking. It used to open a sheet offering
@@ -108,76 +157,346 @@ class _CalendarScreenState extends State<CalendarScreen> {
       ),
       body: _error != null && _byDay.isEmpty
           ? ErrorRetry(error: _error!, onRetry: _load)
-          : Column(
-              children: [
-                TableCalendar<Appointment>(
-                  firstDay: DateTime.utc(2020),
-                  lastDay: DateTime.utc(2035),
-                  focusedDay: _focusedDay,
-                  calendarFormat: _format,
-                  startingDayOfWeek: StartingDayOfWeek.monday,
-                  selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
-                  eventLoader: _eventsFor,
-                  availableCalendarFormats: const {
-                    CalendarFormat.month: 'Month',
-                    CalendarFormat.week: 'Day',
-                  },
-                  onFormatChanged: (format) => setState(() => _format = format),
-                  onDaySelected: (selected, focused) => setState(() {
-                    _selectedDay = selected;
-                    _focusedDay = focused;
-                  }),
-                  onPageChanged: (focused) {
-                    _focusedDay = focused;
-                    _load();
-                  },
-                  headerStyle: HeaderStyle(
-                    formatButtonShowsNext: false,
-                    titleTextStyle: AppColors.display(20),
-                    formatButtonDecoration: BoxDecoration(
-                      border: Border.all(color: context.mojo.accent),
-                    ),
-                    formatButtonTextStyle: TextStyle(
-                      fontSize: 12, fontWeight: FontWeight.w600, color: context.mojo.accent,
-                    ),
-                  ),
-                  calendarStyle: CalendarStyle(
-                    todayDecoration: BoxDecoration(
-                      color: context.mojo.tint,
-                      shape: BoxShape.rectangle,
-                    ),
-                    todayTextStyle: TextStyle(
-                      color: context.mojo.onTint, fontWeight: FontWeight.w700,
-                    ),
-                    // A filled block, so it takes the website's bright green
-                    // — the deep green is for text and icons. Black label,
-                    // never white: white on this green fails contrast badly.
-                    selectedDecoration: const BoxDecoration(
-                      color: AppColors.primaryBright,
-                      shape: BoxShape.rectangle,
-                    ),
-                    selectedTextStyle: const TextStyle(
-                      color: Colors.black,
-                      fontWeight: FontWeight.w700,
-                    ),
-                    markerDecoration: BoxDecoration(
-                      color: AppColors.primaryBright,
-                      shape: BoxShape.rectangle,
-                    ),
-                    markersMaxCount: 4,
-                    // Show the tail of last month and the head of next, so a
-                    // month that doesn't begin on a Monday still shows the
-                    // 30th and 31st in the row above the 1st. They stay
-                    // tappable — onDaySelected gets the real date.
-                    outsideDaysVisible: true,
-                    outsideTextStyle: TextStyle(color: context.mojo.muted),
-                  ),
-                ),
-                const Divider(height: 1),
-                Expanded(child: _dayList()),
-              ],
-            ),
+          : switch (_view) {
+              CalendarView.day => _dayView(),
+              CalendarView.week => _weekView(),
+              CalendarView.month => _monthView(),
+            },
     );
+  }
+
+  String get _title => switch (_view) {
+        CalendarView.day => formatDate(_selectedDay),
+        CalendarView.week => '${formatDate(_mondayOf(_selectedDay))} – '
+            '${formatDate(_mondayOf(_selectedDay).add(const Duration(days: 6)))}',
+        CalendarView.month => 'Calendar',
+      };
+
+  static DateTime _mondayOf(DateTime day) =>
+      DateTime(day.year, day.month, day.day)
+          .subtract(Duration(days: day.weekday - 1));
+
+  // ── Day ────────────────────────────────────────────────────────────
+
+  Widget _dayView() {
+    final closed = _closures.contains(_dayKey(_selectedDay));
+    final hours = _hoursByWeekday[_selectedDay.weekday];
+
+    return Column(
+      children: [
+        _dayStrip(),
+        const Divider(height: 1),
+        if (closed)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            color: AppColors.warning.withValues(alpha: 0.12),
+            child: const Text(
+              'Marked closed. Anything already booked still shows.',
+              style: TextStyle(fontSize: 12.5, color: AppColors.warning),
+            ),
+          ),
+        Expanded(
+          child: GestureDetector(
+            // Pinch changes the layout, not a pixel zoom, so a nail trim can
+            // be made thumb-sized without the text blurring. One finger is
+            // left alone so the timeline still scrolls.
+            onScaleUpdate: (details) {
+              if (details.pointerCount < 2) return;
+              setState(
+                () => _metrics = _metrics.withScale(_metrics.scale * details.scale),
+              );
+            },
+            child: DayTimeline(
+              key: ValueKey(_dayKey(_selectedDay)),
+              day: _selectedDay,
+              appointments: _eventsFor(_selectedDay),
+              metrics: _metrics,
+              openMinutes: hours?.$1,
+              closeMinutes: hours?.$2,
+              isClosedDay: closed,
+              movingId: _movingId,
+              onOpen: (appointment) => _openBooking(existing: appointment),
+              onCreateAt: (at) => _openBooking(at: at),
+              onMove: _move,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// A week of dates across the top, so changing day is one tap.
+  Widget _dayStrip() {
+    final monday = _mondayOf(_selectedDay);
+    return SizedBox(
+      height: 58,
+      child: Row(
+        children: [
+          IconButton(
+            icon: const Icon(Icons.chevron_left),
+            tooltip: 'Previous week',
+            onPressed: () =>
+                _selectDay(_selectedDay.subtract(const Duration(days: 7))),
+          ),
+          for (var i = 0; i < 7; i++)
+            Expanded(child: _dayChip(monday.add(Duration(days: i)))),
+          IconButton(
+            icon: const Icon(Icons.chevron_right),
+            tooltip: 'Next week',
+            onPressed: () => _selectDay(_selectedDay.add(const Duration(days: 7))),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _dayChip(DateTime day) {
+    final selected = _dayKey(day) == _dayKey(_selectedDay);
+    final count = _eventsFor(day).length;
+    return InkWell(
+      onTap: () => _selectDay(day),
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 1, vertical: 6),
+        color: selected ? context.mojo.tint : null,
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(
+              weekdayInitial(day.weekday),
+              style: TextStyle(
+                fontSize: 10,
+                color: selected ? context.mojo.onTint : context.mojo.muted,
+              ),
+            ),
+            Text(
+              '${day.day}',
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+                color: selected ? context.mojo.onTint : null,
+              ),
+            ),
+            SizedBox(
+              height: 6,
+              child: count == 0
+                  ? null
+                  : Container(
+                      width: 4,
+                      height: 4,
+                      margin: const EdgeInsets.only(top: 2),
+                      color: selected ? context.mojo.onTint : context.mojo.accent,
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _selectDay(DateTime day) {
+    setState(() {
+      _selectedDay = day;
+      _focusedDay = day;
+    });
+    _loadIfOutsideWindow(day);
+  }
+
+  // ── Week ───────────────────────────────────────────────────────────
+
+  Widget _weekView() {
+    return Column(
+      children: [
+        Row(
+          children: [
+            IconButton(
+              icon: const Icon(Icons.chevron_left),
+              tooltip: 'Previous week',
+              onPressed: () =>
+                  _selectDay(_selectedDay.subtract(const Duration(days: 7))),
+            ),
+            const Spacer(),
+            IconButton(
+              icon: const Icon(Icons.chevron_right),
+              tooltip: 'Next week',
+              onPressed: () => _selectDay(_selectedDay.add(const Duration(days: 7))),
+            ),
+          ],
+        ),
+        Expanded(
+          child: WeekTimeline(
+            weekStart: _mondayOf(_selectedDay),
+            appointmentsByDay: _byDay,
+            // Zoomed out by default so the whole week fits without scrolling
+            // — scanning is the point of this view.
+            metrics: const TimelineMetrics(scale: 0.55),
+            onOpen: (appointment) => _openBooking(existing: appointment),
+            onOpenDay: (day) => setState(() {
+              _selectedDay = day;
+              _view = CalendarView.day;
+            }),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ── Month ──────────────────────────────────────────────────────────
+
+  Widget _monthView() {
+    return Column(
+      children: [
+        TableCalendar<Appointment>(
+          firstDay: DateTime.utc(2020),
+          lastDay: DateTime.utc(2035),
+          focusedDay: _focusedDay,
+          calendarFormat: CalendarFormat.month,
+          startingDayOfWeek: StartingDayOfWeek.monday,
+          selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
+          eventLoader: _eventsFor,
+          availableCalendarFormats: const {CalendarFormat.month: 'Month'},
+          onDaySelected: (selected, focused) {
+            // Tapping the day you are already on drops into it — one extra
+            // tap, no extra chrome.
+            if (_dayKey(selected) == _dayKey(_selectedDay)) {
+              setState(() => _view = CalendarView.day);
+              return;
+            }
+            setState(() {
+              _selectedDay = selected;
+              _focusedDay = focused;
+            });
+          },
+          onPageChanged: (focused) {
+            _focusedDay = focused;
+            _loadIfOutsideWindow(focused);
+          },
+          headerStyle: HeaderStyle(
+            formatButtonVisible: false,
+            titleCentered: true,
+            titleTextStyle: AppColors.display(20),
+          ),
+          calendarStyle: CalendarStyle(
+            todayDecoration: BoxDecoration(
+              color: context.mojo.tint,
+              shape: BoxShape.rectangle,
+            ),
+            todayTextStyle: TextStyle(
+              color: context.mojo.onTint,
+              fontWeight: FontWeight.w700,
+            ),
+            // A filled block, so it takes the website's bright green — the
+            // deep green is for text and icons. Black label, never white:
+            // white on this green fails contrast badly.
+            selectedDecoration: const BoxDecoration(
+              color: AppColors.primaryBright,
+              shape: BoxShape.rectangle,
+            ),
+            selectedTextStyle: const TextStyle(
+              color: Colors.black,
+              fontWeight: FontWeight.w700,
+            ),
+            markerDecoration: const BoxDecoration(
+              color: AppColors.primaryBright,
+              shape: BoxShape.rectangle,
+            ),
+            markersMaxCount: 4,
+            // Show the tail of last month and the head of next, so a month
+            // that doesn't begin on a Monday still shows the 30th and 31st in
+            // the row above the 1st. They stay tappable — onDaySelected gets
+            // the real date.
+            outsideDaysVisible: true,
+            outsideTextStyle: TextStyle(color: context.mojo.muted),
+          ),
+        ),
+        const Divider(height: 1),
+        Expanded(child: _dayList()),
+      ],
+    );
+  }
+
+  // ── Moving a booking ───────────────────────────────────────────────
+
+  /// Commits a drag: check, confirm, PATCH, offer an undo.
+  ///
+  /// The warnings are advisory here exactly as they are when booking — "MOVE
+  /// ANYWAY" is always available. `excludeAppointmentId` is not optional:
+  /// without it every move overlaps itself and warns about the very booking
+  /// being dragged.
+  Future<void> _move(Appointment appointment, DateTime newStart) async {
+    final original = appointment.startAt;
+    final newEnd = newStart.add(Duration(minutes: appointment.durationMinutes));
+    setState(() => _movingId = appointment.id);
+
+    try {
+      final check = await _data.checkBooking(
+        dogId: appointment.dogId,
+        startAt: newStart,
+        endAt: newEnd,
+        excludeAppointmentId: appointment.id,
+        serviceType: appointment.serviceType,
+        serviceIds: appointment.serviceIds,
+      );
+      if (!mounted) return;
+
+      final proceed = await showWarningsDialog(
+        context,
+        check,
+        title: 'Before you move it',
+        confirmLabel: 'MOVE ANYWAY',
+        cancelLabel: 'PUT IT BACK',
+      );
+      if (!proceed) {
+        setState(() => _movingId = null);
+        return;
+      }
+
+      await _data.updateAppointment(appointment.id, {
+        'start_at': newStart.toUtc().toIso8601String(),
+        'end_at': newEnd.toUtc().toIso8601String(),
+      });
+      if (!mounted) return;
+      showSnackWithUndo(
+        context,
+        '${appointment.dogName} moved to ${formatTime(newStart)}.',
+        onUndo: () => _undoMove(appointment, original),
+      );
+    } catch (error) {
+      if (mounted) showSnack(context, error.toString(), isError: true);
+    } finally {
+      if (mounted) setState(() => _movingId = null);
+      _load();
+    }
+  }
+
+  Future<void> _undoMove(Appointment appointment, DateTime original) async {
+    try {
+      await _data.updateAppointment(appointment.id, {
+        'start_at': original.toUtc().toIso8601String(),
+        'end_at': original
+            .add(Duration(minutes: appointment.durationMinutes))
+            .toUtc()
+            .toIso8601String(),
+      });
+    } catch (error) {
+      if (mounted) showSnack(context, error.toString(), isError: true);
+    }
+    _load();
+  }
+
+  /// Refetch only when the date is near the edge of what is already loaded.
+  ///
+  /// `_load` used to run on every page change, so every swipe cost a round
+  /// trip. The window is a month either side, so day and week movement inside
+  /// it is free.
+  void _loadIfOutsideWindow(DateTime day) {
+    final from = DateTime(_loadedMonth.year, _loadedMonth.month - 1, 1);
+    final to = DateTime(_loadedMonth.year, _loadedMonth.month + 2, 0);
+    if (day.isBefore(from.add(const Duration(days: 7))) ||
+        day.isAfter(to.subtract(const Duration(days: 7)))) {
+      _loadedMonth = DateTime(day.year, day.month);
+      _load();
+    }
   }
 
   Widget _dayList() {

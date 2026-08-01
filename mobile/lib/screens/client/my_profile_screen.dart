@@ -88,6 +88,12 @@ class _MyProfileScreenState extends State<MyProfileScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Text('My details', style: Theme.of(context).textTheme.headlineSmall),
+              const SizedBox(height: 6),
+              Text(
+                'Changes are sent to Mojo and Co to check before they take '
+                'effect.',
+                style: TextStyle(fontSize: 12.5, color: context.mojo.muted),
+              ),
               const SizedBox(height: 16),
               MojoTextField(
                 controller: phone,
@@ -125,16 +131,32 @@ class _MyProfileScreenState extends State<MyProfileScreen> {
     );
 
     if (saved == true) {
-      try {
-        await _data.updateClient(client.id, {
-          'phone': phone.text.trim(),
-          'email': email.text.trim(),
-          'address': address.text.trim(),
-          'postcode': postcode.text.trim(),
-        });
+      // A request, not an edit. Everything else a client sends in — a
+      // booking, a claim, an intake form — is something Jess reviews; their
+      // own details were the one thing that changed unreviewed, which is what
+      // she asked about.
+      final changes = <String, dynamic>{
+        if (phone.text.trim() != client.phone) 'phone': phone.text.trim(),
+        if (email.text.trim() != client.email) 'email': email.text.trim(),
+        if (address.text.trim() != client.address) 'address': address.text.trim(),
+        if (postcode.text.trim() != client.postcode) 'postcode': postcode.text.trim(),
+      };
+      if (changes.isEmpty) {
+        if (mounted) showSnack(context, 'Nothing changed.');
+      } else {
+        try {
+          await _data.requestDetailChange(changes);
+          if (mounted) {
+            showSnack(
+              context,
+              'Sent to Mojo and Co. Your details change once they have '
+              'checked it.',
+            );
+          }
+        } catch (error) {
+          if (mounted) showSnack(context, error.toString(), isError: true);
+        }
         _load();
-      } catch (error) {
-        if (mounted) showSnack(context, error.toString(), isError: true);
       }
     }
     for (final controller in [phone, email, address, postcode]) {

@@ -161,6 +161,7 @@ class DataService {
     DateTime? endAt,
     int? excludeAppointmentId,
     String serviceType = ServiceType.groom,
+    List<int> serviceIds = const [],
   }) async {
     final payload = await _api.post('/appointments/check/', {
       'dog': dogId,
@@ -168,8 +169,31 @@ class DataService {
       'end_at': ?endAt?.toUtc().toIso8601String(),
       'exclude_appointment': ?excludeAppointmentId,
       'service_type': serviceType,
+      'services': serviceIds,
     });
     return BookingCheck.fromJson(payload as Map<String, dynamic>);
+  }
+
+  /// The first few free gaps long enough for this booking.
+  ///
+  /// Returns the raw payload: `slots`, plus `exhausted` and `reason` which the
+  /// caller has to honour. An empty list with `reason: no_opening_hours` means
+  /// "set your hours up", not "you are fully booked", and showing the same
+  /// blank list for both would be the app telling her something untrue.
+  Future<Map<String, dynamic>> nextAvailable({
+    required int dogId,
+    String serviceType = ServiceType.groom,
+    List<int> serviceIds = const [],
+    DateTime? from,
+    int count = 3,
+  }) async {
+    final payload = await _api.get('/appointments/next_available/', query: {
+      'dog': dogId,
+      'service_type': serviceType,
+      'count': count,
+      'from': from?.toIso8601String().split('T').first,
+    });
+    return payload as Map<String, dynamic>;
   }
 
   Future<Appointment> createAppointment({
@@ -178,6 +202,7 @@ class DataService {
     DateTime? endAt,
     String bookingType = 'ADHOC',
     String serviceType = ServiceType.groom,
+    List<int> serviceIds = const [],
     String notes = '',
   }) async {
     final payload = await _api.post('/appointments/', {
@@ -186,6 +211,7 @@ class DataService {
       'end_at': ?endAt?.toUtc().toIso8601String(),
       'booking_type': bookingType,
       'service_type': serviceType,
+      'services': serviceIds,
       'notes': notes,
     });
     return Appointment.fromJson(payload as Map<String, dynamic>);
@@ -249,6 +275,122 @@ class DataService {
   }
 
   // ── To-dos ─────────────────────────────────────────────────────────
+
+  /// What Jess does, in her order. Active services only.
+  Future<List<ServiceItem>> getServices() async {
+    final payload = await _api.get('/services/');
+    return ApiClient.resultsOf(payload).map(ServiceItem.fromJson).toList();
+  }
+
+  Future<void> updateService(int id, Map<String, dynamic> changes) =>
+      _api.patch('/services/$id/', changes);
+
+  /// How much is waiting for Jess, for the badge on More.
+  ///
+  /// Staff-only on the server, so this is never called for a client login.
+  static final ValueNotifier<int> pendingTotal = ValueNotifier<int>(0);
+
+  Future<PendingCounts> getPending() async {
+    final counts = PendingCounts.fromJson(
+      await _api.get('/pending/') as Map<String, dynamic>,
+    );
+    pendingTotal.value = counts.total;
+    return counts;
+  }
+
+  // ── Change requests ────────────────────────────────────────────────
+
+  Future<List<ChangeRequest>> getChangeRequests({String? status}) async {
+    final payload = await _api.get(
+      '/client-change-requests/',
+      query: {'status': ?status},
+    );
+    return ApiClient.resultsOf(payload).map(ChangeRequest.fromJson).toList();
+  }
+
+  /// Ask Jess to correct something. The server takes the client from the
+  /// session, so there is nothing to pass but the changes themselves.
+  Future<void> requestDetailChange(Map<String, dynamic> changes) =>
+      _api.post('/client-change-requests/', {'changes': changes});
+
+  Future<void> approveChangeRequest(int id) =>
+      _api.post('/client-change-requests/$id/approve/', {});
+
+  Future<void> rejectChangeRequest(int id) =>
+      _api.post('/client-change-requests/$id/reject/', {});
+
+  // ── Documents ──────────────────────────────────────────────────────
+
+  Future<List<DogDocument>> getDogDocuments(int dogId) async {
+    final payload = await _api.get('/dog-documents/', query: {'dog': '$dogId'});
+    return ApiClient.resultsOf(payload).map(DogDocument.fromJson).toList();
+  }
+
+  Future<DogDocument> uploadDogDocument({
+    required int dogId,
+    required String filePath,
+    required String title,
+    String kind = 'INTAKE_FORM',
+    bool visibleToClient = true,
+  }) async {
+    final payload = await _api.upload(
+      '/dog-documents/',
+      filePath: filePath,
+      field: 'file',
+      fields: {
+        'dog': '$dogId',
+        'title': title,
+        'kind': kind,
+        'visible_to_client': visibleToClient.toString(),
+      },
+    );
+    return DogDocument.fromJson(payload as Map<String, dynamic>);
+  }
+
+  Future<void> deleteDogDocument(int id) => _api.delete('/dog-documents/$id/');
+
+  /// The file itself, with the auth header attached.
+  Future<Uint8List> downloadDocument(int id) async =>
+      Uint8List.fromList(await _api.getBytes('/dog-documents/$id/download/'));
+
+  /// Opening hours keyed by weekday, Monday 1 — the shape the diary wants.
+  ///
+  /// A day with no row, or one marked closed, is simply absent: the timeline
+  /// shades a missing weekday entirely, because "no hours set" means "not
+  /// normally open", not "open all hours".
+  Future<Map<int, (int, int)>> getOpeningHoursByWeekday() async {
+    final rows = ApiClient.resultsOf(await _api.get('/opening-hours/'));
+    final hours = <int, (int, int)>{};
+    for (final row in rows) {
+      if (row['is_closed'] == true) continue;
+      final open = _minutesOfTime(row['open_time']?.toString());
+      final close = _minutesOfTime(row['close_time']?.toString());
+      if (open == null || close == null) continue;
+      // The API stores Monday as 0; DateTime.weekday is Monday 1.
+      final weekday = ((row['weekday'] as num?)?.toInt() ?? 0) + 1;
+      hours[weekday] = (open, close);
+    }
+    return hours;
+  }
+
+  Future<Set<DateTime>> getClosureDates() async {
+    final rows = ApiClient.resultsOf(await _api.get('/closures/'));
+    return {
+      for (final row in rows)
+        if (DateTime.tryParse(row['date']?.toString() ?? '') case final date?)
+          DateTime.utc(date.year, date.month, date.day),
+    };
+  }
+
+  static int? _minutesOfTime(String? value) {
+    if (value == null || value.isEmpty) return null;
+    final parts = value.split(':');
+    if (parts.length < 2) return null;
+    final hours = int.tryParse(parts[0]);
+    final minutes = int.tryParse(parts[1]);
+    if (hours == null || minutes == null) return null;
+    return hours * 60 + minutes;
+  }
 
   /// The five handling grades, easiest first.
   ///

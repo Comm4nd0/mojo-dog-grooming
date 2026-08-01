@@ -6,6 +6,7 @@ import '../../services/api_client.dart';
 import '../../services/data_service.dart';
 import '../../services/service_locator.dart';
 import '../../widgets/common.dart';
+import 'services_screen.dart';
 
 /// Business settings: client-facing invoicing, temperament limits, breeds.
 class SettingsScreen extends StatefulWidget {
@@ -100,6 +101,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         onTap: () => _editGrade(grade),
                       ),
 
+                    const SectionHeader(title: 'Gaps between bookings'),
+                    ListTile(
+                      dense: true,
+                      title: const Text('Leave a gap either side'),
+                      subtitle: const Text(
+                        'Used when the app suggests the next free slot',
+                      ),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            _settings!.bookingSlotBufferMinutes == 0
+                                ? 'None'
+                                : formatDuration(_settings!.bookingSlotBufferMinutes),
+                            style: TextStyle(color: context.mojo.muted),
+                          ),
+                          const SizedBox(width: 10),
+                          const Icon(Icons.edit_outlined, size: 18),
+                        ],
+                      ),
+                      onTap: _editBuffer,
+                    ),
+
                     const SectionHeader(title: 'Nails, fleas and ticks'),
                     Padding(
                       padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
@@ -172,6 +196,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         ),
                         onTap: () => _editHours(day),
                       ),
+
+                    const SectionHeader(title: 'Services'),
+                    ListTile(
+                      leading: Icon(Icons.content_cut_outlined, color: context.mojo.accent),
+                      title: const Text('What you do, and what it costs'),
+                      subtitle: const Text(
+                        'Full groom, nail clipping, hand stripping and the rest',
+                      ),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const ServicesScreen()),
+                      ),
+                    ),
 
                     const SectionHeader(title: 'Breeds'),
                     ListTile(
@@ -361,6 +398,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
   /// renaming has to be hers to do. Only the label and the cap are editable —
   /// the code underneath is what every dog stores, and repointing it would
   /// silently regrade a dog.
+  /// The gap either side of a booking when hunting for a free slot.
+  ///
+  /// This setting has existed since the first version and until now was read
+  /// by nothing at all — there was no screen for it and no code that used it.
+  /// It drives "next available" now, which is why it finally has one.
+  Future<void> _editBuffer() async {
+    final result = await promptForText(
+      context,
+      title: 'Gap between bookings',
+      initialValue: _settings!.bookingSlotBufferMinutes == 0
+          ? ''
+          : _settings!.bookingSlotBufferMinutes.toString(),
+      labelText: 'Minutes',
+      helperText: 'Leave blank for none — time to clean up between dogs',
+      keyboardType: TextInputType.number,
+    );
+    if (result == null) return;
+    await _data.updateSettings({
+      'booking_slot_buffer_minutes': result.isEmpty ? 0 : int.tryParse(result) ?? 0,
+    });
+    _load();
+  }
+
   Future<void> _editGrade(TemperamentGrade grade) async {
     final label = TextEditingController(text: grade.label);
     final cap = TextEditingController(text: grade.maxPerDay?.toString() ?? '');

@@ -322,12 +322,18 @@ class ErrorRetry extends StatelessWidget {
 ///
 /// The affirmative action is always available — these warnings inform the
 /// decision, they never take it away.
-Future<bool> showWarningsDialog(BuildContext context, BookingCheck check) async {
+Future<bool> showWarningsDialog(
+  BuildContext context,
+  BookingCheck check, {
+  String title = 'Before you book',
+  String confirmLabel = 'BOOK ANYWAY',
+  String cancelLabel = 'GO BACK',
+}) async {
   if (!check.hasWarnings) return true;
   final confirmed = await showDialog<bool>(
     context: context,
     builder: (context) => AlertDialog(
-      title: const Text('Before you book'),
+      title: Text(title),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -349,17 +355,45 @@ Future<bool> showWarningsDialog(BuildContext context, BookingCheck check) async 
       actions: [
         TextButton(
           onPressed: () => Navigator.of(context).pop(false),
-          child: const Text('GO BACK'),
+          child: Text(cancelLabel),
         ),
+        // Never disabled, under any condition. Every rule in scheduling.py
+        // warns and none of them refuse, and this button is where that
+        // promise is kept.
         ElevatedButton(
           onPressed: () => Navigator.of(context).pop(true),
-          child: const Text('BOOK ANYWAY'),
+          child: Text(confirmLabel),
         ),
       ],
     ),
   );
   return confirmed ?? false;
 }
+
+/// A snackbar with a way back.
+///
+/// Used after a booking is dragged to a new time: a finger slips, and without
+/// this the only way back is remembering what the old time was.
+void showSnackWithUndo(
+  BuildContext context,
+  String message, {
+  required VoidCallback onUndo,
+}) {
+  ScaffoldMessenger.of(context)
+    ..hideCurrentSnackBar()
+    ..showSnackBar(
+      SnackBar(
+        content: Text(message),
+        duration: const Duration(seconds: 6),
+        action: SnackBarAction(label: 'UNDO', onPressed: onUndo),
+      ),
+    );
+}
+
+/// Monday to Sunday, one letter each. Shared by the day strip and the week
+/// header so they cannot drift apart.
+String weekdayInitial(int weekday) =>
+    const ['M', 'T', 'W', 'T', 'F', 'S', 'S'][weekday - 1];
 
 void showSnack(BuildContext context, String message, {bool isError = false}) {
   ScaffoldMessenger.of(context)

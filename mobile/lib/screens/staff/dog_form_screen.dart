@@ -7,6 +7,7 @@ import '../../services/service_locator.dart';
 import '../../widgets/common.dart';
 import '../../widgets/dog_silhouette.dart';
 import '../../widgets/searchable_picker.dart';
+import '../../widgets/service_picker.dart';
 import '../../widgets/temperament_picker.dart';
 import 'problem_area_editor.dart';
 
@@ -51,6 +52,8 @@ class _DogFormScreenState extends State<DogFormScreen> {
   List<ClientRecord> _clients = const [];
   List<Breed> _breeds = const [];
   List<TemperamentGrade> _grades = TemperamentChipLabels.fallback;
+  List<ServiceItem> _services = const [];
+  Set<int> _defaultServices = {};
   int? _clientId;
   int? _breedId;
   String _temperament = 'EASY';
@@ -97,6 +100,7 @@ class _DogFormScreenState extends State<DogFormScreen> {
     _temperament = dog?.temperament ?? 'EASY';
     _sex = dog?.sex ?? '';
     _isNeutered = dog?.isNeutered;
+    _defaultServices = {...?dog?.defaultServices};
     _isActive = dog?.isActive ?? true;
     _dateOfBirth = dog?.dateOfBirth;
     _loadReferenceData();
@@ -127,11 +131,18 @@ class _DogFormScreenState extends State<DogFormScreen> {
       } catch (_) {
         // Left on the fallback.
       }
+      List<ServiceItem> services = const [];
+      try {
+        services = await _data.getServices();
+      } catch (_) {
+        // The rest of the form is still usable without the catalogue.
+      }
       if (!mounted) return;
       setState(() {
         _clients = clients;
         _breeds = breeds;
         if (grades.isNotEmpty) _grades = grades;
+        _services = services;
         _loading = false;
       });
     } catch (error) {
@@ -245,6 +256,7 @@ class _DogFormScreenState extends State<DogFormScreen> {
       'last_vet_visit': _lastVetVisit.text.trim(),
       'owner_grooming': _ownerGrooming.text.trim(),
       'general_notes': _generalNotes.text.trim(),
+      'default_services': _defaultServices.toList(),
       for (final entry in _prefs.entries) entry.key: entry.value.text.trim(),
     };
 
@@ -503,6 +515,24 @@ class _DogFormScreenState extends State<DogFormScreen> {
             ),
 
             const SectionHeader(title: 'Grooming preferences'),
+            // Services first, as Jess asked — "at the top of the list would we
+            // be able to have a drop down list of services/type of groom".
+            // Prices are hidden here: this is what the dog usually has, not
+            // what a particular visit costs.
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Text(
+                'What this dog usually has. Pre-fills a new booking.',
+                style: TextStyle(fontSize: 12.5, color: context.mojo.muted),
+              ),
+            ),
+            ServicePicker(
+              services: _services,
+              selected: _defaultServices,
+              showPrices: false,
+              onChanged: (next) => setState(() => _defaultServices = next),
+            ),
+            const SizedBox(height: 14),
             for (final entry in _prefs.entries) ...[
               MojoTextField(
                 controller: entry.value,

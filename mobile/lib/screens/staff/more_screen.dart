@@ -16,8 +16,46 @@ import 'staff_shell.dart';
 import 'todos_screen.dart';
 
 /// Everything that isn't the dog list or the diary.
-class MoreScreen extends StatelessWidget {
+class MoreScreen extends StatefulWidget {
   const MoreScreen({super.key});
+
+  @override
+  State<MoreScreen> createState() => _MoreScreenState();
+}
+
+class _MoreScreenState extends State<MoreScreen> with WidgetsBindingObserver {
+  final _data = getIt<DataService>();
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _refreshCounts();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // There are no notifications of any kind, so a booking request only
+    // surfaces when Jess opens the app. Refreshing on resume is what makes
+    // the badge worth having at all.
+    if (state == AppLifecycleState.resumed) _refreshCounts();
+  }
+
+  Future<void> _refreshCounts() async {
+    try {
+      await _data.getPending();
+      await _data.getTodos();
+    } catch (_) {
+      // A stale badge is better than an error on a screen that is mostly
+      // navigation.
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -40,9 +78,10 @@ class MoreScreen extends StatelessWidget {
           _tile(
             context,
             icon: Icons.assignment_outlined,
-            title: 'Intake forms',
-            subtitle: 'Review new client submissions and profile claims',
+            title: 'Waiting for you',
+            subtitle: 'Intake forms, profile claims and detail changes',
             builder: (_) => const IntakeReviewScreen(),
+            badge: DataService.pendingTotal,
           ),
           _tile(
             context,

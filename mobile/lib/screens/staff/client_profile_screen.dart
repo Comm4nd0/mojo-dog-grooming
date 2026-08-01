@@ -140,7 +140,10 @@ class _ClientProfileScreenState extends State<ClientProfileScreen> {
                   spacing: 6,
                   runSpacing: 6,
                   children: [
-                    InfoTag(label: client.uid, icon: Icons.tag),
+                    // Staff-only screen, but the field is nullable now that
+                    // the server withholds it from clients.
+                    if ((client.uid ?? '').isNotEmpty)
+                      InfoTag(label: client.uid!, icon: Icons.tag),
                     if (client.chatty == true)
                       const InfoTag(label: 'Chatty', icon: Icons.chat_bubble_outline),
                     if (client.hasLogin)

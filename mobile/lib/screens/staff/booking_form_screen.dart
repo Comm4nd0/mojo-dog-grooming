@@ -7,6 +7,7 @@ import '../../services/service_locator.dart';
 import '../../widgets/common.dart';
 import '../../widgets/duration_picker.dart';
 import '../../widgets/searchable_picker.dart';
+import '../../widgets/service_picker.dart';
 
 /// Create or edit a booking.
 ///
@@ -44,6 +45,8 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
   String _bookingType = 'ADHOC';
   String _serviceType = ServiceType.groom;
   AppSettings? _settings;
+  List<ServiceItem> _services = const [];
+  Set<int> _selectedServices = {};
   String _status = 'BOOKED';
 
   // A repeating booking creates a BookingSeries, which materialises
@@ -72,6 +75,7 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
       _durationMinutes = appointment.durationMinutes;
       _bookingType = appointment.bookingType;
       _serviceType = appointment.serviceType;
+      _selectedServices = {...appointment.serviceIds};
       _status = appointment.status;
       _notes.text = appointment.notes;
     } else {
@@ -90,6 +94,13 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
   Future<void> _loadDogs() async {
     try {
       final dogs = await _data.getDogs();
+      List<ServiceItem> services = const [];
+      try {
+        services = await _data.getServices();
+      } catch (_) {
+        // The form still works without the catalogue; a booking with no
+        // services attached behaves exactly as it did before it existed.
+      }
       AppSettings? settings;
       try {
         settings = await _data.getSettings();
@@ -99,6 +110,7 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
       if (!mounted) return;
       setState(() {
         _dogs = dogs;
+        _services = services;
         _settings = settings;
         _loading = false;
         // Size the slot to a dog we were handed — arriving from a dog's
@@ -129,6 +141,42 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
 
   DateTime get _endAt => _startAt.add(Duration(minutes: _durationMinutes));
 
+  /// Tick whatever this dog usually has, so the common booking is one tap.
+  Future<void> _prefillFromDog(int dogId) async {
+    try {
+      final dog = await _data.getDog(dogId);
+      if (!mounted || dog.defaultServices.isEmpty) return;
+      setState(() => _selectedServices = {...dog.defaultServices});
+      _resizeFromServices();
+    } catch (_) {
+      // Nothing pre-filled; Jess ticks them herself.
+    }
+  }
+
+  /// Ask the server what this combination costs and how long it takes.
+  ///
+  /// The same resolver the booking itself will use, so what the form shows is
+  /// what gets saved — rather than the app doing its own arithmetic and
+  /// disagreeing with the server about an unpriced service.
+  Future<void> _resizeFromServices() async {
+    final dogId = _dogId;
+    if (dogId == null) return;
+    try {
+      final check = await _data.checkBooking(
+        dogId: dogId,
+        startAt: _startAt,
+        excludeAppointmentId: widget.appointment?.id,
+        serviceType: _serviceType,
+        serviceIds: _selectedServices.toList(),
+      );
+      final end = check.suggestedEndAt;
+      if (!mounted || end == null) return;
+      setState(() => _durationMinutes = end.difference(_startAt).inMinutes);
+    } catch (_) {
+      // Leave the duration as it is rather than guessing.
+    }
+  }
+
   Future<void> _save() async {
     if (_dogId == null) {
       showSnack(context, 'Choose a dog first.', isError: true);
@@ -142,6 +190,7 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
         endAt: _endAt,
         excludeAppointmentId: widget.appointment?.id,
         serviceType: _serviceType,
+        serviceIds: _selectedServices.toList(),
       );
       if (!mounted) return;
 
@@ -159,6 +208,7 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
           'end_at': _endAt.toUtc().toIso8601String(),
           'booking_type': _bookingType,
           'service_type': _serviceType,
+          'services': _selectedServices.toList(),
           'status': _status,
           'notes': _notes.text.trim(),
         });
@@ -178,6 +228,7 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
           endAt: _endAt,
           bookingType: _bookingType,
           serviceType: _serviceType,
+          serviceIds: _selectedServices.toList(),
           notes: _notes.text.trim(),
         );
       }
@@ -186,6 +237,94 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
       if (!mounted) return;
       setState(() => _busy = false);
       showSnack(context, error.toString(), isError: true);
+    }
+  }
+
+  /// Offers the first few free gaps, and fills the form in from whichever
+  /// Jess picks.
+  Future<void> _findNextFree() async {
+    final dogId = _dogId;
+    if (dogId == null) return;
+    setState(() => _busy = true);
+    Map<String, dynamic> result;
+    try {
+      result = await _data.nextAvailable(
+        dogId: dogId,
+        serviceType: _serviceType,
+        serviceIds: _selectedServices.toList(),
+        from: _date,
+      );
+    } catch (error) {
+      if (mounted) showSnack(context, error.toString(), isError: true);
+      return;
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+    if (!mounted) return;
+
+    // An empty list means different things and the app must not conflate
+    // them: no opening hours at all is "set them up", not "fully booked".
+    if (result['reason'] == 'no_opening_hours') {
+      showSnack(
+        context,
+        'Set your opening hours in Settings first — the app has nothing to '
+        'search.',
+        isError: true,
+      );
+      return;
+    }
+
+    final slots = (result['slots'] as List?) ?? const [];
+    if (slots.isEmpty) {
+      showSnack(context, 'Nothing free in the next couple of months.');
+      return;
+    }
+
+    final picked = await showModalBottomSheet<DateTime>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              title: Text(
+                'Next free slots',
+                style: Theme.of(sheetContext).textTheme.titleMedium,
+              ),
+              subtitle: Text(
+                formatDuration((result['minutes'] as num?)?.toInt() ?? _durationMinutes),
+              ),
+            ),
+            const Divider(height: 1),
+            for (final slot in slots)
+              if (DateTime.tryParse(slot['start_at'].toString())?.toLocal()
+                  case final start?)
+                ListTile(
+                  leading: Icon(Icons.event_available_outlined,
+                      color: sheetContext.mojo.accent),
+                  title: Text(formatTime(start)),
+                  subtitle: Text('${slot['weekday']} ${formatDate(start)}'),
+                  onTap: () => Navigator.pop(sheetContext, start),
+                ),
+            if (result['exhausted'] == true)
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text(
+                  'Nothing else free before then.',
+                  style: TextStyle(fontSize: 12.5, color: sheetContext.mojo.muted),
+                ),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+
+    if (picked != null) {
+      setState(() {
+        _date = picked;
+        _time = TimeOfDay.fromDateTime(picked);
+      });
     }
   }
 
@@ -251,6 +390,7 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
                 // Re-size the slot to the newly chosen dog's groom time.
                 if (dog != null && !_isEditing) _durationMinutes = dog.groomMinutes;
               });
+              if (dog != null && !_isEditing) _prefillFromDog(dog.id);
             },
           ),
           if (dog != null)
@@ -354,7 +494,32 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
             ),
           ),
 
-          const SectionHeader(title: 'Service'),
+          const SizedBox(height: 12),
+          if (_dogId != null)
+            OutlinedButton.icon(
+              onPressed: _busy ? null : _findNextFree,
+              icon: const Icon(Icons.search, size: 18),
+              label: const Text('FIND THE NEXT FREE SLOT'),
+            ),
+
+          const SectionHeader(title: "What's being done"),
+          ServicePicker(
+            services: _services,
+            selected: _selectedServices,
+            onChanged: (next) {
+              setState(() => _selectedServices = next);
+              _resizeFromServices();
+            },
+          ),
+
+          const SectionHeader(title: 'Record card'),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Text(
+              'Which of your two cards you fill in afterwards.',
+              style: TextStyle(fontSize: 12.5, color: context.mojo.muted),
+            ),
+          ),
           SegmentedButton<String>(
             segments: const [
               ButtonSegment(value: ServiceType.groom, label: Text('Groom')),

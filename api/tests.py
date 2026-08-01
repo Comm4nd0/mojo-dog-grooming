@@ -1465,6 +1465,123 @@ class NeuterUnknownTests(BaseAPITestCase):
         self.assertIs(Dog.objects.get(name='Bramble').is_neutered, True)
 
 
+class NextAvailableTests(BaseAPITestCase):
+    """"Next available appointment" — Jess's words.
+
+    Her opening hours, minus closures, minus what is booked, minus a gap
+    either side. That gap is `booking_slot_buffer_minutes`, which had existed
+    since the first version and was read by nothing at all; this is what
+    finally uses it, and Settings is where she sets it.
+    """
+
+    def setUp(self):
+        super().setUp()
+        for weekday in range(5):
+            OpeningHours.objects.create(
+                weekday=weekday, open_time=time(9, 0), close_time=time(17, 0),
+            )
+        OpeningHours.objects.create(weekday=5, is_closed=True)
+        OpeningHours.objects.create(weekday=6, is_closed=True)
+        # Fixed length, so the arithmetic in these tests is about the walk and
+        # not about the breed grid.
+        self.alice_dog.groom_minutes = 60
+        self.alice_dog.save()
+        self.monday = self._next_weekday(0)
+
+    @staticmethod
+    def _next_weekday(weekday):
+        day = timezone.localdate() + timedelta(days=1)
+        while day.weekday() != weekday:
+            day += timedelta(days=1)
+        return day
+
+    def _ask(self, **params):
+        query = '&'.join(f'{key}={value}' for key, value in params.items())
+        return self.staff_client.get(
+            f'/api/appointments/next_available/?dog={self.alice_dog.pk}&{query}'
+        )
+
+    def test_the_first_slot_is_when_she_opens(self):
+        response = self._ask(**{'from': self.monday.isoformat()})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        first = response.data['slots'][0]
+        self.assertEqual(first['date'], self.monday.isoformat())
+        self.assertEqual(timezone.localtime(first['start_at']).hour, 9)
+
+    def test_a_closed_weekday_is_skipped(self):
+        saturday = self._next_weekday(5)
+        response = self._ask(**{'from': saturday.isoformat(), 'count': 1})
+        self.assertNotEqual(response.data['slots'][0]['date'], saturday.isoformat())
+
+    def test_a_closure_day_is_skipped(self):
+        ClosureDay.objects.create(date=self.monday, reason='Bank holiday')
+        response = self._ask(**{'from': self.monday.isoformat(), 'count': 1})
+        self.assertNotEqual(response.data['slots'][0]['date'], self.monday.isoformat())
+
+    def test_a_booking_blocks_its_own_slot(self):
+        start = timezone.make_aware(
+            timezone.datetime.combine(self.monday, time(9, 0)),
+            timezone.get_current_timezone(),
+        )
+        Appointment.objects.create(
+            dog=self.alice_dog, start_at=start, status=AppointmentStatus.BOOKED,
+        )
+        response = self._ask(**{'from': self.monday.isoformat(), 'count': 1})
+        first = response.data['slots'][0]
+        self.assertGreaterEqual(timezone.localtime(first['start_at']).hour, 10)
+
+    def test_the_buffer_is_applied_after_a_booking(self):
+        settings_row = AppSettings.get()
+        settings_row.booking_slot_buffer_minutes = 30
+        settings_row.save()
+
+        start = timezone.make_aware(
+            timezone.datetime.combine(self.monday, time(9, 0)),
+            timezone.get_current_timezone(),
+        )
+        Appointment.objects.create(
+            dog=self.alice_dog, start_at=start, status=AppointmentStatus.BOOKED,
+        )
+        response = self._ask(**{'from': self.monday.isoformat(), 'count': 1})
+        first = timezone.localtime(response.data['slots'][0]['start_at'])
+        self.assertEqual(
+            (first.hour, first.minute), (10, 30),
+            'the booking ends at 10:00, plus a 30-minute gap',
+        )
+        self.assertEqual(response.data['buffer_minutes'], 30)
+
+    def test_slots_land_on_the_quarter_hour(self):
+        response = self._ask(**{'from': self.monday.isoformat(), 'count': 5})
+        for slot in response.data['slots']:
+            self.assertEqual(timezone.localtime(slot['start_at']).minute % 15, 0)
+
+    def test_it_says_so_when_no_hours_are_set(self):
+        OpeningHours.objects.all().delete()
+        response = self._ask(**{'from': self.monday.isoformat()})
+        self.assertEqual(
+            response.data['reason'], 'no_opening_hours',
+            'an empty list here would read as "fully booked" when the real '
+            'answer is "set your hours up"',
+        )
+        self.assertEqual(response.data['slots'], [])
+
+    def test_it_reports_running_out_of_horizon(self):
+        response = self._ask(
+            **{'from': self.monday.isoformat(), 'count': 10, 'horizon_days': 1},
+        )
+        self.assertTrue(response.data['exhausted'])
+
+    def test_a_client_cannot_ask(self):
+        response = self.alice_client.get(
+            f'/api/appointments/next_available/?dog={self.alice_dog.pk}'
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_it_needs_a_dog(self):
+        response = self.staff_client.get('/api/appointments/next_available/')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
 class ClientChangeRequestTests(BaseAPITestCase):
     """A client asking to correct their details is a request, not an edit.
 

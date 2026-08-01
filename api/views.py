@@ -96,7 +96,7 @@ from .models import (
     UserProfile,
 )
 from .passwords import build_reset_link, send_reset_email
-from .scheduling import booking_warnings
+from .scheduling import booking_warnings, next_available_slots
 from .serializers import (
     AccountSerializer,
     AppSettingsSerializer,
@@ -1061,6 +1061,55 @@ class AppointmentViewSet(ClientScopedMixin, viewsets.ModelViewSet):
             'suggested_end_at': suggested_end,
             'suggested_price': price,
             'unpriced_services': unpriced,
+        })
+
+    @action(detail=False, methods=['get'], permission_classes=[IsAdminUser])
+    def next_available(self, request):
+        """The first few gaps long enough for a booking.
+
+        Jess asked for an "option for next available appointment". Walks
+        forward from today over her opening hours, skipping closures and
+        anything already booked, leaving `booking_slot_buffer_minutes` either
+        side.
+        """
+        dog = Dog.objects.filter(pk=request.query_params.get('dog')).first()
+        if dog is None:
+            return Response(
+                {'detail': 'Choose a dog first.'}, status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        service_type = request.query_params.get('service_type') or ServiceType.GROOM
+        service_ids = [
+            int(value)
+            for value in request.query_params.getlist('services')
+            if str(value).isdigit()
+        ]
+        services = list(Service.objects.filter(pk__in=service_ids))
+
+        def as_int(name, default, ceiling):
+            try:
+                return max(1, min(int(request.query_params.get(name, default)), ceiling))
+            except (TypeError, ValueError):
+                return default
+
+        slots, exhausted, reason = next_available_slots(
+            dog,
+            service_type=service_type,
+            services=services,
+            from_date=parse_date(str(request.query_params.get('from'))),
+            count=as_int('count', 3, 10),
+            horizon_days=as_int('horizon_days', 60, 180),
+        )
+        minutes, _, _ = resolve_slot(dog, service_type, services)
+        return Response({
+            'minutes': minutes,
+            'buffer_minutes': AppSettings.get().booking_slot_buffer_minutes or 0,
+            'slots': slots,
+            # True when the horizon ran out. The app must say "nothing free
+            # before then" rather than showing a blank list, which reads as
+            # "fully booked forever".
+            'exhausted': exhausted,
+            'reason': reason,
         })
 
     @action(detail=False, methods=['get'])

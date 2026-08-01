@@ -94,6 +94,187 @@ class Breed {
       );
 }
 
+/// One thing Jess does — Full Groom, Nail Clipping, Hand Stripping.
+///
+/// [minutes] and [price] are **nullable and often null**: her price list
+/// covers full grooms only, so everything else is blank until she fills it in.
+/// Never render a null as a price. A service with [takesDogDefaults] is priced
+/// off the dog instead, i.e. off the breed grid.
+class ServiceItem {
+  final int id;
+  final String code;
+  final String name;
+
+  /// GROOM or NAILS — which record card this belongs to.
+  final String category;
+  final int? minutes;
+  final num? price;
+  final bool takesDogDefaults;
+  final int sortOrder;
+
+  const ServiceItem({
+    required this.id,
+    required this.code,
+    required this.name,
+    required this.category,
+    required this.minutes,
+    required this.price,
+    required this.takesDogDefaults,
+    required this.sortOrder,
+  });
+
+  factory ServiceItem.fromJson(Map<String, dynamic> json) => ServiceItem(
+        id: json['id'] as int,
+        code: json['code']?.toString() ?? '',
+        name: json['name']?.toString() ?? '',
+        category: json['category']?.toString() ?? ServiceType.groom,
+        minutes: (json['default_minutes'] as num?)?.toInt(),
+        price: json['default_price'] == null ? null : _num(json['default_price']),
+        takesDogDefaults: json['takes_dog_defaults'] == true,
+        sortOrder: (json['sort_order'] as num?)?.toInt() ?? 0,
+      );
+
+  /// What to show under the name. "Not set" rather than a made-up figure.
+  String get summary {
+    if (takesDogDefaults) return "The dog's own time and price";
+    final length = minutes == null ? 'Length not set' : formatDuration(minutes!);
+    final cost = price == null ? 'price not set' : formatMoney(price!);
+    return '$length · $cost';
+  }
+
+  bool get isPriced => takesDogDefaults || price != null;
+}
+
+/// A client's request to have their own details corrected.
+class ChangeRequest {
+  final int id;
+  final int clientId;
+  final String clientName;
+  final String requestedByUsername;
+  final Map<String, dynamic> changes;
+  final String status;
+  final DateTime? createdAt;
+
+  const ChangeRequest({
+    required this.id,
+    required this.clientId,
+    required this.clientName,
+    required this.requestedByUsername,
+    required this.changes,
+    required this.status,
+    this.createdAt,
+  });
+
+  factory ChangeRequest.fromJson(Map<String, dynamic> json) => ChangeRequest(
+        id: json['id'] as int,
+        clientId: (json['client'] as num?)?.toInt() ?? 0,
+        clientName: json['client_name']?.toString() ?? '',
+        requestedByUsername: json['requested_by_username']?.toString() ?? '',
+        changes: Map<String, dynamic>.from(json['changes'] as Map? ?? const {}),
+        status: json['status']?.toString() ?? 'PENDING',
+        createdAt: _dateTime(json['created_at']),
+      );
+
+  static const _labels = {
+    'first_name': 'First name',
+    'last_name': 'Last name',
+    'phone': 'Phone',
+    'email': 'Email',
+    'address': 'Address',
+    'postcode': 'Postcode',
+    'emergency_contact_name': 'Emergency contact',
+    'emergency_contact_phone': 'Their number',
+  };
+
+  static String labelFor(String field) => _labels[field] ?? field;
+
+  String get summary =>
+      changes.entries.map((e) => '${labelFor(e.key)}: ${e.value}').join('\n');
+}
+
+/// A scanned document filed against a dog.
+///
+/// [downloadUrl] is the only way to reach the file: it lives outside the
+/// publicly served media directory, because a scanned intake form carries the
+/// client's address, phone and signature.
+class DogDocument {
+  final int id;
+  final int dogId;
+  final String title;
+  final String kind;
+  final String kindDisplay;
+  final bool visibleToClient;
+  final String originalFilename;
+  final String contentType;
+  final int sizeBytes;
+  final String downloadUrl;
+  final DateTime? createdAt;
+
+  const DogDocument({
+    required this.id,
+    required this.dogId,
+    required this.title,
+    required this.kind,
+    required this.kindDisplay,
+    required this.visibleToClient,
+    required this.originalFilename,
+    required this.contentType,
+    required this.sizeBytes,
+    required this.downloadUrl,
+    this.createdAt,
+  });
+
+  factory DogDocument.fromJson(Map<String, dynamic> json) => DogDocument(
+        id: json['id'] as int,
+        dogId: (json['dog'] as num?)?.toInt() ?? 0,
+        title: json['title']?.toString() ?? '',
+        kind: json['kind']?.toString() ?? 'OTHER',
+        kindDisplay: json['kind_display']?.toString() ?? '',
+        visibleToClient: json['visible_to_client'] == true,
+        originalFilename: json['original_filename']?.toString() ?? '',
+        contentType: json['content_type']?.toString() ?? '',
+        sizeBytes: (json['size_bytes'] as num?)?.toInt() ?? 0,
+        downloadUrl: json['download_url']?.toString() ?? '',
+        createdAt: _dateTime(json['created_at']),
+      );
+
+  String get sizeLabel {
+    if (sizeBytes >= 1024 * 1024) {
+      return '${(sizeBytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
+    return '${(sizeBytes / 1024).round()} KB';
+  }
+}
+
+/// How much is waiting for Jess. Drives the badge on the More tab.
+class PendingCounts {
+  final int appointmentRequests;
+  final int intakeSubmissions;
+  final int claimRequests;
+  final int changeRequests;
+  final int passwordResetRequests;
+  final int total;
+
+  const PendingCounts({
+    this.appointmentRequests = 0,
+    this.intakeSubmissions = 0,
+    this.claimRequests = 0,
+    this.changeRequests = 0,
+    this.passwordResetRequests = 0,
+    this.total = 0,
+  });
+
+  factory PendingCounts.fromJson(Map<String, dynamic> json) => PendingCounts(
+        appointmentRequests: (json['appointment_requests'] as num?)?.toInt() ?? 0,
+        intakeSubmissions: (json['intake_submissions'] as num?)?.toInt() ?? 0,
+        claimRequests: (json['claim_requests'] as num?)?.toInt() ?? 0,
+        changeRequests: (json['change_requests'] as num?)?.toInt() ?? 0,
+        // Absent unless the signed-in user is a superuser.
+        passwordResetRequests: (json['password_reset_requests'] as num?)?.toInt() ?? 0,
+        total: (json['total'] as num?)?.toInt() ?? 0,
+      );
+}
+
 /// One handling grade: what Jess calls it, and how many she'll take a day.
 ///
 /// The five [code]s are fixed — every dog stores one — but the [label] is
@@ -158,7 +339,13 @@ class Consent {
 
 class ClientRecord {
   final int id;
-  final String uid;
+
+  /// Jess's filing reference, e.g. MOJO-001.
+  ///
+  /// Null for a client login — she asked for it to be hidden from them. Null
+  /// means "the server withheld it", the same as every other gated field, so
+  /// it must not be coerced to an empty string.
+  final String? uid;
   final String firstName;
   final String lastName;
   final String fullName;
@@ -206,7 +393,7 @@ class ClientRecord {
 
   factory ClientRecord.fromJson(Map<String, dynamic> json) => ClientRecord(
         id: json['id'] as int,
-        uid: json['uid']?.toString() ?? '',
+        uid: json['uid']?.toString(),
         firstName: json['first_name']?.toString() ?? '',
         lastName: json['last_name']?.toString() ?? '',
         fullName: json['full_name']?.toString() ?? '',
@@ -252,7 +439,8 @@ class DogSummary {
   final String name;
   final String? profileImage;
   final int clientId;
-  final String clientUid;
+  /// Null for a client login — see [ClientRecord.uid].
+  final String? clientUid;
   final String clientFirstName;
   final String clientFullName;
   final String clientPhone;
@@ -270,7 +458,7 @@ class DogSummary {
     required this.id,
     required this.name,
     required this.clientId,
-    required this.clientUid,
+    this.clientUid,
     required this.clientFirstName,
     required this.clientFullName,
     required this.clientPhone,
@@ -289,7 +477,7 @@ class DogSummary {
         name: json['name']?.toString() ?? '',
         profileImage: json['profile_image']?.toString(),
         clientId: (json['client'] as num?)?.toInt() ?? 0,
-        clientUid: json['client_uid']?.toString() ?? '',
+        clientUid: json['client_uid']?.toString(),
         clientFirstName: json['client_first_name']?.toString() ?? '',
         clientFullName: json['client_full_name']?.toString() ?? '',
         clientPhone: json['client_phone']?.toString() ?? '',
@@ -303,16 +491,23 @@ class DogSummary {
       );
 
   /// Everything the Doguments row shows after the name, in one line.
-  String get summaryLine =>
-      '$clientFirstName · $clientUid · ${formatDuration(groomMinutes)} · '
-      '${formatMoney(price)} · every ${scheduleWeeks}w';
+  ///
+  /// The UID is dropped when absent rather than rendered as a gap — a client
+  /// login would otherwise get 'Alice ·  · 1h 45m'.
+  String get summaryLine => [
+        clientFirstName,
+        ?clientUid,
+        formatDuration(groomMinutes),
+        formatMoney(price),
+        'every ${scheduleWeeks}w',
+      ].join(' · ');
 
   bool matchesSearch(String query) {
     final q = query.trim().toLowerCase();
     if (q.isEmpty) return true;
     return name.toLowerCase().contains(q) ||
         clientFullName.toLowerCase().contains(q) ||
-        clientUid.toLowerCase().contains(q) ||
+        (clientUid?.toLowerCase().contains(q) ?? false) ||
         clientPhone.replaceAll(' ', '').contains(q.replaceAll(' ', ''));
   }
 }
@@ -377,6 +572,10 @@ class Dog {
   final String prefEars;
   final String prefSkirt;
 
+  /// Ids of what this dog usually has done. Not staff-only — it is what the
+  /// owner asked for, and a client needs it to request the right booking.
+  final List<int> defaultServices;
+
   /// The paper booking card asks these separately rather than as one
   /// "anything medical?" box, so they are separate here too.
   final String allergies;
@@ -413,6 +612,7 @@ class Dog {
     required this.prefFace,
     required this.prefEars,
     required this.prefSkirt,
+    this.defaultServices = const [],
     required this.allergies,
     required this.medications,
     required this.medicalIssues,
@@ -466,6 +666,9 @@ class Dog {
         prefFace: json['pref_face']?.toString() ?? '',
         prefEars: json['pref_ears']?.toString() ?? '',
         prefSkirt: json['pref_skirt']?.toString() ?? '',
+        defaultServices: ((json['default_services'] as List?) ?? const [])
+            .map((id) => (id as num).toInt())
+            .toList(),
         allergies: json['allergies']?.toString() ?? '',
         medications: json['medications']?.toString() ?? '',
         medicalIssues: json['medical_issues']?.toString() ?? '',
@@ -564,6 +767,10 @@ class Appointment {
   /// rendering blank.
   final String? dogTemperamentDisplay;
 
+  /// What is being done. Empty on a booking made before the catalogue, in
+  /// which case the length and quote come from the dog as they always did.
+  final List<int> serviceIds;
+
   const Appointment({
     required this.id,
     required this.dogId,
@@ -581,6 +788,7 @@ class Appointment {
     this.priceQuoted,
     this.dogTemperament,
     this.dogTemperamentDisplay,
+    this.serviceIds = const [],
   });
 
   factory Appointment.fromJson(Map<String, dynamic> json) => Appointment(
@@ -600,6 +808,9 @@ class Appointment {
         notes: json['notes']?.toString() ?? '',
         dogTemperament: json['dog_temperament']?.toString(),
         dogTemperamentDisplay: json['dog_temperament_display']?.toString(),
+        serviceIds: ((json['services'] as List?) ?? const [])
+            .map((id) => (id as num).toInt())
+            .toList(),
       );
 
   String get timeRange => '${formatTime(startAt)} – ${formatTime(endAt)}';
@@ -985,6 +1196,11 @@ class AppSettings {
   final int? nailVisitMinutes;
   final num? nailVisitPrice;
 
+  /// Gap left either side of a booking when looking for the next free slot.
+  ///
+  /// Zero by default, so nothing changes until Jess sets one.
+  final int bookingSlotBufferMinutes;
+
   const AppSettings({
     required this.businessName,
     required this.contactPhone,
@@ -992,6 +1208,7 @@ class AppSettings {
     required this.invoicingVisibleToClients,
     this.nailVisitMinutes,
     this.nailVisitPrice,
+    this.bookingSlotBufferMinutes = 0,
   });
 
   factory AppSettings.fromJson(Map<String, dynamic> json) => AppSettings(
@@ -999,6 +1216,8 @@ class AppSettings {
         contactPhone: json['contact_phone']?.toString() ?? '',
         contactEmail: json['contact_email']?.toString() ?? '',
         invoicingVisibleToClients: json['invoicing_visible_to_clients'] == true,
+        bookingSlotBufferMinutes:
+            (json['booking_slot_buffer_minutes'] as num?)?.toInt() ?? 0,
         nailVisitMinutes: (json['nail_visit_minutes'] as num?)?.toInt(),
         // Deliberately not defaulted: a null price is "not set", not free.
         nailVisitPrice:

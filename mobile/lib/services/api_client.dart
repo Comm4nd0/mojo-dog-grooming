@@ -61,6 +61,24 @@ class ApiClient {
   Future<dynamic> get(String path, {Map<String, dynamic>? query}) =>
       _send(() => _http.get(_uri(path, query), headers: _headers()));
 
+  /// Fetch raw bytes with the auth header attached.
+  ///
+  /// Needed for document downloads: the file sits behind a token-checked view
+  /// (it is deliberately not under the publicly served media directory), so
+  /// handing the URL to the system browser would just 401. Putting the token
+  /// in the URL instead would defeat the point of gating it at all.
+  Future<List<int>> getBytes(String path) async {
+    try {
+      final response = await _http.get(_uri(path), headers: _headers(json: false));
+      if (response.statusCode >= 400) {
+        throw ApiException(response.statusCode, 'Could not fetch that file.');
+      }
+      return response.bodyBytes;
+    } on SocketException {
+      throw const NoConnectionException();
+    }
+  }
+
   Future<dynamic> post(String path, [Object? body]) => _send(
         () => _http.post(_uri(path), headers: _headers(), body: jsonEncode(body ?? {})),
       );

@@ -7,7 +7,7 @@ she regularly works outside them. The app shows these in a confirm dialog and
 the user decides.
 """
 
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 
 from django.utils import timezone
 
@@ -206,6 +206,155 @@ def service_category_warning(service_type, services=()):
             'record card to fill in afterwards.'
         ),
         'detail': {'service_type': service_type, 'categories': sorted(categories)},
+    }
+
+
+#: Slots are offered on the quarter hour — "10:00" and "10:15", never
+#: "10:07". Jess reads these off a screen and writes them on a card.
+SLOT_GRANULARITY_MINUTES = 15
+
+
+def _ceil_to(minutes, granularity):
+    return ((minutes + granularity - 1) // granularity) * granularity
+
+
+def next_available_slots(
+    dog,
+    service_type=ServiceType.GROOM,
+    services=(),
+    minutes=None,
+    from_date=None,
+    count=3,
+    max_per_day=2,
+    horizon_days=60,
+):
+    """Walk forward and find the first free gaps long enough for this booking.
+
+    Jess asked for an "option for next available appointment". This is the
+    answer to it: her opening hours, minus her closure days, minus what is
+    already booked, minus a gap either side.
+
+    That gap is ``AppSettings.booking_slot_buffer_minutes``, which has existed
+    since the first version and until now was **read by no code at all**. It
+    defaults to 0, so nothing changes until she sets one — and it is surfaced
+    in Settings at the same time, because a setting no screen can reach is
+    exactly how it ended up dead.
+
+    Three queries regardless of how far ahead it looks.
+
+    Returns ``(slots, exhausted, reason)``. ``reason`` is
+    ``'no_opening_hours'`` when the table is empty, which matters: with no
+    rows every day is skipped and the honest answer is "set your hours up",
+    not the "you are fully booked" that an empty list would imply.
+    """
+    if minutes is None:
+        minutes, _, _ = resolve_slot(dog, service_type, services)
+
+    hours = {row.weekday: row for row in OpeningHours.objects.all()}
+    if not hours:
+        return [], False, 'no_opening_hours'
+
+    today = timezone.localdate()
+    start_date = from_date or today
+    if start_date < today:
+        start_date = today
+    end_date = start_date + timedelta(days=horizon_days)
+
+    closures = set(
+        ClosureDay.objects.filter(date__gte=start_date, date__lte=end_date)
+        .values_list('date', flat=True)
+    )
+
+    buffer_minutes = AppSettings.get().booking_slot_buffer_minutes or 0
+
+    booked = {}
+    existing = (
+        Appointment.objects.filter(
+            status__in=Appointment.ACTIVE_STATUSES,
+            start_at__date__gte=start_date,
+            start_at__date__lte=end_date,
+        )
+        .order_by('start_at')
+    )
+    for appointment in existing:
+        local_start = timezone.localtime(appointment.start_at)
+        local_end = timezone.localtime(appointment.end_at)
+        booked.setdefault(local_start.date(), []).append(
+            (
+                local_start.hour * 60 + local_start.minute,
+                local_end.hour * 60 + local_end.minute,
+            )
+        )
+
+    now = timezone.localtime()
+    now_minutes = now.hour * 60 + now.minute
+
+    slots = []
+    day = start_date
+    while day <= end_date and len(slots) < count:
+        row = hours.get(day.weekday())
+        if day in closures or row is None or row.is_closed:
+            day += timedelta(days=1)
+            continue
+        if not row.open_time or not row.close_time:
+            day += timedelta(days=1)
+            continue
+
+        open_minutes = row.open_time.hour * 60 + row.open_time.minute
+        close_minutes = row.close_time.hour * 60 + row.close_time.minute
+
+        cursor = open_minutes
+        if day == today:
+            # Never offer a slot in the past, and give an hour's notice.
+            cursor = max(cursor, now_minutes + 60)
+        cursor = _ceil_to(cursor, SLOT_GRANULARITY_MINUTES)
+
+        emitted_today = 0
+        for busy_from, busy_to in sorted(booked.get(day, [])):
+            gap_end = busy_from - buffer_minutes
+            while (
+                cursor + minutes <= gap_end
+                and emitted_today < max_per_day
+                and len(slots) < count
+            ):
+                slots.append(_slot(day, cursor, minutes))
+                emitted_today += 1
+                cursor = _ceil_to(cursor + SLOT_GRANULARITY_MINUTES, SLOT_GRANULARITY_MINUTES)
+            cursor = _ceil_to(
+                max(cursor, busy_to + buffer_minutes), SLOT_GRANULARITY_MINUTES
+            )
+
+        while (
+            cursor + minutes <= close_minutes
+            and emitted_today < max_per_day
+            and len(slots) < count
+        ):
+            slots.append(_slot(day, cursor, minutes))
+            emitted_today += 1
+            cursor = _ceil_to(cursor + SLOT_GRANULARITY_MINUTES, SLOT_GRANULARITY_MINUTES)
+
+        day += timedelta(days=1)
+
+    return slots, len(slots) < count, None
+
+
+def _slot(day, minutes_past_midnight, length):
+    """Build an aware datetime for a local wall-clock time on ``day``.
+
+    Combined and *then* made aware, never a UTC instant plus a timedelta: the
+    latter silently shifts every slot by an hour across a British clock
+    change, and does it for months at a stretch before anyone notices.
+    """
+    naive = datetime.combine(
+        day,
+        time(hour=minutes_past_midnight // 60, minute=minutes_past_midnight % 60),
+    )
+    start = timezone.make_aware(naive, timezone.get_current_timezone())
+    return {
+        'start_at': start,
+        'end_at': start + timedelta(minutes=length),
+        'date': day.isoformat(),
+        'weekday': day.strftime('%A'),
     }
 
 
