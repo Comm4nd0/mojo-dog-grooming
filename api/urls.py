@@ -25,6 +25,12 @@ router.register('todos', views.TodoItemViewSet, basename='todo')
 router.register('opening-hours', views.OpeningHoursViewSet, basename='opening-hours')
 router.register('closures', views.ClosureDayViewSet, basename='closure')
 router.register('temperament-grades', views.TemperamentGradeViewSet, basename='temperament-grade')
+# Deprecated. A push to main is the backend deploy, but the app reaches Jess
+# through TestFlight and the App Store — so the server always runs ahead of the
+# build in her hands, and renaming a route she is using breaks her Settings
+# screen until the next release. Remove once the build calling
+# `temperament-grades` has shipped.
+router.register('temperament-limits', views.TemperamentGradeViewSet, basename='temperament-limit')
 router.register('intake-invites', views.IntakeInviteViewSet, basename='intake-invite')
 router.register('intake-submissions', views.IntakeSubmissionViewSet, basename='intake-submission')
 

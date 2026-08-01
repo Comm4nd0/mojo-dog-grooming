@@ -338,9 +338,18 @@ class BreedSerializer(serializers.ModelSerializer):
 
 
 class TemperamentGradeSerializer(serializers.ModelSerializer):
+    # Deprecated alias for `label`, kept because the TestFlight build in Jess's
+    # hands reads `temperament_display` on this endpoint and a backend deploy
+    # reaches her long before an App Store one does. Remove once the build
+    # that uses `label` has shipped.
+    temperament_display = serializers.CharField(source='label', read_only=True)
+
     class Meta:
         model = TemperamentGrade
-        fields = ['id', 'temperament', 'label', 'max_per_day', 'sort_order']
+        fields = [
+            'id', 'temperament', 'label', 'temperament_display',
+            'max_per_day', 'sort_order',
+        ]
         # The code identifies the row and every dog in the database points at
         # it. Jess edits the label and the cap; she does not get to repoint a
         # grade at a different code from the settings screen.

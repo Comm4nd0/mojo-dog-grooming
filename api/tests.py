@@ -1339,6 +1339,31 @@ class TemperamentScaleTests(BaseAPITestCase):
             status.HTTP_403_FORBIDDEN,
         )
 
+    def test_the_old_route_and_field_still_work(self):
+        """The build in Jess's hands calls `/temperament-limits/` and reads
+        `temperament_display`.
+
+        A push to main deploys the server; the app only reaches her through
+        TestFlight. Renaming the route in a backend deploy would have broken
+        her Settings screen until the next release went out — days at best,
+        and a review queue at worst.
+        """
+        response = self.staff_client.get('/api/temperament-limits/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['count'], 5)
+
+        row = response.data['results'][0]
+        self.assertEqual(row['temperament_display'], row['label'])
+
+        # And the one write that screen makes still lands.
+        patched = self.staff_client.patch(
+            f'/api/temperament-limits/{row["id"]}/', {'max_per_day': 4}, format='json',
+        )
+        self.assertEqual(patched.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            TemperamentGrade.objects.get(pk=row['id']).max_per_day, 4,
+        )
+
 
 class NeuterUnknownTests(BaseAPITestCase):
     """"Nobody asked" is not "intact".

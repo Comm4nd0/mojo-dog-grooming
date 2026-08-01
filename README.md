@@ -57,7 +57,7 @@ Without `--dart-define` the app points at `https://app.mojoandco.uk/api`.
 ## Tests
 
 ```bash
-python manage.py test api     # 197 backend tests
+python manage.py test api     # 198 backend tests
 cd mobile && flutter test     # 106 widget, model and golden tests
 ```
 
