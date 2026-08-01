@@ -31,6 +31,8 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
   TimeOfDay _time = const TimeOfDay(hour: 9, minute: 0);
   int _durationMinutes = 90;
   String _bookingType = 'ADHOC';
+  String _serviceType = ServiceType.groom;
+  AppSettings? _settings;
   String _status = 'BOOKED';
 
   // A repeating booking creates a BookingSeries, which materialises
@@ -53,6 +55,7 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
       _time = TimeOfDay.fromDateTime(appointment.startAt);
       _durationMinutes = appointment.durationMinutes;
       _bookingType = appointment.bookingType;
+      _serviceType = appointment.serviceType;
       _status = appointment.status;
       _notes.text = appointment.notes;
     } else {
@@ -70,9 +73,16 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
   Future<void> _loadDogs() async {
     try {
       final dogs = await _data.getDogs();
+      AppSettings? settings;
+      try {
+        settings = await _data.getSettings();
+      } catch (_) {
+        // Only needed to size a nails slot; the slider still works without it.
+      }
       if (!mounted) return;
       setState(() {
         _dogs = dogs;
+        _settings = settings;
         _loading = false;
         // A new booking defaults to the selected dog's own groom time.
         if (!_isEditing && dogs.isNotEmpty && _dogId == null) {
@@ -111,6 +121,7 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
         startAt: _startAt,
         endAt: _endAt,
         excludeAppointmentId: widget.appointment?.id,
+        serviceType: _serviceType,
       );
       if (!mounted) return;
 
@@ -127,6 +138,7 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
           'start_at': _startAt.toUtc().toIso8601String(),
           'end_at': _endAt.toUtc().toIso8601String(),
           'booking_type': _bookingType,
+          'service_type': _serviceType,
           'status': _status,
           'notes': _notes.text.trim(),
         });
@@ -145,6 +157,7 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
           startAt: _startAt,
           endAt: _endAt,
           bookingType: _bookingType,
+          serviceType: _serviceType,
           notes: _notes.text.trim(),
         );
       }
@@ -291,6 +304,28 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
             style: TextStyle(fontSize: 12, color: context.mojo.muted),
           ),
 
+          const SectionHeader(title: 'Service'),
+          SegmentedButton<String>(
+            segments: const [
+              ButtonSegment(value: ServiceType.groom, label: Text('Groom')),
+              ButtonSegment(value: ServiceType.nailsFleasTicks, label: Text('Nails/fleas/ticks')),
+            ],
+            selected: {_serviceType},
+            onSelectionChanged: (value) => setState(() {
+              _serviceType = value.first;
+              // A nail trim is minutes, not hours. Leaving the slider on the
+              // dog's groom time would block out most of a morning for it.
+              if (_serviceType == ServiceType.nailsFleasTicks) {
+                _durationMinutes = _settings?.nailVisitMinutes ?? 20;
+                // 20 only so the slider lands somewhere sensible when she
+                // hasn't set a length; the check warns that it isn't hers.
+                _repeat = false;
+              } else {
+                _durationMinutes = _selectedDog?.groomMinutes ?? _durationMinutes;
+              }
+            }),
+          ),
+
           const SectionHeader(title: 'Type'),
           SegmentedButton<String>(
             segments: const [
@@ -302,7 +337,7 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
             onSelectionChanged: (value) => setState(() => _bookingType = value.first),
           ),
 
-          if (!_isEditing) ...[
+          if (!_isEditing && _serviceType == ServiceType.groom) ...[
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               value: _repeat,

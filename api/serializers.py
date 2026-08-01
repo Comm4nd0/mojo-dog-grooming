@@ -29,6 +29,8 @@ from .models import (
     Client,
     ClientClaimRequest,
     ClosureDay,
+    Consent,
+    ConsentKind,
     Dog,
     DogPhoto,
     Equipment,
@@ -43,6 +45,8 @@ from .models import (
     Payment,
     PhaseTiming,
     ProblemArea,
+    REQUIRED_CONSENTS,
+    ServiceType,
     TemperamentLimit,
     TodoItem,
     UserProfile,
@@ -359,12 +363,22 @@ class AppSettingsSerializer(serializers.ModelSerializer):
         model = AppSettings
         fields = [
             'business_name', 'contact_phone', 'contact_email',
-            'invoicing_visible_to_clients', 'booking_slot_buffer_minutes', 'updated_at',
+            'invoicing_visible_to_clients', 'booking_slot_buffer_minutes',
+            'nail_visit_minutes', 'nail_visit_price', 'updated_at',
         ]
         read_only_fields = ['updated_at']
 
 
 # ── Clients ────────────────────────────────────────────────────────────
+
+class ConsentSerializer(serializers.ModelSerializer):
+    kind_display = serializers.CharField(source='get_kind_display', read_only=True)
+
+    class Meta:
+        model = Consent
+        fields = ['id', 'kind', 'kind_display', 'agreed', 'signed_name', 'signed_at', 'wording']
+        read_only_fields = ['id']
+
 
 class ClientSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
     staff_only_fields = ('chatty', 'leaflet_received', 'notes')
@@ -372,13 +386,17 @@ class ClientSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
     full_name = serializers.CharField(read_only=True)
     dog_count = serializers.SerializerMethodField()
     has_login = serializers.SerializerMethodField()
+    # Null means nobody has asked yet, which is not the same as "no".
+    photo_consent = serializers.BooleanField(read_only=True, allow_null=True)
+    consents = ConsentSerializer(many=True, read_only=True)
 
     class Meta:
         model = Client
         fields = [
             'id', 'uid', 'first_name', 'last_name', 'full_name', 'email', 'phone',
-            'address', 'postcode', 'chatty', 'leaflet_received', 'notes',
-            'dog_count', 'has_login', 'created_at', 'updated_at',
+            'address', 'postcode', 'emergency_contact_name', 'emergency_contact_phone',
+            'chatty', 'leaflet_received', 'notes',
+            'photo_consent', 'consents', 'dog_count', 'has_login', 'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
 
@@ -495,12 +513,14 @@ class DogSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
         model = Dog
         fields = [
             'id', 'client', 'client_detail', 'name', 'breed', 'breed_other', 'breed_label',
-            'date_of_birth', 'sex', 'is_neutered', 'profile_image',
+            'date_of_birth', 'sex', 'is_neutered', 'colour', 'microchip_number', 'profile_image',
             'temperament', 'temperament_display', 'temperament_notes',
             'groom_minutes', 'price', 'schedule_weeks',
             'groom_minutes_effective', 'price_effective', 'schedule_weeks_effective',
             'pref_body', 'pref_feet', 'pref_tail', 'pref_face', 'pref_ears', 'pref_skirt',
-            'medical_notes', 'vet', 'general_notes', 'is_active',
+            'allergies', 'medications', 'medical_issues', 'vaccinations',
+            'medical_notes', 'vet', 'last_vet_visit', 'owner_grooming',
+            'general_notes', 'is_active',
             'problem_areas', 'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
@@ -524,7 +544,7 @@ class AppointmentSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
         model = Appointment
         fields = [
             'id', 'dog', 'dog_name', 'dog_temperament', 'client_id', 'client_name', 'client_phone',
-            'start_at', 'end_at', 'duration_minutes', 'booking_type', 'status',
+            'start_at', 'end_at', 'duration_minutes', 'booking_type', 'service_type', 'status',
             'price_quoted', 'notes', 'series', 'created_at', 'updated_at',
         ]
         # end_at is optional on input — the model fills it from the dog's groom
@@ -562,9 +582,22 @@ class AppointmentCheckSerializer(serializers.Serializer):
         queryset=Appointment.objects.all(), required=False, allow_null=True,
         help_text='Ignore this appointment when checking — used when editing an existing booking.',
     )
+    service_type = serializers.ChoiceField(
+        choices=ServiceType.choices, required=False, default=ServiceType.GROOM,
+    )
 
 
 # ── Groom timing ───────────────────────────────────────────────────────
+
+class EquipmentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Equipment
+        fields = [
+            'id', 'name', 'uid', 'last_sharpened', 'pat_tested', 'pat_tested_date',
+            'notes', 'is_active', 'created_at', 'updated_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
 
 class PhaseTimingSerializer(serializers.ModelSerializer):
     phase_display = serializers.CharField(source='get_phase_display', read_only=True)
@@ -580,26 +613,70 @@ class GroomSessionSerializer(serializers.ModelSerializer):
     total_seconds = serializers.IntegerField(read_only=True)
     total_minutes = serializers.IntegerField(read_only=True)
 
+    visit_type_display = serializers.CharField(source='get_visit_type_display', read_only=True)
+    temperament_observed_display = serializers.CharField(
+        source='get_temperament_observed_display', read_only=True,
+    )
+    matting_found = serializers.BooleanField(read_only=True)
+    equipment_used_detail = EquipmentSerializer(source='equipment_used', many=True, read_only=True)
+
     class Meta:
         model = GroomSession
         fields = [
-            'id', 'dog', 'dog_name', 'appointment', 'started_at', 'finished_at', 'notes',
+            'id', 'dog', 'dog_name', 'appointment', 'visit_type', 'visit_type_display',
+            'started_at', 'finished_at', 'recorded_minutes',
+            'health_check_notes',
+            'matting_paws', 'matting_armpits', 'matting_ears', 'matting_elsewhere',
+            'matting_notes', 'matting_found',
+            'bathed_well_behaved', 'high_velocity_dryer', 'shampoo_used',
+            'equipment_used', 'equipment_used_detail',
+            'final_body', 'final_feet', 'final_tail',
+            'nails_done', 'fleas_treated', 'ticks_removed',
+            'notes', 'sensitive_notes',
+            'temperament_observed', 'temperament_observed_display',
             'timings', 'total_seconds', 'total_minutes', 'applied_to_dog_at', 'created_at',
         ]
         read_only_fields = ['id', 'applied_to_dog_at', 'created_at']
 
+    def validate(self, attrs):
+        """A nails visit has to say which of the three it was for.
+
+        Otherwise the record says a visit happened and nothing about what was
+        done, which is the one thing that card exists to capture.
+        """
+        visit_type = attrs.get(
+            'visit_type', getattr(self.instance, 'visit_type', ServiceType.GROOM),
+        )
+        if visit_type != ServiceType.NAILS_FLEAS_TICKS:
+            return attrs
+
+        def flag(name):
+            return attrs.get(name, getattr(self.instance, name, False))
+
+        if not any(flag(name) for name in ('nails_done', 'fleas_treated', 'ticks_removed')):
+            raise serializers.ValidationError(
+                {'nails_done': 'Say whether this was nails, fleas or ticks.'},
+            )
+        return attrs
+
     def create(self, validated_data):
         timings = validated_data.pop('timings', [])
+        equipment = validated_data.pop('equipment_used', None)
         session = GroomSession.objects.create(**validated_data)
+        if equipment is not None:
+            session.equipment_used.set(equipment)
         for timing in timings:
             PhaseTiming.objects.create(session=session, **timing)
         return session
 
     def update(self, instance, validated_data):
         timings = validated_data.pop('timings', None)
+        equipment = validated_data.pop('equipment_used', None)
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
+        if equipment is not None:
+            instance.equipment_used.set(equipment)
         if timings is not None:
             # Phases are a small fixed set; replacing them wholesale keeps the
             # client free to send whichever subset was actually used.
@@ -665,16 +742,6 @@ class InvoiceSerializer(serializers.ModelSerializer):
 
 # ── Equipment / to-dos ─────────────────────────────────────────────────
 
-class EquipmentSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Equipment
-        fields = [
-            'id', 'name', 'uid', 'last_sharpened', 'pat_tested', 'pat_tested_date',
-            'notes', 'is_active', 'created_at', 'updated_at',
-        ]
-        read_only_fields = ['id', 'created_at', 'updated_at']
-
-
 class TodoItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = TodoItem
@@ -701,7 +768,9 @@ class IntakeSubmissionSerializer(serializers.ModelSerializer):
         model = IntakeSubmission
         fields = [
             'id', 'invite', 'first_name', 'last_name', 'email', 'phone', 'address', 'postcode',
-            'dogs', 'status', 'review_notes', 'reviewed_at', 'created_client', 'created_at',
+            'emergency_contact_name', 'emergency_contact_phone',
+            'dogs', 'consents', 'signature',
+            'status', 'review_notes', 'reviewed_at', 'created_client', 'created_at',
         ]
         read_only_fields = ['id', 'invite', 'status', 'reviewed_at', 'created_client', 'created_at']
 
@@ -715,7 +784,41 @@ class PublicIntakeSubmissionSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = IntakeSubmission
-        fields = ['first_name', 'last_name', 'email', 'phone', 'address', 'postcode', 'dogs']
+        fields = [
+            'first_name', 'last_name', 'email', 'phone', 'address', 'postcode',
+            'emergency_contact_name', 'emergency_contact_phone',
+            'dogs', 'consents', 'signature',
+        ]
+
+    def validate_consents(self, value):
+        """Every disclaimer bar the photo one has to be agreed to.
+
+        Enforced here rather than only in the page's JavaScript, because the
+        endpoint is public and the page is not the only thing that can post to
+        it. The photo question is deliberately absent from the check — it is
+        optional on the paper card too, and declining it must still let the
+        form through.
+        """
+        if not isinstance(value, dict):
+            raise serializers.ValidationError('Malformed consents.')
+        missing = [kind for kind in REQUIRED_CONSENTS if value.get(kind) is not True]
+        if missing:
+            labels = ', '.join(ConsentKind(kind).label for kind in missing)
+            raise serializers.ValidationError(f'Please agree to: {labels}')
+        return value
+
+    def validate(self, attrs):
+        # The signature only means anything next to the consents, so it is
+        # checked here rather than as a field-level requirement.
+        if not str(attrs.get('signature', '')).strip():
+            raise serializers.ValidationError(
+                {'signature': 'Please type your name to sign the form.'},
+            )
+        if not attrs.get('consents'):
+            raise serializers.ValidationError(
+                {'consents': 'Please read and agree to the terms before sending.'},
+            )
+        return attrs
 
     def validate_dogs(self, value):
         if not isinstance(value, list) or not value:

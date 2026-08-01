@@ -11,7 +11,15 @@ from datetime import timedelta
 
 from django.utils import timezone
 
-from .models import Appointment, ClosureDay, OpeningHours, TemperamentLimit
+from .models import (
+    Appointment,
+    AppSettings,
+    ClosureDay,
+    FALLBACK_NAIL_VISIT_MINUTES,
+    OpeningHours,
+    ServiceType,
+    TemperamentLimit,
+)
 
 
 def _local_date(dt):
@@ -114,14 +122,49 @@ def overlap_warning(start_at, end_at, exclude_appointment=None):
     }
 
 
-def booking_warnings(dog, start_at, end_at=None, exclude_appointment=None):
+def unpriced_service_warning(service_type):
+    """Nails, fleas and ticks with nothing set for it yet.
+
+    A warning rather than a refusal, like everything else here — Jess can take
+    the booking and sort the price out after. It exists because the figure is
+    null on purpose: nothing in her price list covers this service, so the app
+    has nothing to fall back on and says so rather than inventing one.
+    """
+    if service_type != ServiceType.NAILS_FLEAS_TICKS:
+        return None
+    settings_row = AppSettings.get()
+    if settings_row.nail_visit_price is not None and settings_row.nail_visit_minutes:
+        return None
+    missing = [
+        label for label, value in (
+            ('a price', settings_row.nail_visit_price),
+            ('a length', settings_row.nail_visit_minutes),
+        ) if not value
+    ]
+    return {
+        'code': 'service_not_priced',
+        'message': (
+            f'Nails, fleas and ticks has no {" or ".join(missing)} set yet. '
+            'Add it in Settings.'
+        ),
+        'detail': {'service_type': service_type},
+    }
+
+
+def booking_warnings(dog, start_at, end_at=None, exclude_appointment=None,
+                     service_type=ServiceType.GROOM):
     """All warnings for a proposed slot, in the order they matter to Jess."""
     if end_at is None:
-        end_at = start_at + timedelta(minutes=dog.effective_groom_minutes)
+        if service_type == ServiceType.NAILS_FLEAS_TICKS:
+            minutes = AppSettings.get().nail_visit_minutes or FALLBACK_NAIL_VISIT_MINUTES
+        else:
+            minutes = dog.effective_groom_minutes
+        end_at = start_at + timedelta(minutes=minutes)
 
     checks = [
         temperament_warning(dog, start_at, exclude_appointment),
         opening_hours_warning(start_at, end_at),
         overlap_warning(start_at, end_at, exclude_appointment),
+        unpriced_service_warning(service_type),
     ]
     return [warning for warning in checks if warning is not None]

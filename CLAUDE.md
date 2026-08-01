@@ -26,16 +26,19 @@ api/                  Django app — models, serializers, views, scheduling, tes
   auth_backends.py    sign in with a username or an email, either case
   passwords.py        issuing, addressing and delivering reset links
 mojo_backend/         settings, urls, wsgi
+docs/
+  paper-cards.md      Jess's three paper forms, transcribed — the spec for the online ones
 templates/
   base.html           shared shell for every server-rendered page
-  intake/             the new-client form
+  intake/             the new-client form, and the policies sheet it makes you agree to
   account/            the password reset page
 mobile/lib/
   constants/          app_colors.dart — brand palette and theme
   models/             models.dart — API payload types
   services/           api_client, auth_service, biometric_service, data_service, service_locator
   screens/            login_screen, lock_screen, account_switcher
-  screens/staff/      doguments, dog/client profiles, calendar, timers, invoices, equipment, logins
+  screens/staff/      doguments, dog/client profiles, calendar, timers, visit records,
+                      invoices, equipment, logins
   screens/client/     my dogs, my bookings, my profile, claim profile
   widgets/            common.dart, dog_silhouette.dart, biometric_toggle.dart
 ```
@@ -45,7 +48,7 @@ mobile/lib/
 Backend:
 ```bash
 python manage.py migrate && python manage.py seed_breeds
-python manage.py test api        # 150 tests
+python manage.py test api        # 175 tests
 python manage.py runserver 0.0.0.0:8000
 python manage.py accounts        # who can sign in — usernames live only in the DB
 python manage.py reset_link jess # a way back in when the superuser is locked out
@@ -54,13 +57,14 @@ python manage.py reset_link jess # a way back in when the superuser is locked ou
 Mobile:
 ```bash
 cd mobile && flutter pub get
-flutter analyze && flutter test  # 62 tests
+flutter analyze && flutter test  # 83 tests
 flutter run --dart-define=MOJO_API_BASE=http://192.168.1.20:8000/api
 ```
 
 Deploy:
 ```bash
-./deploy.sh                      # backend, to the Hetzner host
+git push origin main             # backend — this is the deploy, see below
+./deploy.sh --yes                # the same thing by hand, on the host
 ./tools/release.sh 1.0.0        # the app, to the App Store — see RELEASING.md
 ```
 
@@ -94,13 +98,35 @@ booking."* The same applies to opening hours and overlaps. `POST /api/appointmen
 returns a `warnings` array; the app shows them in a confirm dialog with "BOOK ANYWAY" always
 available. `api/scheduling.py` produces warnings and never raises.
 
-## Breed data is estimated, not Jess's
+## Breeds price off a grid, not per breed
 
-`seed_breeds` loads ~93 breeds with groom times, prices and intervals written from general
-grooming knowledge — **not** Mojo and Co's real figures. They exist so the app is usable on day
-one. Settings → Breeds lets Jess edit them, and the screen says so. If she supplies a real
-price list, replace the `BREEDS` table in
-`api/management/commands/seed_breeds.py` and run `seed_breeds --overwrite`.
+Jess sent her real price list on 28 July 2026 (email "Fwd: Data input", three PDFs attached).
+She prices by **size band × coat type**, not per breed: five bands (Colossal 45kg+, Large,
+Medium, Small, Toy) × five coats (smooth, short double, long double, curly, wire). That grid is
+`PRICING` in `api/management/commands/seed_breeds.py`; the 224 rows in `BREEDS` each just name
+a cell. Change a price in the grid and every breed in that band follows.
+
+Two things in there are still estimates, and the docstring says which:
+
+- **Which cell a breed sits in.** Her list gives each breed's size band but only *implies* the
+  coat by the order she typed them in, and the order breaks down in places — so the coat is our
+  reading of the breed. Wrong cell means wrong price.
+- **`avg_schedule_weeks`.** Her list has no intervals at all; `SCHEDULE_WEEKS` derives one from
+  the coat.
+
+Breeds she didn't list — the poodle crosses, Pug, Jack Russell, Dachshunds, Border Collie,
+Golden Retriever — are marked `# not on Jess's list` and their band is a guess.
+
+One breed is deliberately **not** where her list put it: she had **German Spitz** in Colossal
+(45kg+, £140), but the Klein is 5-8kg, the Mittel 10-11kg, and the giant variety is the
+Keeshond, which she lists separately in Medium. It sits in Medium here, at £70. That is the only
+band overridden, and the comment beside it says why.
+
+**`entrypoint.sh` runs `seed_breeds` without `--overwrite` on every boot**, so a price change
+in the grid reaches new breeds only. Moving the ones already in the database onto it takes a
+one-off `docker compose exec web python manage.py seed_breeds --overwrite` on the host — and
+that also discards any edit Jess has made in the app, which is the whole reason it isn't the
+default.
 
 Dogs inherit from their breed unless overridden — always read `dog.effective_groom_minutes`,
 `effective_price`, `effective_schedule_weeks`, never the bare field, which is null in the
@@ -234,6 +260,80 @@ Two things that bite on this page specifically:
 - Loading the page and submitting it use **separate throttle scopes**. Sharing one would let
   ordinary reloading exhaust the budget and lock a client out of sending their details.
 
+The page is written against Jess's paper Grooming Booking Card, transcribed in
+`docs/paper-cards.md` along with the two ongoing record cards. That file is the spec — read it
+before changing what the form asks.
+
+## Consent is a row, not a boolean
+
+The paper card carries six disclaimers, "each signed and dated". They are `Consent` rows
+against the client (`ConsentKind` in `api/models.py`), not flags on `Client`, for two reasons:
+what somebody agreed to **on the day** is the record, and policy wording changes — a boolean
+would quietly claim they had agreed to whatever the current text says. Each row stores the
+wording it was signed against. Withdrawing agreement is a *new row*; nothing is edited or
+deleted, and the admin inline is deliberately read-only.
+
+- **Five of the six are required, `PHOTOS` is not.** It is the only one the card phrases as a
+  question, and declining it must still let the form through. `REQUIRED_CONSENTS` is the list.
+- **`Client.photo_consent` is nullable and null means "never asked"** — not "no". Anything
+  about to publish a photo must treat null as don't. Same rule as the staff-only fields above,
+  and `photoConsent` in `models.dart` deliberately does not coerce a missing key to `false`.
+  There are tests on both sides.
+- **The required set is enforced in `PublicIntakeSubmissionSerializer`, not just in the page's
+  JavaScript.** The intake endpoint is public; a disclaimer only the browser checks is not a
+  disclaimer.
+- Consents ride on the submission as JSON and only become rows at approval, exactly like the
+  dogs do — and they keep the *submission's* timestamp, not the approval's.
+
+`templates/intake/policies.html` is page 2 of the card reproduced verbatim, typos and all. It
+is a policy document; do not tidy the wording.
+
+## One visit record, two cards
+
+Jess keeps two paper record cards — "Ongoing Record for Dogs" and "Ongoing Record for Nails /
+Flee / Ticks" (`docs/paper-cards.md`). Both land on **`GroomSession`**, told apart by
+`visit_type`. One model rather than two because the cards are the same shape and hers are filed
+per dog: splitting them would split a dog's history in half. The screen is
+`visit_record_screen.dart`, and which fields it shows is driven by the type.
+
+Neither card is client-facing. `GroomSessionViewSet` is `IsAdminUser` for the whole endpoint —
+that is the gate, not field-level masking.
+
+Things worth knowing:
+
+- **`recorded_minutes` overrides the phase total.** A nails visit runs no timer, and Jess
+  sometimes forgets to start one on a groom. `total_minutes` prefers it when set.
+- **`apply_to_dog()` refuses a nails visit.** Twenty minutes is how long a nail trim takes;
+  writing it to `Dog.groom_minutes` would book the next full groom into a twenty-minute slot.
+- **`temperament_observed` deliberately does not write back to `Dog.temperament`.** That field
+  drives the per-day booking limits, and one rough afternoon should not silently change how
+  many dogs Jess can take.
+- **`bathed_well_behaved` is nullable.** "Not bathed" and "bathed and hated it" are different
+  things. Same rule as everywhere else here: null is not false, on both sides.
+- **`final_body` / `final_feet` / `final_tail` are what was *done*.** The `pref_*` fields on the
+  dog are what the owner asked for at intake. Do not conflate them.
+
+## A nails visit is not priced off the breed grid
+
+`ServiceType` on `Appointment` splits `GROOM` from `NAILS`. The grid in `seed_breeds.py` prices
+full grooms only, and **Jess's price list has nothing for a nail trim at all** —
+`AppSettings.nail_visit_minutes` and `nail_visit_price` carry it instead.
+
+**Both are null until she sets them in Settings → Nails, fleas and ticks, deliberately.** A
+made-up default is indistinguishable from a real figure once it is in the database, and a wrong
+price on an invoice is worse than a blank to fill in. So:
+
+- `price_quoted` stays **null** on a nails booking until she has set one; nothing invents it.
+- `unpriced_service_warning()` in `scheduling.py` warns that it isn't set. It is a *warning* —
+  the booking still goes through, same as every other rule in that file.
+- `FALLBACK_NAIL_VISIT_MINUTES` (20) exists only so an unset slot has *some* length; a
+  zero-minute block would be invisible in the diary. It is never used as a price.
+- On the Flutter side both are `int?`/`num?` and the screen shows "Not set". Never render a
+  null as a price.
+
+`Appointment.save()`, `booking_warnings()` and `/api/appointments/check/` all branch on the
+service type. Miss one and a nail trim blocks out three hours and quotes £80.
+
 ## The silhouette grid
 
 Problem areas are stored as cell references over a fixed **12 × 8** grid on a side-profile dog
@@ -269,6 +369,37 @@ each. The gesture uses `DragStartBehavior.down`; the default reports the positio
 ~18dp touch slop, which skips the cell the user actually pressed. Cells accumulate in the
 widget's own state during a drag, because several pointer moves can land in one frame and
 reading the parent's selection each time would drop all but the last.
+
+## A push to main is the backend deploy
+
+`.github/workflows/deploy.yml` SSHes into the Hetzner host and runs `./deploy.sh --yes`
+after the `Tests` workflow goes green. Same shape as `luma-tech-solutions` on the same
+box, deliberately — one pattern to learn rather than two. `./deploy.sh` by hand still
+works and is still the first-deploy path.
+
+Four things about it that are not obvious:
+
+- **The gate is `workflow_run` on the whole `Tests` workflow**, not a copy of its backend
+  job. A second copy of the test setup is a second thing to keep in step. The price is
+  that a red *mobile* job blocks a backend deploy too, because `workflow_run` cannot wait
+  on one job — `workflow_dispatch` is the escape hatch when you need to ship past a
+  failing golden test.
+- **`deploy.sh` must never `read` from a stdin it doesn't own.** CI pipes the remote
+  script in over SSH, so the low-memory prompt's `read` would have swallowed the next
+  line of the deploy and carried on with a mangled one. It now takes `--yes`, and
+  refuses outright when stdin is not a terminal rather than reading anyway.
+- **The health check needs `X-Forwarded-Proto: https` to mean anything.**
+  `DJANGO_SECURE_HTTPS` turns on `SECURE_SSL_REDIRECT`, and `curl -f` does *not* fail on
+  a 3xx, so the old check passed on the redirect alone — true of a container that boots
+  and then 500s on every request. It now matches the `{"status": "ok"}` body. The smoke
+  test also runs `migrate --check` in the web container, because neither `/api/health/`
+  nor the admin login page touches the database and both would pass with Postgres down.
+- **Rollback restores the code, not the database.** It `git reset --hard`s to the
+  recorded SHA and redeploys — `reset`, not `checkout`, so the clone stays *on* main and
+  the next push fast-forwards instead of merging into a detached HEAD. `entrypoint.sh`
+  runs `migrate --noinput` on every start, so a failed deploy can leave a new schema
+  under old code. A `pg_dump` is taken into `/root/backups/mojo-dog-grooming` before
+  every deploy (20 kept) and has to be restored by hand.
 
 ## A tag is the release
 

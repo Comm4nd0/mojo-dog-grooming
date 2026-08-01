@@ -94,6 +94,34 @@ class Breed {
       );
 }
 
+/// One of the six disclaimers off the paper booking card, as answered.
+class Consent {
+  final int id;
+  final String kind;
+  final String kindDisplay;
+  final bool agreed;
+  final String signedName;
+  final DateTime? signedAt;
+
+  const Consent({
+    required this.id,
+    required this.kind,
+    required this.kindDisplay,
+    required this.agreed,
+    required this.signedName,
+    this.signedAt,
+  });
+
+  factory Consent.fromJson(Map<String, dynamic> json) => Consent(
+        id: (json['id'] as num?)?.toInt() ?? 0,
+        kind: json['kind']?.toString() ?? '',
+        kindDisplay: json['kind_display']?.toString() ?? '',
+        agreed: json['agreed'] == true,
+        signedName: json['signed_name']?.toString() ?? '',
+        signedAt: _dateTime(json['signed_at']),
+      );
+}
+
 class ClientRecord {
   final int id;
   final String uid;
@@ -104,8 +132,17 @@ class ClientRecord {
   final String phone;
   final String address;
   final String postcode;
+  final String emergencyContactName;
+  final String emergencyContactPhone;
   final int dogCount;
   final bool hasLogin;
+  final List<Consent> consents;
+
+  /// Whether photos of this client's dogs may be used publicly.
+  ///
+  /// Null means nobody has ever asked, which is **not** the same as "no".
+  /// Anything about to publish a photo must treat null as "don't".
+  final bool? photoConsent;
 
   /// Staff-only. Null when the current login is a client.
   final bool? chatty;
@@ -124,6 +161,10 @@ class ClientRecord {
     required this.postcode,
     required this.dogCount,
     required this.hasLogin,
+    this.emergencyContactName = '',
+    this.emergencyContactPhone = '',
+    this.consents = const [],
+    this.photoConsent,
     this.chatty,
     this.leafletReceived,
     this.notes,
@@ -139,8 +180,15 @@ class ClientRecord {
         phone: json['phone']?.toString() ?? '',
         address: json['address']?.toString() ?? '',
         postcode: json['postcode']?.toString() ?? '',
+        emergencyContactName: json['emergency_contact_name']?.toString() ?? '',
+        emergencyContactPhone: json['emergency_contact_phone']?.toString() ?? '',
         dogCount: (json['dog_count'] as num?)?.toInt() ?? 0,
         hasLogin: json['has_login'] == true,
+        consents: ((json['consents'] as List?) ?? const [])
+            .map((entry) => Consent.fromJson(entry as Map<String, dynamic>))
+            .toList(),
+        // Deliberately not coerced to false: a missing key means never asked.
+        photoConsent: json['photo_consent'] is bool ? json['photo_consent'] as bool : null,
         // Absent (not merely false) when the viewer isn't staff.
         chatty: json.containsKey('chatty') ? json['chatty'] == true : null,
         leafletReceived:
@@ -156,6 +204,8 @@ class ClientRecord {
         'phone': phone,
         'address': address,
         'postcode': postcode,
+        'emergency_contact_name': emergencyContactName,
+        'emergency_contact_phone': emergencyContactPhone,
         if (chatty != null) 'chatty': chatty,
         if (leafletReceived != null) 'leaflet_received': leafletReceived,
         if (notes != null) 'notes': notes,
@@ -268,6 +318,8 @@ class Dog {
   final DateTime? dateOfBirth;
   final String sex;
   final bool isNeutered;
+  final String colour;
+  final String microchipNumber;
   final String? profileImage;
 
   /// Overrides — null means "inherit from the breed".
@@ -286,8 +338,16 @@ class Dog {
   final String prefEars;
   final String prefSkirt;
 
+  /// The paper booking card asks these separately rather than as one
+  /// "anything medical?" box, so they are separate here too.
+  final String allergies;
+  final String medications;
+  final String medicalIssues;
+  final String vaccinations;
   final String medicalNotes;
   final String vet;
+  final String lastVetVisit;
+  final String ownerGrooming;
   final String generalNotes;
   final bool isActive;
 
@@ -314,10 +374,18 @@ class Dog {
     required this.prefFace,
     required this.prefEars,
     required this.prefSkirt,
+    required this.allergies,
+    required this.medications,
+    required this.medicalIssues,
+    required this.vaccinations,
     required this.medicalNotes,
     required this.vet,
+    required this.lastVetVisit,
+    required this.ownerGrooming,
     required this.generalNotes,
     required this.isActive,
+    required this.colour,
+    required this.microchipNumber,
     this.client,
     this.breedId,
     this.dateOfBirth,
@@ -344,6 +412,8 @@ class Dog {
         dateOfBirth: _dateTime(json['date_of_birth']),
         sex: json['sex']?.toString() ?? '',
         isNeutered: json['is_neutered'] == true,
+        colour: json['colour']?.toString() ?? '',
+        microchipNumber: json['microchip_number']?.toString() ?? '',
         profileImage: json['profile_image']?.toString(),
         groomMinutesOverride: (json['groom_minutes'] as num?)?.toInt(),
         priceOverride: json['price'] == null ? null : _num(json['price']),
@@ -357,8 +427,14 @@ class Dog {
         prefFace: json['pref_face']?.toString() ?? '',
         prefEars: json['pref_ears']?.toString() ?? '',
         prefSkirt: json['pref_skirt']?.toString() ?? '',
+        allergies: json['allergies']?.toString() ?? '',
+        medications: json['medications']?.toString() ?? '',
+        medicalIssues: json['medical_issues']?.toString() ?? '',
+        vaccinations: json['vaccinations']?.toString() ?? '',
         medicalNotes: json['medical_notes']?.toString() ?? '',
         vet: json['vet']?.toString() ?? '',
+        lastVetVisit: json['last_vet_visit']?.toString() ?? '',
+        ownerGrooming: json['owner_grooming']?.toString() ?? '',
         generalNotes: json['general_notes']?.toString() ?? '',
         isActive: json['is_active'] != false,
         temperament: json['temperament']?.toString(),
@@ -380,6 +456,15 @@ class Dog {
         (label: 'Ears', value: prefEars),
         (label: 'Skirt', value: prefSkirt),
       ];
+
+  /// The health questions off the paper card, blank ones dropped.
+  List<({String label, String value})> get healthNotes => [
+        (label: 'Allergies', value: allergies),
+        (label: 'Medication', value: medications),
+        (label: 'Known medical issues', value: medicalIssues),
+        (label: 'Vaccinations', value: vaccinations),
+        (label: 'Other', value: medicalNotes),
+      ].where((entry) => entry.value.trim().isNotEmpty).toList();
 
   String? get ageLabel {
     if (dateOfBirth == null) return null;
@@ -427,6 +512,7 @@ class Appointment {
   final DateTime endAt;
   final int durationMinutes;
   final String bookingType;
+  final String serviceType;
   final String status;
   final num? priceQuoted;
   final String notes;
@@ -445,6 +531,7 @@ class Appointment {
     required this.endAt,
     required this.durationMinutes,
     required this.bookingType,
+    this.serviceType = ServiceType.groom,
     required this.status,
     required this.notes,
     this.priceQuoted,
@@ -462,6 +549,7 @@ class Appointment {
         endAt: _dateTime(json['end_at']) ?? DateTime.now(),
         durationMinutes: (json['duration_minutes'] as num?)?.toInt() ?? 0,
         bookingType: json['booking_type']?.toString() ?? 'ADHOC',
+        serviceType: json['service_type']?.toString() ?? ServiceType.groom,
         status: json['status']?.toString() ?? 'BOOKED',
         priceQuoted: json['price_quoted'] == null ? null : _num(json['price_quoted']),
         notes: json['notes']?.toString() ?? '',
@@ -555,14 +643,62 @@ class PhaseTiming {
       };
 }
 
+/// What a visit or booking is for. Matches ServiceType on the server.
+class ServiceType {
+  static const groom = 'GROOM';
+  static const nailsFleasTicks = 'NAILS';
+
+  static String label(String value) =>
+      value == nailsFleasTicks ? 'Nails, fleas or ticks' : 'Groom';
+}
+
+/// Alias kept for the record cards, which talk about visits rather than
+/// bookings. Same two values.
+typedef VisitType = ServiceType;
+
+/// One worked visit — Jess's "Ongoing Record" card.
+///
+/// Covers both of her cards: a full groom carries the lot, a nails/fleas/ticks
+/// visit fills in far less. [visitType] says which.
 class GroomSession {
   final int id;
   final int dogId;
   final String dogName;
+  final String visitType;
+  final String visitTypeDisplay;
   final DateTime startedAt;
   final List<PhaseTiming> timings;
   final int totalMinutes;
+  final int? recordedMinutes;
   final DateTime? appliedToDogAt;
+
+  final String healthCheckNotes;
+  final bool mattingPaws;
+  final bool mattingArmpits;
+  final bool mattingEars;
+  final bool mattingElsewhere;
+  final String mattingNotes;
+  final bool mattingFound;
+
+  /// Null means bathing wasn't recorded — not that the dog behaved badly.
+  final bool? bathedWellBehaved;
+  final bool highVelocityDryer;
+  final String shampooUsed;
+  final List<Equipment> equipmentUsed;
+
+  /// What was actually done, as opposed to what the owner asked for at intake.
+  final String finalBody;
+  final String finalFeet;
+  final String finalTail;
+
+  final bool nailsDone;
+  final bool fleasTreated;
+  final bool ticksRemoved;
+
+  final String notes;
+  final String sensitiveNotes;
+  final String temperamentObserved;
+  final String temperamentObservedDisplay;
 
   const GroomSession({
     required this.id,
@@ -571,20 +707,89 @@ class GroomSession {
     required this.startedAt,
     required this.timings,
     required this.totalMinutes,
+    this.visitType = VisitType.groom,
+    this.visitTypeDisplay = '',
+    this.recordedMinutes,
     this.appliedToDogAt,
+    this.healthCheckNotes = '',
+    this.mattingPaws = false,
+    this.mattingArmpits = false,
+    this.mattingEars = false,
+    this.mattingElsewhere = false,
+    this.mattingNotes = '',
+    this.mattingFound = false,
+    this.bathedWellBehaved,
+    this.highVelocityDryer = false,
+    this.shampooUsed = '',
+    this.equipmentUsed = const [],
+    this.finalBody = '',
+    this.finalFeet = '',
+    this.finalTail = '',
+    this.nailsDone = false,
+    this.fleasTreated = false,
+    this.ticksRemoved = false,
+    this.notes = '',
+    this.sensitiveNotes = '',
+    this.temperamentObserved = '',
+    this.temperamentObservedDisplay = '',
   });
 
   factory GroomSession.fromJson(Map<String, dynamic> json) => GroomSession(
         id: json['id'] as int,
         dogId: (json['dog'] as num?)?.toInt() ?? 0,
         dogName: json['dog_name']?.toString() ?? '',
+        visitType: json['visit_type']?.toString() ?? VisitType.groom,
+        visitTypeDisplay: json['visit_type_display']?.toString() ?? '',
         startedAt: _dateTime(json['started_at']) ?? DateTime.now(),
         timings: ((json['timings'] as List?) ?? const [])
             .map((t) => PhaseTiming.fromJson(t as Map<String, dynamic>))
             .toList(),
         totalMinutes: (json['total_minutes'] as num?)?.toInt() ?? 0,
+        recordedMinutes: (json['recorded_minutes'] as num?)?.toInt(),
         appliedToDogAt: _dateTime(json['applied_to_dog_at']),
+        healthCheckNotes: json['health_check_notes']?.toString() ?? '',
+        mattingPaws: json['matting_paws'] == true,
+        mattingArmpits: json['matting_armpits'] == true,
+        mattingEars: json['matting_ears'] == true,
+        mattingElsewhere: json['matting_elsewhere'] == true,
+        mattingNotes: json['matting_notes']?.toString() ?? '',
+        mattingFound: json['matting_found'] == true,
+        // Deliberately not coerced: a null means it wasn't recorded.
+        bathedWellBehaved:
+            json['bathed_well_behaved'] is bool ? json['bathed_well_behaved'] as bool : null,
+        highVelocityDryer: json['high_velocity_dryer'] == true,
+        shampooUsed: json['shampoo_used']?.toString() ?? '',
+        equipmentUsed: ((json['equipment_used_detail'] as List?) ?? const [])
+            .map((e) => Equipment.fromJson(e as Map<String, dynamic>))
+            .toList(),
+        finalBody: json['final_body']?.toString() ?? '',
+        finalFeet: json['final_feet']?.toString() ?? '',
+        finalTail: json['final_tail']?.toString() ?? '',
+        nailsDone: json['nails_done'] == true,
+        fleasTreated: json['fleas_treated'] == true,
+        ticksRemoved: json['ticks_removed'] == true,
+        notes: json['notes']?.toString() ?? '',
+        sensitiveNotes: json['sensitive_notes']?.toString() ?? '',
+        temperamentObserved: json['temperament_observed']?.toString() ?? '',
+        temperamentObservedDisplay: json['temperament_observed_display']?.toString() ?? '',
       );
+
+  bool get isGroom => visitType == VisitType.groom;
+
+  /// Which of the three a nails visit covered, for a one-line summary.
+  String get nailsSummary => [
+        if (nailsDone) 'Nails',
+        if (fleasTreated) 'Fleas',
+        if (ticksRemoved) 'Ticks',
+      ].join(' · ');
+
+  /// Where matting was found, in the order the paper card lists it.
+  List<String> get mattingPlaces => [
+        if (mattingPaws) 'paws',
+        if (mattingArmpits) 'armpits',
+        if (mattingEars) 'ears',
+        if (mattingElsewhere) 'elsewhere',
+      ];
 }
 
 class TodoItem {
@@ -725,11 +930,22 @@ class AppSettings {
   final String contactEmail;
   final bool invoicingVisibleToClients;
 
+  /// A nails/fleas/ticks visit takes neither its length nor its price from the
+  /// breed grid — that grid prices full grooms, and Jess's price list has
+  /// nothing for this at all.
+  ///
+  /// Null means she hasn't set it yet, which is **not** zero. Show "Not set"
+  /// and let her fill it in; never render a null as a price.
+  final int? nailVisitMinutes;
+  final num? nailVisitPrice;
+
   const AppSettings({
     required this.businessName,
     required this.contactPhone,
     required this.contactEmail,
     required this.invoicingVisibleToClients,
+    this.nailVisitMinutes,
+    this.nailVisitPrice,
   });
 
   factory AppSettings.fromJson(Map<String, dynamic> json) => AppSettings(
@@ -737,6 +953,10 @@ class AppSettings {
         contactPhone: json['contact_phone']?.toString() ?? '',
         contactEmail: json['contact_email']?.toString() ?? '',
         invoicingVisibleToClients: json['invoicing_visible_to_clients'] == true,
+        nailVisitMinutes: (json['nail_visit_minutes'] as num?)?.toInt(),
+        // Deliberately not defaulted: a null price is "not set", not free.
+        nailVisitPrice:
+            json['nail_visit_price'] == null ? null : _num(json['nail_visit_price']),
       );
 }
 

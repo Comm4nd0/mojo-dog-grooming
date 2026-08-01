@@ -31,8 +31,16 @@ class _DogFormScreenState extends State<DogFormScreen> {
   late final TextEditingController _price;
   late final TextEditingController _scheduleWeeks;
   late final TextEditingController _temperamentNotes;
+  late final TextEditingController _colour;
+  late final TextEditingController _microchip;
+  late final TextEditingController _allergies;
+  late final TextEditingController _medications;
+  late final TextEditingController _medicalIssues;
+  late final TextEditingController _vaccinations;
   late final TextEditingController _medicalNotes;
   late final TextEditingController _vet;
+  late final TextEditingController _lastVetVisit;
+  late final TextEditingController _ownerGrooming;
   late final TextEditingController _generalNotes;
   late final Map<String, TextEditingController> _prefs;
 
@@ -60,8 +68,16 @@ class _DogFormScreenState extends State<DogFormScreen> {
     _price = TextEditingController(text: dog?.priceOverride?.toString() ?? '');
     _scheduleWeeks = TextEditingController(text: dog?.scheduleWeeksOverride?.toString() ?? '');
     _temperamentNotes = TextEditingController(text: dog?.temperamentNotes ?? '');
+    _colour = TextEditingController(text: dog?.colour ?? '');
+    _microchip = TextEditingController(text: dog?.microchipNumber ?? '');
+    _allergies = TextEditingController(text: dog?.allergies ?? '');
+    _medications = TextEditingController(text: dog?.medications ?? '');
+    _medicalIssues = TextEditingController(text: dog?.medicalIssues ?? '');
+    _vaccinations = TextEditingController(text: dog?.vaccinations ?? '');
     _medicalNotes = TextEditingController(text: dog?.medicalNotes ?? '');
     _vet = TextEditingController(text: dog?.vet ?? '');
+    _lastVetVisit = TextEditingController(text: dog?.lastVetVisit ?? '');
+    _ownerGrooming = TextEditingController(text: dog?.ownerGrooming ?? '');
     _generalNotes = TextEditingController(text: dog?.generalNotes ?? '');
     _prefs = {
       'pref_body': TextEditingController(text: dog?.prefBody ?? ''),
@@ -85,7 +101,9 @@ class _DogFormScreenState extends State<DogFormScreen> {
   void dispose() {
     for (final controller in [
       _name, _breedOther, _groomMinutes, _price, _scheduleWeeks,
-      _temperamentNotes, _medicalNotes, _vet, _generalNotes, ..._prefs.values,
+      _temperamentNotes, _colour, _microchip, _allergies, _medications,
+      _medicalIssues, _vaccinations, _medicalNotes, _vet, _lastVetVisit,
+      _ownerGrooming, _generalNotes, ..._prefs.values,
     ]) {
       controller.dispose();
     }
@@ -144,8 +162,16 @@ class _DogFormScreenState extends State<DogFormScreen> {
       'groom_minutes': asInt(_groomMinutes),
       'price': _price.text.trim().isEmpty ? null : _price.text.trim(),
       'schedule_weeks': asInt(_scheduleWeeks),
+      'colour': _colour.text.trim(),
+      'microchip_number': _microchip.text.trim(),
+      'allergies': _allergies.text.trim(),
+      'medications': _medications.text.trim(),
+      'medical_issues': _medicalIssues.text.trim(),
+      'vaccinations': _vaccinations.text.trim(),
       'medical_notes': _medicalNotes.text.trim(),
       'vet': _vet.text.trim(),
+      'last_vet_visit': _lastVetVisit.text.trim(),
+      'owner_grooming': _ownerGrooming.text.trim(),
       'general_notes': _generalNotes.text.trim(),
       for (final entry in _prefs.entries) entry.key: entry.value.text.trim(),
     };
@@ -263,6 +289,26 @@ class _DogFormScreenState extends State<DogFormScreen> {
                 ),
               ],
             ),
+            const SizedBox(height: 14),
+            Row(
+              children: [
+                Expanded(
+                  child: TextFormField(
+                    controller: _colour,
+                    decoration: const InputDecoration(labelText: 'Colour'),
+                    textCapitalization: TextCapitalization.sentences,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: TextFormField(
+                    controller: _microchip,
+                    decoration: const InputDecoration(labelText: 'Microchip number'),
+                    keyboardType: TextInputType.number,
+                  ),
+                ),
+              ],
+            ),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               value: _isNeutered,
@@ -349,10 +395,38 @@ class _DogFormScreenState extends State<DogFormScreen> {
               const SizedBox(height: 14),
             ],
 
-            const SectionHeader(title: 'Notes'),
+            const SectionHeader(title: 'Health'),
+            TextFormField(
+              controller: _allergies,
+              decoration: const InputDecoration(labelText: 'Allergies'),
+              maxLines: 2,
+              textCapitalization: TextCapitalization.sentences,
+            ),
+            const SizedBox(height: 14),
+            TextFormField(
+              controller: _medications,
+              decoration: const InputDecoration(labelText: 'Medication'),
+              maxLines: 2,
+              textCapitalization: TextCapitalization.sentences,
+            ),
+            const SizedBox(height: 14),
+            TextFormField(
+              controller: _medicalIssues,
+              decoration: const InputDecoration(labelText: 'Known medical issues'),
+              maxLines: 2,
+              textCapitalization: TextCapitalization.sentences,
+            ),
+            const SizedBox(height: 14),
+            TextFormField(
+              controller: _vaccinations,
+              decoration: const InputDecoration(labelText: 'Vaccinations, and when'),
+              maxLines: 2,
+              textCapitalization: TextCapitalization.sentences,
+            ),
+            const SizedBox(height: 14),
             TextFormField(
               controller: _medicalNotes,
-              decoration: const InputDecoration(labelText: 'Medical notes'),
+              decoration: const InputDecoration(labelText: 'Other medical notes'),
               maxLines: 3,
               textCapitalization: TextCapitalization.sentences,
             ),
@@ -361,6 +435,23 @@ class _DogFormScreenState extends State<DogFormScreen> {
               controller: _vet,
               decoration: const InputDecoration(labelText: 'Vet'),
               maxLines: 2,
+            ),
+            const SizedBox(height: 14),
+            TextFormField(
+              controller: _lastVetVisit,
+              decoration: const InputDecoration(labelText: 'What the last vet trip was for'),
+              maxLines: 2,
+              textCapitalization: TextCapitalization.sentences,
+            ),
+
+            const SectionHeader(title: 'Notes'),
+            TextFormField(
+              controller: _ownerGrooming,
+              decoration: const InputDecoration(
+                labelText: 'What the owner does themselves, and how often',
+              ),
+              maxLines: 2,
+              textCapitalization: TextCapitalization.sentences,
             ),
             const SizedBox(height: 14),
             TextFormField(

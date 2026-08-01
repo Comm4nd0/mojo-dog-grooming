@@ -12,10 +12,13 @@ from decimal import Decimal
 
 from django.contrib.auth.models import User
 from django.core.cache import cache
+from django.core.management import call_command
+from django.test import TestCase
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
 
+from .management.commands.seed_breeds import BREEDS
 from .models import (
     AppSettings,
     Appointment,
@@ -24,16 +27,22 @@ from .models import (
     Client,
     ClientClaimRequest,
     ClosureDay,
+    Consent,
+    ConsentKind,
     Dog,
+    Equipment,
     GroomPhase,
     GroomSession,
     IntakeInvite,
+    IntakeSubmission,
     Invoice,
     OpeningHours,
     PasswordResetRequest,
     PasswordResetToken,
     PhaseTiming,
     ProblemArea,
+    REQUIRED_CONSENTS,
+    ServiceType,
     Temperament,
     TemperamentLimit,
 )
@@ -503,20 +512,30 @@ class IntakeFormTests(BaseAPITestCase):
         )
         self.public = APIClient()
 
-    def _payload(self):
-        return {
+    def _payload(self, **overrides):
+        payload = {
             'first_name': 'Carol',
             'last_name': 'Clark',
             'email': 'newclient@example.com',
             'phone': '07700900003',
             'postcode': 'RG3 3CC',
+            'emergency_contact_name': 'Dan Clark',
+            'emergency_contact_phone': '07700900009',
+            'signature': 'Carol Clark',
+            'consents': {kind.value: True for kind in ConsentKind},
             'dogs': [{
                 'name': 'Pepper',
                 'breed': 'Cockapoo (small)',
                 'pref_feet': 'Round',
+                'colour': 'Apricot',
+                'microchip_number': '956000012345678',
+                'allergies': 'Chicken',
+                'owner_grooming': 'Brush twice a week',
                 'problem_areas': [{'grid_cells': ['r2c4', 'r2c5'], 'reason': 'Dislikes back feet touched'}],
             }],
         }
+        payload.update(overrides)
+        return payload
 
     def test_intake_form_works_without_a_login(self):
         response = self.public.get(f'/api/intake/{self.invite.token}/')
@@ -588,6 +607,11 @@ class IntakeFormTests(BaseAPITestCase):
         dog = client.dogs.get(name='Pepper')
         self.assertEqual(dog.breed, self.breed)
         self.assertEqual(dog.pref_feet, 'Round')
+        self.assertEqual(dog.colour, 'Apricot')
+        self.assertEqual(dog.microchip_number, '956000012345678')
+        self.assertEqual(dog.allergies, 'Chicken')
+        self.assertEqual(dog.owner_grooming, 'Brush twice a week')
+        self.assertEqual(client.emergency_contact_name, 'Dan Clark')
 
         area = dog.problem_areas.first()
         self.assertEqual(area.grid_cells, ['r2c4', 'r2c5'])
@@ -602,6 +626,106 @@ class IntakeFormTests(BaseAPITestCase):
             format='json',
         )
         self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+
+
+class IntakeConsentTests(BaseAPITestCase):
+    """The six disclaimers off the paper card.
+
+    Enforced server-side rather than only in the page's JavaScript: the intake
+    endpoint is public, and a signed disclaimer nobody can prove was shown is
+    worth nothing.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.invite = IntakeInvite.objects.create(
+            email='newclient@example.com',
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        self.public = APIClient()
+
+    def _payload(self, consents=None, signature='Carol Clark'):
+        return {
+            'first_name': 'Carol',
+            'email': 'newclient@example.com',
+            'signature': signature,
+            'consents': {kind.value: True for kind in ConsentKind} if consents is None else consents,
+            'dogs': [{'name': 'Pepper'}],
+        }
+
+    def _submit(self, **kwargs):
+        return self.public.post(
+            f'/api/intake/{self.invite.token}/', self._payload(**kwargs), format='json',
+        )
+
+    def test_a_required_disclaimer_left_unticked_is_refused(self):
+        for kind in REQUIRED_CONSENTS:
+            with self.subTest(kind=kind):
+                consents = {k.value: True for k in ConsentKind}
+                consents[kind.value] = False
+                self.invite.used_at = None
+                self.invite.save()
+                response = self._submit(consents=consents)
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+                self.assertIn('consents', response.data)
+
+    def test_declining_photos_still_goes_through(self):
+        """The only optional one. Blocking on it would be wrong — the paper
+        card phrases it as a question, not a condition."""
+        consents = {k.value: True for k in ConsentKind}
+        consents[ConsentKind.PHOTOS.value] = False
+        self.assertEqual(self._submit(consents=consents).status_code, status.HTTP_201_CREATED)
+
+    def test_an_unsigned_form_is_refused(self):
+        response = self._submit(signature='   ')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('signature', response.data)
+
+    def test_approval_records_each_answer_against_the_client(self):
+        consents = {k.value: True for k in ConsentKind}
+        consents[ConsentKind.PHOTOS.value] = False
+        self._submit(consents=consents)
+        submission = IntakeSubmission.objects.get()
+        self.staff_client.post(
+            f'/api/intake-submissions/{submission.id}/approve/',
+            {'client_uid': 'MOJO-004'}, format='json',
+        )
+
+        client = Client.objects.get(uid='MOJO-004')
+        self.assertEqual(client.consents.count(), len(ConsentKind))
+        self.assertFalse(client.photo_consent)
+        self.assertTrue(client.consents.get(kind=ConsentKind.MATTING).agreed)
+
+        signed = client.consents.get(kind=ConsentKind.POLICIES)
+        self.assertEqual(signed.signed_name, 'Carol Clark')
+        # Agreed when the form was sent, not when Jess got round to it.
+        self.assertEqual(signed.signed_at, submission.created_at)
+        # The wording is stored so a later rewrite can't rewrite history.
+        self.assertEqual(signed.wording, ConsentKind.POLICIES.label)
+
+    def test_never_asked_is_not_the_same_as_declined(self):
+        """A client created any other way has no photo answer at all, and
+        anything about to publish a photo must be able to tell that apart from
+        a "no"."""
+        self.assertIsNone(self.alice.photo_consent)
+
+    def test_a_later_answer_wins(self):
+        Consent.objects.create(
+            client=self.alice, kind=ConsentKind.PHOTOS, agreed=True,
+            signed_name='Alice Adams', signed_at=timezone.now() - timedelta(days=30),
+        )
+        self.assertTrue(self.alice.photo_consent)
+        Consent.objects.create(
+            client=self.alice, kind=ConsentKind.PHOTOS, agreed=False,
+            signed_name='Alice Adams',
+        )
+        self.assertFalse(self.alice.photo_consent)
+
+    def test_the_form_page_shows_every_disclaimer_and_the_policies(self):
+        body = self.public.get(f'/intake/{self.invite.token}/').content.decode()
+        for kind in ConsentKind:
+            self.assertIn(f'data-c="{kind.value}"', body)
+        self.assertIn('Animal Welfare Act 2007', body)
 
 
 class IntakeFormPageTests(BaseAPITestCase):
@@ -1606,3 +1730,249 @@ class HealthTests(APITestCase):
         response = APIClient().get('/api/health/')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data['status'], 'ok')
+
+
+class SeedBreedsTests(TestCase):
+    """The price list is Jess's, so the grid is worth a guard.
+
+    The count check is the one that earns its keep: ``get_or_create`` keys on
+    the name, so a breed listed twice in ``BREEDS`` silently collapses into one
+    row rather than failing, and 250-odd hand-entered names is exactly where a
+    duplicate hides.
+    """
+
+    def test_every_breed_in_the_table_becomes_a_row(self):
+        call_command('seed_breeds', verbosity=0)
+        self.assertEqual(Breed.objects.count(), len(BREEDS))
+
+    def test_a_breed_takes_its_price_from_its_size_and_coat(self):
+        call_command('seed_breeds', verbosity=0)
+        westie = Breed.objects.get(name='West Highland White Terrier')
+        self.assertEqual(westie.coat_type, 'wire')
+        self.assertEqual(westie.avg_groom_minutes, 120)
+        self.assertEqual(westie.avg_price, Decimal('60.00'))
+        self.assertEqual(westie.notes, 'Small (5-10kg)')
+
+    def test_reseeding_leaves_jess_s_own_edits_alone_until_overwrite(self):
+        Breed.objects.create(
+            name='West Highland White Terrier', coat_type='wire',
+            avg_groom_minutes=45, avg_price=Decimal('38.00'), avg_schedule_weeks=10,
+        )
+        call_command('seed_breeds', verbosity=0)
+        self.assertEqual(
+            Breed.objects.get(name='West Highland White Terrier').avg_price,
+            Decimal('38.00'),
+        )
+        call_command('seed_breeds', '--overwrite', verbosity=0)
+        self.assertEqual(
+            Breed.objects.get(name='West Highland White Terrier').avg_price,
+            Decimal('60.00'),
+        )
+
+
+class VisitRecordTests(BaseAPITestCase):
+    """Jess's two ongoing record cards, both landing on GroomSession.
+
+    One model rather than two: the cards are the same shape, and hers are filed
+    per dog — splitting them would split a dog's history in half.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.clippers = Equipment.objects.create(name='Clippers', uid='CLIP-01')
+        self.blade = Equipment.objects.create(name='Blade 7F', uid='BLADE-07')
+
+    def test_a_groom_record_holds_the_whole_card(self):
+        response = self.staff_client.post('/api/groom-sessions/', {
+            'dog': self.alice_dog.id,
+            'visit_type': 'GROOM',
+            'health_check_notes': 'Slight tartar on the back teeth.',
+            'matting_paws': True,
+            'matting_ears': True,
+            'matting_notes': 'Behind both ears, worked out by hand.',
+            'bathed_well_behaved': True,
+            'high_velocity_dryer': False,
+            'shampoo_used': 'Oatmeal',
+            'equipment_used': [self.clippers.id, self.blade.id],
+            'final_body': 'Half inch all over',
+            'final_feet': 'Round',
+            'final_tail': 'Left natural',
+            'sensitive_notes': 'Fidgety about the back feet.',
+            'temperament_observed': Temperament.FIDGETY,
+            'notes': 'Settled after the first ten minutes.',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        session = GroomSession.objects.get(pk=response.data['id'])
+        self.assertEqual(session.shampoo_used, 'Oatmeal')
+        self.assertTrue(session.matting_found)
+        self.assertEqual(session.equipment_used.count(), 2)
+        self.assertEqual(response.data['equipment_used_detail'][0]['uid'], 'BLADE-07')
+
+    def test_bathing_not_recorded_is_not_the_same_as_badly_behaved(self):
+        session = GroomSession.objects.create(dog=self.alice_dog)
+        self.assertIsNone(session.bathed_well_behaved)
+
+    def test_a_nails_visit_must_say_which_of_the_three(self):
+        response = self.staff_client.post('/api/groom-sessions/', {
+            'dog': self.alice_dog.id,
+            'visit_type': 'NAILS',
+            'recorded_minutes': 15,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+        response = self.staff_client.post('/api/groom-sessions/', {
+            'dog': self.alice_dog.id,
+            'visit_type': 'NAILS',
+            'recorded_minutes': 15,
+            'nails_done': True,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['total_minutes'], 15)
+
+    def test_recorded_minutes_stand_in_for_an_unused_timer(self):
+        session = GroomSession.objects.create(dog=self.alice_dog, recorded_minutes=25)
+        self.assertEqual(session.total_minutes, 25)
+        self.assertEqual(session.total_seconds, 1500)
+
+    def test_a_nails_visit_never_becomes_the_dogs_groom_time(self):
+        """Twenty minutes is how long a nail trim takes. Writing it to the dog
+        would book the next full groom into a twenty-minute slot."""
+        before = self.alice_dog.groom_minutes
+        session = GroomSession.objects.create(
+            dog=self.alice_dog, visit_type=ServiceType.NAILS_FLEAS_TICKS,
+            nails_done=True, recorded_minutes=20,
+        )
+        self.assertFalse(session.apply_to_dog())
+        self.alice_dog.refresh_from_db()
+        self.assertEqual(self.alice_dog.groom_minutes, before)
+
+        response = self.staff_client.post(f'/api/groom-sessions/{session.id}/apply_to_dog/')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_a_groom_record_still_applies(self):
+        session = GroomSession.objects.create(dog=self.alice_dog, recorded_minutes=95)
+        self.assertTrue(session.apply_to_dog())
+        self.alice_dog.refresh_from_db()
+        self.assertEqual(self.alice_dog.groom_minutes, 95)
+
+    def test_an_observed_temperament_does_not_rewrite_the_dogs(self):
+        """One rough afternoon should not silently change how many dogs Jess
+        can take in a day — the booking limits run off Dog.temperament."""
+        self.alice_dog.temperament = Temperament.EASY
+        self.alice_dog.save()
+        GroomSession.objects.create(
+            dog=self.alice_dog, temperament_observed=Temperament.FEISTY, recorded_minutes=90,
+        ).apply_to_dog()
+        self.alice_dog.refresh_from_db()
+        self.assertEqual(self.alice_dog.temperament, Temperament.EASY)
+
+    def test_the_list_can_be_narrowed_to_one_kind_of_visit(self):
+        GroomSession.objects.create(dog=self.alice_dog, recorded_minutes=90)
+        GroomSession.objects.create(
+            dog=self.alice_dog, visit_type=ServiceType.NAILS_FLEAS_TICKS,
+            nails_done=True, recorded_minutes=15,
+        )
+        response = self.staff_client.get('/api/groom-sessions/', {'visit_type': 'NAILS'})
+        self.assertEqual(len(response.data['results']), 1)
+        self.assertEqual(response.data['results'][0]['visit_type'], 'NAILS')
+
+    def test_a_client_cannot_read_the_record_cards(self):
+        GroomSession.objects.create(dog=self.alice_dog, recorded_minutes=90)
+        self.assertEqual(
+            self.alice_client.get('/api/groom-sessions/').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+
+class NailVisitBookingTests(BaseAPITestCase):
+    """A nails visit is minutes, not hours, and is not priced off the breed grid."""
+
+    def setUp(self):
+        super().setUp()
+        self.start = (timezone.now() + timedelta(days=1)).replace(
+            hour=10, minute=0, second=0, microsecond=0,
+        )
+
+    def test_nothing_is_set_until_jess_sets_it(self):
+        """No invented price. Once a made-up figure is in the database it is
+        indistinguishable from a real one, and a wrong price on an invoice is
+        worse than a blank to fill in."""
+        settings_row = AppSettings.get()
+        self.assertIsNone(settings_row.nail_visit_price)
+        self.assertIsNone(settings_row.nail_visit_minutes)
+
+    def test_booking_before_she_has_set_it_warns_but_goes_through(self):
+        response = self.staff_client.post('/api/appointments/check/', {
+            'dog': self.bob_dog.id,
+            'start_at': self.start.isoformat(),
+            'service_type': 'NAILS',
+        }, format='json')
+        codes = [warning['code'] for warning in response.data['warnings']]
+        self.assertIn('service_not_priced', codes)
+        self.assertIsNone(response.data['suggested_price'])
+
+        # Warned, never blocked — the booking is still accepted.
+        created = self.staff_client.post('/api/appointments/', {
+            'dog': self.bob_dog.id,
+            'start_at': self.start.isoformat(),
+            'service_type': 'NAILS',
+        }, format='json')
+        self.assertEqual(created.status_code, status.HTTP_201_CREATED)
+        self.assertIsNone(Appointment.objects.get(pk=created.data['id']).price_quoted)
+
+    def test_a_groom_booking_is_never_warned_about_the_nails_price(self):
+        response = self.staff_client.post('/api/appointments/check/', {
+            'dog': self.bob_dog.id,
+            'start_at': self.start.isoformat(),
+        }, format='json')
+        codes = [warning['code'] for warning in response.data['warnings']]
+        self.assertNotIn('service_not_priced', codes)
+
+    def test_a_nails_booking_takes_its_slot_and_price_from_settings(self):
+        settings_row = AppSettings.get()
+        settings_row.nail_visit_minutes = 20
+        settings_row.nail_visit_price = Decimal('12.00')
+        settings_row.save()
+
+        response = self.staff_client.post('/api/appointments/', {
+            'dog': self.bob_dog.id,
+            'start_at': self.start.isoformat(),
+            'service_type': 'NAILS',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        appointment = Appointment.objects.get(pk=response.data['id'])
+        self.assertEqual(appointment.duration_minutes, 20)
+        self.assertEqual(appointment.price_quoted, Decimal('12.00'))
+        # Not the dog's groom figures, which are far bigger.
+        self.assertNotEqual(appointment.price_quoted, self.bob_dog.effective_price)
+
+    def test_a_groom_booking_is_unchanged(self):
+        response = self.staff_client.post('/api/appointments/', {
+            'dog': self.bob_dog.id,
+            'start_at': self.start.isoformat(),
+        }, format='json')
+        appointment = Appointment.objects.get(pk=response.data['id'])
+        self.assertEqual(appointment.service_type, ServiceType.GROOM)
+        self.assertEqual(appointment.duration_minutes, self.bob_dog.effective_groom_minutes)
+        self.assertEqual(appointment.price_quoted, self.bob_dog.effective_price)
+
+    def test_the_pre_booking_check_suggests_the_shorter_slot(self):
+        settings_row = AppSettings.get()
+        settings_row.nail_visit_minutes = 20
+        settings_row.nail_visit_price = Decimal('12.00')
+        settings_row.save()
+
+        response = self.staff_client.post('/api/appointments/check/', {
+            'dog': self.bob_dog.id,
+            'start_at': self.start.isoformat(),
+            'service_type': 'NAILS',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        suggested = response.data['suggested_end_at']
+        self.assertEqual(
+            round((suggested - self.start).total_seconds() / 60),
+            settings_row.nail_visit_minutes,
+        )
+        self.assertEqual(response.data['suggested_price'], settings_row.nail_visit_price)

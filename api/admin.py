@@ -8,6 +8,7 @@ from .models import (
     Client,
     ClientClaimRequest,
     ClosureDay,
+    Consent,
     Dog,
     DogPhoto,
     Equipment,
@@ -35,12 +36,25 @@ class DogInline(admin.TabularInline):
     show_change_link = True
 
 
+class ConsentInline(admin.TabularInline):
+    model = Consent
+    extra = 0
+    # A consent record is evidence of what was agreed on a day. Editing one
+    # after the fact would make it worthless, so this is add-and-read only —
+    # withdrawing agreement is a new row, which is what the model expects.
+    readonly_fields = ['kind', 'agreed', 'signed_name', 'signed_at', 'wording']
+    can_delete = False
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
 @admin.register(Client)
 class ClientAdmin(admin.ModelAdmin):
     list_display = ['uid', 'full_name', 'phone', 'email', 'chatty', 'leaflet_received', 'user']
     list_filter = ['chatty', 'leaflet_received']
     search_fields = ['uid', 'first_name', 'last_name', 'phone', 'email', 'postcode']
-    inlines = [DogInline]
+    inlines = [DogInline, ConsentInline]
 
 
 class ProblemAreaInline(admin.TabularInline):
@@ -80,9 +94,11 @@ class PhaseTimingInline(admin.TabularInline):
 
 @admin.register(GroomSession)
 class GroomSessionAdmin(admin.ModelAdmin):
-    list_display = ['dog', 'started_at', 'total_minutes', 'applied_to_dog_at']
+    list_display = ['dog', 'visit_type', 'started_at', 'total_minutes', 'applied_to_dog_at']
+    list_filter = ['visit_type']
     inlines = [PhaseTimingInline]
     autocomplete_fields = ['dog', 'appointment']
+    filter_horizontal = ['equipment_used']
 
 
 class InvoiceLineInline(admin.TabularInline):

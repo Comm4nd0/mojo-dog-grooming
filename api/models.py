@@ -48,6 +48,25 @@ class BookingType(models.TextChoices):
     SCHEDULED = 'SCHEDULED', 'Scheduled'
 
 
+# Only used to give a nails booking *some* length when Jess hasn't set one
+# yet — a diary block of zero minutes would be invisible. It is never used as
+# a price: an unset price stays unset, and the booking warns instead.
+FALLBACK_NAIL_VISIT_MINUTES = 20
+
+
+class ServiceType(models.TextChoices):
+    """What the visit is for, as opposed to :class:`BookingType`, which is why.
+
+    Jess keeps two separate record cards, and the second one is the only
+    evidence that Mojo and Co sells anything but a full groom. A nails, flea or
+    tick visit is minutes rather than hours, so it cannot inherit the dog's
+    groom time or price — see ``AppSettings.nail_visit_minutes``.
+    """
+
+    GROOM = 'GROOM', 'Groom'
+    NAILS_FLEAS_TICKS = 'NAILS', 'Nails, fleas or ticks'
+
+
 class AppointmentStatus(models.TextChoices):
     REQUESTED = 'REQUESTED', 'Requested'
     BOOKED = 'BOOKED', 'Booked'
@@ -62,6 +81,34 @@ class ReviewStatus(models.TextChoices):
     PENDING = 'PENDING', 'Pending'
     APPROVED = 'APPROVED', 'Approved'
     REJECTED = 'REJECTED', 'Rejected'
+
+
+class ConsentKind(models.TextChoices):
+    """The six disclaimers on the paper booking card.
+
+    The wording here is what the client sees and what gets recorded against
+    their name, so it is deliberately plain rather than a paraphrase of the
+    card — but it says the same things.
+    """
+
+    POLICIES = 'policies', 'I have read and agree to the grooming policies and the privacy policy'
+    ACCURACY = 'accuracy', 'These details are right, and I will tell you if anything changes'
+    MATTING = 'matting', 'If my dog is badly matted, the coat may have to come off entirely'
+    RESTRAINT = 'restraint', 'A collar or muzzle may be used if my dog will not settle'
+    VET = 'vet', 'In an emergency a vet will be contacted, and treatment is at my cost'
+    PHOTOS = 'photos', 'Photos of my dog may be used on the website and social media'
+
+
+# Five of the six are conditions of being groomed at all. PHOTOS is the only
+# one phrased as a question on the card, and it is genuinely optional —
+# declining it must not block the form.
+REQUIRED_CONSENTS = [
+    ConsentKind.POLICIES,
+    ConsentKind.ACCURACY,
+    ConsentKind.MATTING,
+    ConsentKind.RESTRAINT,
+    ConsentKind.VET,
+]
 
 
 WEEKDAY_CHOICES = [
@@ -126,6 +173,11 @@ class Client(models.Model):
     address = models.TextField(blank=True)
     postcode = models.CharField(max_length=10, blank=True)
 
+    # "Additional contact name and number (ICE)" on the paper booking card —
+    # who to ring if the owner can't be reached while their dog is here.
+    emergency_contact_name = models.CharField(max_length=100, blank=True)
+    emergency_contact_phone = models.CharField(max_length=20, blank=True)
+
     # Set when the client signs up and their claim is approved. Until then the
     # record is staff-maintained only.
     user = models.OneToOneField(
@@ -154,6 +206,17 @@ class Client(models.Model):
     def full_name(self):
         return f'{self.first_name} {self.last_name}'.strip()
 
+    @property
+    def photo_consent(self):
+        """Has this client agreed to photos being used publicly?
+
+        ``None`` means nobody has ever asked — which is not the same as "no",
+        and is why this is nullable rather than a boolean defaulting to False.
+        Anything about to publish a photo must treat None as "don't".
+        """
+        latest = self.consents.filter(kind=ConsentKind.PHOTOS).first()
+        return latest.agreed if latest else None
+
     UID_PREFIX = 'MOJO-'
 
     @classmethod
@@ -179,6 +242,43 @@ class Client(models.Model):
             if suffix.isdigit():
                 highest = max(highest, int(suffix))
         return f'{cls.UID_PREFIX}{highest + 1:03d}'
+
+
+class Consent(models.Model):
+    """One disclaimer, agreed or declined, with who signed it and when.
+
+    The paper booking card has each of the six signed and dated separately, so
+    these are rows rather than booleans on Client. Two reasons that matters:
+    what somebody agreed to *on the day* is the record, and the wording of a
+    policy changes over time — a boolean would quietly claim they had agreed to
+    whatever the current text says. A change of mind is a new row, and
+    ``photo_consent`` reads the latest.
+
+    Nothing here is deleted when consent is withdrawn, for the same reason.
+    """
+
+    client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name='consents')
+    kind = models.CharField(max_length=20, choices=ConsentKind.choices)
+    agreed = models.BooleanField()
+    signed_name = models.CharField(
+        max_length=120,
+        help_text='Typed by the client on the form — the web equivalent of a signature.',
+    )
+    signed_at = models.DateTimeField(
+        default=timezone.now,
+        help_text='When it was agreed. Defaults to now, but a card signed on paper keeps its own date.',
+    )
+    wording = models.TextField(
+        blank=True,
+        help_text='The text as it was shown at the time, so a later rewording cannot rewrite history.',
+    )
+
+    class Meta:
+        ordering = ['-signed_at']
+        indexes = [models.Index(fields=['client', 'kind'])]
+
+    def __str__(self):
+        return f'{self.client.full_name}: {self.get_kind_display()} — {"yes" if self.agreed else "no"}'
 
 
 class ClientClaimRequest(models.Model):
@@ -346,6 +446,8 @@ class Dog(models.Model):
     date_of_birth = models.DateField(null=True, blank=True)
     sex = models.CharField(max_length=1, choices=SEX_CHOICES, blank=True)
     is_neutered = models.BooleanField(default=False)
+    colour = models.CharField(max_length=60, blank=True)
+    microchip_number = models.CharField(max_length=30, blank=True)
     profile_image = models.ImageField(upload_to='dog_profiles/', null=True, blank=True)
 
     # STAFF ONLY — drives the per-day booking limits. Never shown to clients.
@@ -377,8 +479,21 @@ class Dog(models.Model):
     pref_ears = models.TextField(blank=True, verbose_name='Ears')
     pref_skirt = models.TextField(blank=True, verbose_name='Skirt')
 
+    # The paper booking card asks these as separate yes/no-and-explain
+    # questions rather than one "anything medical?" box, because a groomer
+    # needs to see an allergy without reading a paragraph to find it.
+    # ``medical_notes`` stays for anything that doesn't fit the three.
+    allergies = models.TextField(blank=True)
+    medications = models.TextField(blank=True)
+    medical_issues = models.TextField(blank=True, verbose_name='Known medical issues')
+    vaccinations = models.TextField(blank=True, help_text='Which vaccinations, and when.')
     medical_notes = models.TextField(blank=True)
     vet = models.TextField(blank=True, help_text='Practice name, address and phone number.')
+    last_vet_visit = models.TextField(blank=True, help_text='What the last vet trip was for.')
+    owner_grooming = models.TextField(
+        blank=True,
+        help_text='What the owner does themselves between grooms, and how often.',
+    )
     general_notes = models.TextField(blank=True)
     is_active = models.BooleanField(default=True)
 
@@ -577,6 +692,9 @@ class Appointment(models.Model):
     start_at = models.DateTimeField()
     end_at = models.DateTimeField()
     booking_type = models.CharField(max_length=12, choices=BookingType.choices, default=BookingType.ADHOC)
+    service_type = models.CharField(
+        max_length=10, choices=ServiceType.choices, default=ServiceType.GROOM,
+    )
     status = models.CharField(max_length=12, choices=AppointmentStatus.choices, default=AppointmentStatus.BOOKED)
     price_quoted = models.DecimalField(max_digits=7, decimal_places=2, null=True, blank=True)
     notes = models.TextField(blank=True)
@@ -595,12 +713,24 @@ class Appointment(models.Model):
         return f'{self.dog.name} on {timezone.localtime(self.start_at):%d %b %Y %H:%M}'
 
     def save(self, *args, **kwargs):
-        # Default the slot length to the dog's groom time, and the quote to its
-        # price, so a booking made with just a start time is still complete.
+        # Default the slot length and the quote so a booking made with just a
+        # start time is still complete. A nails/fleas/ticks visit takes neither
+        # from the dog: the breed grid prices full grooms, and inheriting it
+        # would block out three hours and quote £80 for a nail trim.
+        if self.service_type == ServiceType.NAILS_FLEAS_TICKS:
+            settings_row = AppSettings.get()
+            minutes = settings_row.nail_visit_minutes or FALLBACK_NAIL_VISIT_MINUTES
+            # Left as None when Jess hasn't set one. An invented price on an
+            # invoice is worse than a blank to fill in, and the booking check
+            # warns about it.
+            price = settings_row.nail_visit_price
+        else:
+            minutes = self.dog.effective_groom_minutes
+            price = self.dog.effective_price
         if self.start_at and not self.end_at:
-            self.end_at = self.start_at + timedelta(minutes=self.dog.effective_groom_minutes)
+            self.end_at = self.start_at + timedelta(minutes=minutes)
         if self.price_quoted is None:
-            self.price_quoted = self.dog.effective_price
+            self.price_quoted = price
         super().save(*args, **kwargs)
 
     @property
@@ -621,10 +751,19 @@ class Appointment(models.Model):
 # ── Groom timing ───────────────────────────────────────────────────────
 
 class GroomSession(models.Model):
-    """One worked groom, timed by phase.
+    """One worked visit — Jess's "Ongoing Record", filled in as it happens.
 
-    Phases are optional — a wash-and-blow-dry records no clip or strip. The
-    total can be written back to the dog so future bookings block out the
+    Covers both of her record cards. A ``GROOM`` carries the whole thing:
+    phases timed, matting found, what was used, how the dog was. A
+    ``NAILS_FLEAS_TICKS`` visit is minutes rather than hours and fills in far
+    less — which of the three was done, how long, how the dog took it.
+
+    One model rather than two because the cards are the same shape and Jess's
+    are filed per dog: splitting them would split a dog's history in half.
+
+    Phases are optional — a wash-and-blow-dry records no clip or strip, and a
+    nails visit records none at all, which is what ``recorded_minutes`` is for.
+    The total can be written back to the dog so future bookings block out the
     right amount of diary time.
     """
 
@@ -632,9 +771,54 @@ class GroomSession(models.Model):
     appointment = models.ForeignKey(
         Appointment, on_delete=models.SET_NULL, null=True, blank=True, related_name='groom_sessions',
     )
+    visit_type = models.CharField(
+        max_length=10, choices=ServiceType.choices, default=ServiceType.GROOM,
+    )
     started_at = models.DateTimeField(default=timezone.now)
     finished_at = models.DateTimeField(null=True, blank=True)
-    notes = models.TextField(blank=True)
+    recorded_minutes = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text='How long the visit took, when the timer was not used. Overrides the phase total.',
+    )
+
+    # ── The groom card ─────────────────────────────────────────────────
+    health_check_notes = models.TextField(blank=True, help_text='Anything found on the health check.')
+    matting_paws = models.BooleanField(default=False)
+    matting_armpits = models.BooleanField(default=False)
+    matting_ears = models.BooleanField(default=False)
+    matting_elsewhere = models.BooleanField(default=False)
+    matting_notes = models.TextField(blank=True, help_text='Where else, and how bad.')
+    # Null, not False: "not bathed" and "bathed and hated it" are different
+    # things, and defaulting to False would claim the second.
+    bathed_well_behaved = models.BooleanField(null=True, blank=True)
+    high_velocity_dryer = models.BooleanField(default=False)
+    shampoo_used = models.CharField(max_length=120, blank=True)
+    equipment_used = models.ManyToManyField(
+        'Equipment', blank=True, related_name='groom_sessions',
+    )
+    # What was actually done, which is not the same as the pref_* fields on the
+    # dog — those are what the owner asked for at intake.
+    final_body = models.TextField(blank=True, verbose_name='Final body trim')
+    final_feet = models.TextField(blank=True, verbose_name='Final feet shape')
+    final_tail = models.TextField(blank=True, verbose_name='Final tail')
+
+    # ── The nails / fleas / ticks card ─────────────────────────────────
+    nails_done = models.BooleanField(default=False)
+    fleas_treated = models.BooleanField(default=False)
+    ticks_removed = models.BooleanField(default=False)
+
+    # ── Both cards ─────────────────────────────────────────────────────
+    notes = models.TextField(blank=True, help_text='Anything to note about the visit.')
+    sensitive_notes = models.TextField(
+        blank=True, help_text="Anywhere the dog didn't want to be touched, was fidgety or sensitive.",
+    )
+    # A record of how the dog was on the day. Deliberately does not write back
+    # to Dog.temperament, which drives the booking limits — one bad afternoon
+    # should not silently halve how many dogs Jess can take.
+    temperament_observed = models.CharField(
+        max_length=10, choices=Temperament.choices, blank=True,
+    )
+
     applied_to_dog_at = models.DateTimeField(
         null=True, blank=True,
         help_text="Set when this session's total was written to the dog's default groom time.",
@@ -646,18 +830,34 @@ class GroomSession(models.Model):
         ordering = ['-started_at']
 
     def __str__(self):
-        return f'{self.dog.name} groom {self.started_at:%d %b %Y}'
+        return f'{self.dog.name} {self.get_visit_type_display().lower()} {self.started_at:%d %b %Y}'
 
     @property
     def total_seconds(self):
+        if self.recorded_minutes is not None:
+            return self.recorded_minutes * 60
         return sum(timing.duration_seconds for timing in self.timings.all())
 
     @property
     def total_minutes(self):
         return round(self.total_seconds / 60)
 
+    @property
+    def matting_found(self):
+        return any([
+            self.matting_paws, self.matting_armpits,
+            self.matting_ears, self.matting_elsewhere,
+        ])
+
     def apply_to_dog(self):
-        """Make this session's total the dog's default groom time."""
+        """Make this session's total the dog's default groom time.
+
+        Refused for a nails visit: twenty minutes is how long a nail trim
+        takes, and writing it to the dog would book the next full groom into a
+        twenty-minute slot.
+        """
+        if self.visit_type != ServiceType.GROOM:
+            return False
         minutes = self.total_minutes
         if minutes <= 0:
             return False
@@ -846,10 +1046,17 @@ class IntakeSubmission(models.Model):
     phone = models.CharField(max_length=20, blank=True)
     address = models.TextField(blank=True)
     postcode = models.CharField(max_length=10, blank=True)
+    emergency_contact_name = models.CharField(max_length=100, blank=True)
+    emergency_contact_phone = models.CharField(max_length=20, blank=True)
     dogs = models.JSONField(
         default=list,
         help_text='Submitted dogs: name, breed, dob, sex, preferences and problem areas.',
     )
+    # {kind: bool} for the six disclaimers, plus the name typed to sign them.
+    # Held as JSON alongside the dogs for the same reason: nothing becomes a
+    # real Consent row until Jess approves the submission.
+    consents = models.JSONField(default=dict, help_text='Which disclaimers were agreed, by kind.')
+    signature = models.CharField(max_length=120, blank=True)
 
     status = models.CharField(max_length=10, choices=ReviewStatus.choices, default=ReviewStatus.PENDING)
     reviewed_by = models.ForeignKey(
@@ -901,6 +1108,22 @@ class AppSettings(models.Model):
     )
     booking_slot_buffer_minutes = models.PositiveIntegerField(
         default=0, help_text='Extra minutes added after each appointment when suggesting slots.',
+    )
+    # A nails/fleas/ticks visit can't take its length or price from the breed
+    # grid — that grid prices full grooms only, and Jess's price list has
+    # nothing for this at all.
+    #
+    # Both are null until she fills them in, deliberately. A made-up default
+    # is indistinguishable from a real figure once it is in the database, and
+    # the one thing worse than no price on an invoice is a wrong one nobody
+    # knew was invented. Null means "not set yet" and the app says so.
+    nail_visit_minutes = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text='How long to block out for a nails, flea or tick visit. Blank until set.',
+    )
+    nail_visit_price = models.DecimalField(
+        max_digits=7, decimal_places=2, null=True, blank=True,
+        help_text='What a nails, flea or tick visit costs. Not from the breed price list.',
     )
     updated_at = models.DateTimeField(auto_now=True)
 

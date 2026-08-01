@@ -12,6 +12,7 @@ import 'dog_form_screen.dart';
 import 'dog_photos_screen.dart';
 import 'groom_timer_screen.dart';
 import 'problem_area_editor.dart';
+import 'visit_record_screen.dart';
 
 class DogProfileScreen extends StatefulWidget {
   const DogProfileScreen({super.key, required this.dogId});
@@ -28,6 +29,7 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
 
   Dog? _dog;
   List<DogPhoto> _photos = const [];
+  List<GroomSession> _visits = const [];
   String? _nextGroomDue;
   bool _loading = true;
   Object? _error;
@@ -47,17 +49,24 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
       final dog = await _data.getDog(widget.dogId);
       final photos = await _data.getDogPhotos(widget.dogId);
       String? due;
+      var visits = const <GroomSession>[];
       if (_isStaff) {
         try {
           due = await _data.getSuggestedNextGroom(widget.dogId);
         } catch (_) {
           // A missing suggestion is not worth failing the whole screen for.
         }
+        try {
+          visits = await _data.getGroomSessions(widget.dogId);
+        } catch (_) {
+          // Same again — the record cards are history, not the profile.
+        }
       }
       if (!mounted) return;
       setState(() {
         _dog = dog;
         _photos = photos;
+        _visits = visits;
         _nextGroomDue = due;
         _loading = false;
       });
@@ -120,8 +129,10 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
           if (_isStaff) _temperamentSection(dog),
           _groomingSection(dog),
           _preferencesSection(dog),
+          _healthSection(dog),
           if (_isStaff) _problemAreasSection(dog),
           _photosSection(dog),
+          if (_isStaff) _visitsSection(dog),
           if (dog.client != null) _ownerSection(dog.client!),
           _notesSection(dog),
         ],
@@ -165,6 +176,7 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
                     if (dog.sex.isNotEmpty)
                       InfoTag(label: dog.sex == 'M' ? 'Male' : 'Female'),
                     if (dog.isNeutered) const InfoTag(label: 'Neutered'),
+                    if (dog.colour.isNotEmpty) InfoTag(label: dog.colour),
                     if (!dog.isActive)
                       InfoTag(label: 'Inactive', color: context.mojo.muted),
                   ],
@@ -231,6 +243,7 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
         ),
         if (_nextGroomDue != null)
           DetailRow(label: 'Next due', value: formatDate(DateTime.parse(_nextGroomDue!))),
+        DetailRow(label: 'Microchip', value: dog.microchipNumber),
       ],
     );
   }
@@ -425,15 +438,114 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
     );
   }
 
+  /// Jess's ongoing record cards for this dog, newest first.
+  ///
+  /// Staff-only — the whole endpoint is, and a client has no business reading
+  /// the handling notes on it.
+  Widget _visitsSection(Dog dog) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SectionHeader(
+          title: 'Visit records',
+          action: TextButton(
+            onPressed: () async {
+              final saved = await Navigator.of(context).push<bool>(
+                MaterialPageRoute(
+                  builder: (_) => VisitRecordScreen(
+                    dogId: dog.id,
+                    dogName: dog.name,
+                    visitType: VisitType.nailsFleasTicks,
+                  ),
+                ),
+              );
+              if (saved == true) _load();
+            },
+            child: const Text('+ NAILS/FLEAS/TICKS'),
+          ),
+        ),
+        if (_visits.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Text(
+              'Nothing recorded yet.',
+              style: TextStyle(fontSize: 12.5, color: context.mojo.muted),
+            ),
+          )
+        else
+          for (final visit in _visits) _visitTile(dog, visit),
+      ],
+    );
+  }
+
+  Widget _visitTile(Dog dog, GroomSession visit) {
+    final parts = <String>[
+      formatDuration(visit.totalMinutes),
+      if (!visit.isGroom && visit.nailsSummary.isNotEmpty) visit.nailsSummary,
+      if (visit.mattingPlaces.isNotEmpty) 'matting: ${visit.mattingPlaces.join(', ')}',
+      if (visit.shampooUsed.isNotEmpty) visit.shampooUsed,
+      if (visit.temperamentObservedDisplay.isNotEmpty) visit.temperamentObservedDisplay,
+    ];
+    return ListTile(
+      dense: true,
+      leading: Icon(
+        visit.isGroom ? Icons.content_cut : Icons.pets_outlined,
+        size: 20,
+        color: context.mojo.accent,
+      ),
+      title: Text(
+        '${visit.isGroom ? 'Groom' : 'Nails, fleas or ticks'} · ${formatDate(visit.startedAt)}',
+        style: const TextStyle(fontSize: 13.5),
+      ),
+      subtitle: Text(
+        parts.join(' · '),
+        style: TextStyle(fontSize: 11.5, color: context.mojo.muted),
+      ),
+      trailing: const Icon(Icons.chevron_right, size: 18),
+      onTap: () async {
+        final saved = await Navigator.of(context).push<bool>(
+          MaterialPageRoute(
+            builder: (_) => VisitRecordScreen(
+              dogId: dog.id,
+              dogName: dog.name,
+              visitType: visit.visitType,
+              session: visit,
+            ),
+          ),
+        );
+        if (saved == true) _load();
+      },
+    );
+  }
+
+  /// The health questions off the booking card, each on its own row.
+  ///
+  /// Separate rows rather than one "Medical" paragraph because an allergy has
+  /// to be findable at a glance, which is how the paper card asks it too.
+  Widget _healthSection(Dog dog) {
+    final notes = dog.healthNotes;
+    if (notes.isEmpty && dog.vet.isEmpty && dog.lastVetVisit.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SectionHeader(title: 'Health'),
+        for (final note in notes) DetailRow(label: note.label, value: note.value),
+        DetailRow(label: 'Vet', value: dog.vet),
+        DetailRow(label: 'Last vet trip', value: dog.lastVetVisit),
+      ],
+    );
+  }
+
   Widget _notesSection(Dog dog) {
-    final hasAny = dog.medicalNotes.isNotEmpty || dog.vet.isNotEmpty || dog.generalNotes.isNotEmpty;
+    final hasAny = dog.generalNotes.isNotEmpty || dog.ownerGrooming.isNotEmpty;
     if (!hasAny) return const SizedBox.shrink();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const SectionHeader(title: 'Notes'),
-        DetailRow(label: 'Medical', value: dog.medicalNotes),
-        DetailRow(label: 'Vet', value: dog.vet),
+        DetailRow(label: 'Owner grooms', value: dog.ownerGrooming),
         DetailRow(label: 'General', value: dog.generalNotes),
       ],
     );

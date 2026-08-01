@@ -158,12 +158,14 @@ class DataService {
     required DateTime startAt,
     DateTime? endAt,
     int? excludeAppointmentId,
+    String serviceType = ServiceType.groom,
   }) async {
     final payload = await _api.post('/appointments/check/', {
       'dog': dogId,
       'start_at': startAt.toUtc().toIso8601String(),
       'end_at': ?endAt?.toUtc().toIso8601String(),
       'exclude_appointment': ?excludeAppointmentId,
+      'service_type': serviceType,
     });
     return BookingCheck.fromJson(payload as Map<String, dynamic>);
   }
@@ -173,6 +175,7 @@ class DataService {
     required DateTime startAt,
     DateTime? endAt,
     String bookingType = 'ADHOC',
+    String serviceType = ServiceType.groom,
     String notes = '',
   }) async {
     final payload = await _api.post('/appointments/', {
@@ -180,6 +183,7 @@ class DataService {
       'start_at': startAt.toUtc().toIso8601String(),
       'end_at': ?endAt?.toUtc().toIso8601String(),
       'booking_type': bookingType,
+      'service_type': serviceType,
       'notes': notes,
     });
     return Appointment.fromJson(payload as Map<String, dynamic>);
@@ -207,8 +211,11 @@ class DataService {
 
   // ── Groom sessions ─────────────────────────────────────────────────
 
-  Future<List<GroomSession>> getGroomSessions(int dogId) async {
-    final payload = await _api.get('/groom-sessions/', query: {'dog': dogId});
+  Future<List<GroomSession>> getGroomSessions(int dogId, {String? visitType}) async {
+    final payload = await _api.get('/groom-sessions/', query: {
+      'dog': dogId,
+      'visit_type': ?visitType,
+    });
     return ApiClient.resultsOf(payload).map(GroomSession.fromJson).toList();
   }
 
@@ -217,15 +224,20 @@ class DataService {
     int? appointmentId,
     required List<PhaseTiming> timings,
     String notes = '',
+    Map<String, dynamic> record = const {},
   }) async {
     final payload = await _api.post('/groom-sessions/', {
       'dog': dogId,
       'appointment': ?appointmentId,
       'timings': timings.map((t) => t.toJson()).toList(),
       'notes': notes,
+      ...record,
     });
     return GroomSession.fromJson(payload as Map<String, dynamic>);
   }
+
+  Future<GroomSession> updateGroomSession(int id, Map<String, dynamic> changes) async =>
+      GroomSession.fromJson(await _api.patch('/groom-sessions/$id/', changes) as Map<String, dynamic>);
 
   /// Write this session's total back to the dog's default groom time, which
   /// then sizes the diary block for future bookings.

@@ -102,6 +102,53 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         onTap: () => _editLimit(limit),
                       ),
 
+                    const SectionHeader(title: 'Nails, fleas and ticks'),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                      child: Text(
+                        "These aren't in your price list — it covers grooms only — "
+                        'so nothing is set until you set it. Bookings still go '
+                        'through; the app just reminds you.',
+                        style: TextStyle(fontSize: 12.5, color: context.mojo.muted),
+                      ),
+                    ),
+                    ListTile(
+                      dense: true,
+                      title: const Text('How long to block out'),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            _settings!.nailVisitMinutes == null
+                                ? 'Not set'
+                                : formatDuration(_settings!.nailVisitMinutes!),
+                            style: TextStyle(color: context.mojo.muted),
+                          ),
+                          const SizedBox(width: 10),
+                          const Icon(Icons.edit_outlined, size: 18),
+                        ],
+                      ),
+                      onTap: _editNailMinutes,
+                    ),
+                    ListTile(
+                      dense: true,
+                      title: const Text('What it costs'),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            _settings!.nailVisitPrice == null
+                                ? 'Not set'
+                                : formatMoney(_settings!.nailVisitPrice!),
+                            style: TextStyle(color: context.mojo.muted),
+                          ),
+                          const SizedBox(width: 10),
+                          const Icon(Icons.edit_outlined, size: 18),
+                        ],
+                      ),
+                      onTap: _editNailPrice,
+                    ),
+
                     const SectionHeader(title: 'Opening hours'),
                     Padding(
                       padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
@@ -141,9 +188,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     const Padding(
                       padding: EdgeInsets.all(16),
                       child: Text(
-                        'The seeded breed times, prices and intervals are general industry '
-                        'estimates, not Mojo and Co figures. Worth going through them once '
-                        'and setting your own.',
+                        'Times and prices come from your own price list. Which size and '
+                        'coat band each breed was put in, and how often it needs doing, '
+                        'are our guess — worth a look through.',
                         style: TextStyle(fontSize: 12, color: AppColors.warning),
                       ),
                     ),
@@ -267,6 +314,42 @@ class _SettingsScreenState extends State<SettingsScreen> {
       'is_closed': !isOpen,
       'open_time': _apiTime(open),
       'close_time': _apiTime(close),
+    });
+    _load();
+  }
+
+  Future<void> _editNailMinutes() async {
+    final result = await promptForText(
+      context,
+      title: 'Nails, fleas and ticks',
+      initialValue: _settings!.nailVisitMinutes?.toString() ?? '',
+      labelText: 'Minutes to block out',
+      helperText: 'Leave blank if you have not decided yet',
+      keyboardType: TextInputType.number,
+    );
+    if (result == null) return;
+    // Blank clears it back to "not set" rather than being ignored — she may
+    // have entered a guess and want it gone again.
+    final minutes = int.tryParse(result.trim());
+    if (result.trim().isNotEmpty && (minutes == null || minutes <= 0)) return;
+    await _data.updateSettings({'nail_visit_minutes': minutes});
+    _load();
+  }
+
+  Future<void> _editNailPrice() async {
+    final result = await promptForText(
+      context,
+      title: 'Nails, fleas and ticks',
+      initialValue: _settings!.nailVisitPrice?.toString() ?? '',
+      labelText: 'Price',
+      helperText: 'Leave blank if you have not decided yet',
+      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+    );
+    if (result == null) return;
+    final price = double.tryParse(result.trim());
+    if (result.trim().isNotEmpty && (price == null || price < 0)) return;
+    await _data.updateSettings({
+      'nail_visit_price': price?.toStringAsFixed(2),
     });
     _load();
   }

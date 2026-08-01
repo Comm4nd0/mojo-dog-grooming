@@ -7,6 +7,7 @@ import '../../models/models.dart' as models;
 import '../../services/data_service.dart';
 import '../../services/service_locator.dart';
 import '../../widgets/common.dart';
+import 'visit_record_screen.dart';
 
 /// Time a groom phase by phase.
 ///
@@ -105,23 +106,46 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
   int get _totalSeconds => models.PhaseTiming.phaseOrder
       .fold(0, (sum, phase) => sum + _displaySeconds(phase));
 
+  /// The phases that were actually used. Empty when nothing was timed.
+  List<models.PhaseTiming> get _timings => [
+        for (final phase in models.PhaseTiming.phaseOrder)
+          if ((_elapsed[phase] ?? 0) > 0)
+            models.PhaseTiming(
+              phase: phase,
+              durationSeconds: _elapsed[phase]!,
+              enteredManually: _manual.contains(phase),
+            ),
+      ];
+
+  /// Hand the timings to the record card rather than saving here, so the
+  /// session is created once with the whole groom written up — matting,
+  /// shampoo, equipment and all.
+  Future<void> _writeUp() async {
+    setState(_bankRunning);
+    if (_timings.isEmpty) {
+      showSnack(context, 'No time recorded yet.', isError: true);
+      return;
+    }
+    final saved = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => VisitRecordScreen(
+          dogId: widget.dog.id,
+          dogName: widget.dog.name,
+          appointmentId: widget.appointmentId,
+          timings: _timings,
+        ),
+      ),
+    );
+    if (saved == true && mounted) Navigator.of(context).pop(true);
+  }
+
   Future<void> _save({required bool applyToDog}) async {
     setState(() {
       _bankRunning();
       _busy = true;
     });
 
-    // Only phases that were actually used get recorded.
-    final timings = [
-      for (final phase in models.PhaseTiming.phaseOrder)
-        if ((_elapsed[phase] ?? 0) > 0)
-          models.PhaseTiming(
-            phase: phase,
-            durationSeconds: _elapsed[phase]!,
-            enteredManually: _manual.contains(phase),
-          ),
-    ];
-
+    final timings = _timings;
     if (timings.isEmpty) {
       setState(() => _busy = false);
       showSnack(context, 'No time recorded yet.', isError: true);
@@ -196,6 +220,11 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
           OutlinedButton(
             onPressed: _busy || totalMinutes == 0 ? null : () => _save(applyToDog: false),
             child: const Text('SAVE WITHOUT CHANGING DEFAULT'),
+          ),
+          const SizedBox(height: 10),
+          OutlinedButton(
+            onPressed: _busy || totalMinutes == 0 ? null : _writeUp,
+            child: const Text('WRITE UP THE GROOM CARD'),
           ),
           const SizedBox(height: 12),
           Text(

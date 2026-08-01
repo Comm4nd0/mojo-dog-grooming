@@ -443,4 +443,110 @@ void main() {
       expect(staff.needsToClaimProfile, isFalse);
     });
   });
+
+  group('Consents', () {
+    Map<String, dynamic> clientJson(Map<String, dynamic> extra) => {
+          'id': 1, 'uid': 'MOJO-001', 'first_name': 'Alice', 'last_name': 'Adams',
+          'full_name': 'Alice Adams', 'email': '', 'phone': '', 'address': '',
+          'postcode': '', 'dog_count': 1, 'has_login': true, ...extra,
+        };
+
+    test('never asked is null, and not the same as declined', () {
+      // Publishing a photo on the strength of a missing key would be using an
+      // answer nobody ever gave, so this must not coerce to false.
+      expect(ClientRecord.fromJson(clientJson({})).photoConsent, isNull);
+      expect(
+        ClientRecord.fromJson(clientJson({'photo_consent': false})).photoConsent,
+        isFalse,
+      );
+      expect(
+        ClientRecord.fromJson(clientJson({'photo_consent': true})).photoConsent,
+        isTrue,
+      );
+    });
+
+    test('the signed disclaimers come through with who signed them', () {
+      final client = ClientRecord.fromJson(clientJson({
+        'consents': [
+          {
+            'id': 3, 'kind': 'photos', 'kind_display': 'Photos of my dog may be used',
+            'agreed': false, 'signed_name': 'Alice Adams',
+            'signed_at': '2026-07-28T13:14:32Z',
+          },
+        ],
+      }));
+      expect(client.consents, hasLength(1));
+      expect(client.consents.first.agreed, isFalse);
+      expect(client.consents.first.signedName, 'Alice Adams');
+      expect(client.consents.first.signedAt, isNotNull);
+    });
+  });
+
+  group('Visit records', () {
+    Map<String, dynamic> visitJson(Map<String, dynamic> extra) => {
+          'id': 1, 'dog': 2, 'dog_name': 'Biscuit',
+          'started_at': '2026-07-28T09:00:00Z', 'timings': [],
+          'total_minutes': 90, ...extra,
+        };
+
+    test('bathing not recorded is null, not badly behaved', () {
+      // "Not bathed" and "bathed and hated it" are different things, and a
+      // groomer reading the card needs to be able to tell them apart.
+      expect(GroomSession.fromJson(visitJson({})).bathedWellBehaved, isNull);
+      expect(
+        GroomSession.fromJson(visitJson({'bathed_well_behaved': false})).bathedWellBehaved,
+        isFalse,
+      );
+    });
+
+    test('a groom card comes through whole', () {
+      final visit = GroomSession.fromJson(visitJson({
+        'visit_type': 'GROOM',
+        'matting_paws': true,
+        'matting_ears': true,
+        'matting_found': true,
+        'shampoo_used': 'Oatmeal',
+        'equipment_used_detail': [
+          {'id': 5, 'name': 'Clippers', 'uid': 'CLIP-01', 'is_active': true},
+        ],
+        'temperament_observed': 'FIDGETY',
+        'temperament_observed_display': 'Fidgety',
+      }));
+      expect(visit.isGroom, isTrue);
+      expect(visit.mattingPlaces, ['paws', 'ears']);
+      expect(visit.equipmentUsed.single.uid, 'CLIP-01');
+      expect(visit.temperamentObservedDisplay, 'Fidgety');
+    });
+
+    test('a nails visit summarises which of the three it was', () {
+      final visit = GroomSession.fromJson(visitJson({
+        'visit_type': 'NAILS',
+        'nails_done': true,
+        'ticks_removed': true,
+        'recorded_minutes': 15,
+        'total_minutes': 15,
+      }));
+      expect(visit.isGroom, isFalse);
+      expect(visit.nailsSummary, 'Nails · Ticks');
+      expect(visit.recordedMinutes, 15);
+    });
+
+    test('a nails booking is not priced off the breed grid', () {
+      final settings = AppSettings.fromJson({
+        'business_name': 'Mojo and Co',
+        'nail_visit_minutes': 20,
+        'nail_visit_price': '12.00',
+      });
+      expect(settings.nailVisitMinutes, 20);
+      expect(settings.nailVisitPrice, 12.0);
+    });
+
+    test('an unset nails price is null, not free', () {
+      // Rendering a missing price as £0.00 would put a number on an invoice
+      // that nobody chose. Null means Jess hasn't set it yet.
+      final settings = AppSettings.fromJson({'business_name': 'Mojo and Co'});
+      expect(settings.nailVisitPrice, isNull);
+      expect(settings.nailVisitMinutes, isNull);
+    });
+  });
 }

@@ -63,9 +63,12 @@ from .models import (
     Client,
     ClientClaimRequest,
     ClosureDay,
+    Consent,
+    ConsentKind,
     Dog,
     DogPhoto,
     Equipment,
+    FALLBACK_NAIL_VISIT_MINUTES,
     GroomSession,
     IntakeInvite,
     IntakeSubmission,
@@ -75,7 +78,9 @@ from .models import (
     PasswordResetToken,
     Payment,
     ProblemArea,
+    REQUIRED_CONSENTS,
     ReviewStatus,
+    ServiceType,
     TemperamentLimit,
     TodoItem,
     UserProfile,
@@ -887,19 +892,28 @@ class AppointmentViewSet(ClientScopedMixin, viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
+        service_type = data.get('service_type', ServiceType.GROOM)
         warnings = booking_warnings(
             dog=data['dog'],
             start_at=data['start_at'],
             end_at=data.get('end_at'),
             exclude_appointment=data.get('exclude_appointment'),
+            service_type=service_type,
         )
-        suggested_end = data.get('end_at') or (
-            data['start_at'] + timedelta(minutes=data['dog'].effective_groom_minutes)
-        )
+        if service_type == ServiceType.NAILS_FLEAS_TICKS:
+            settings_row = AppSettings.get()
+            # Price stays None when it isn't set — the warning above says so,
+            # and the form leaves the field blank rather than pre-filling a
+            # number nobody chose.
+            minutes = settings_row.nail_visit_minutes or FALLBACK_NAIL_VISIT_MINUTES
+            price = settings_row.nail_visit_price
+        else:
+            minutes, price = data['dog'].effective_groom_minutes, data['dog'].effective_price
+        suggested_end = data.get('end_at') or (data['start_at'] + timedelta(minutes=minutes))
         return Response({
             'warnings': warnings,
             'suggested_end_at': suggested_end,
-            'suggested_price': data['dog'].effective_price,
+            'suggested_price': price,
         })
 
     @action(detail=False, methods=['get'])
@@ -959,14 +973,17 @@ class BookingSeriesViewSet(viewsets.ModelViewSet):
 # ── Groom timing ───────────────────────────────────────────────────────
 
 class GroomSessionViewSet(viewsets.ModelViewSet):
-    queryset = GroomSession.objects.select_related('dog').prefetch_related('timings')
+    queryset = GroomSession.objects.select_related('dog').prefetch_related('timings', 'equipment_used')
     serializer_class = GroomSessionSerializer
     permission_classes = [IsAdminUser]
 
     def get_queryset(self):
         queryset = super().get_queryset()
         dog_id = self.request.query_params.get('dog')
-        return queryset.filter(dog_id=dog_id) if dog_id else queryset
+        if dog_id:
+            queryset = queryset.filter(dog_id=dog_id)
+        visit_type = self.request.query_params.get('visit_type')
+        return queryset.filter(visit_type=visit_type) if visit_type else queryset
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
@@ -1158,6 +1175,7 @@ class PublicIntakeFormView(APIView):
                 'token': token,
                 'email': invite.email,
                 'settings': settings_row,
+                'today': timezone.localdate(),
                 'breeds': Breed.objects.values_list('name', flat=True),
                 'grid_columns': ProblemArea.GRID_COLUMNS,
                 'grid_rows': ProblemArea.GRID_ROWS,
@@ -1169,6 +1187,12 @@ class PublicIntakeFormView(APIView):
                     ('pref_face', 'Face'),
                     ('pref_ears', 'Ears'),
                     ('pref_skirt', 'Skirt'),
+                ],
+                # The six disclaimers off the paper card. The page ticks the
+                # required ones for itself; the endpoint enforces them.
+                'consent_fields': [
+                    (kind.value, kind.label, kind in REQUIRED_CONSENTS)
+                    for kind in ConsentKind
                 ],
             },
             template_name='intake/form.html',
@@ -1219,6 +1243,22 @@ class IntakeSubmissionViewSet(viewsets.ReadOnlyModelViewSet):
                     phone=submission.phone,
                     address=submission.address,
                     postcode=submission.postcode,
+                    emergency_contact_name=submission.emergency_contact_name,
+                    emergency_contact_phone=submission.emergency_contact_phone,
+                )
+
+            # The consents were agreed when the form was sent, not when Jess
+            # got round to approving it, so they keep the submission's date.
+            for kind, agreed in (submission.consents or {}).items():
+                if kind not in ConsentKind.values:
+                    continue
+                Consent.objects.create(
+                    client=client,
+                    kind=kind,
+                    agreed=bool(agreed),
+                    signed_name=submission.signature,
+                    signed_at=submission.created_at,
+                    wording=ConsentKind(kind).label,
                 )
 
             for entry in submission.dogs:
@@ -1235,14 +1275,22 @@ class IntakeSubmissionViewSet(viewsets.ReadOnlyModelViewSet):
                     date_of_birth=entry.get('date_of_birth') or None,
                     sex=entry.get('sex', ''),
                     is_neutered=bool(entry.get('is_neutered', False)),
+                    colour=entry.get('colour', ''),
+                    microchip_number=entry.get('microchip_number', ''),
                     pref_body=entry.get('pref_body', ''),
                     pref_feet=entry.get('pref_feet', ''),
                     pref_tail=entry.get('pref_tail', ''),
                     pref_face=entry.get('pref_face', ''),
                     pref_ears=entry.get('pref_ears', ''),
                     pref_skirt=entry.get('pref_skirt', ''),
+                    allergies=entry.get('allergies', ''),
+                    medications=entry.get('medications', ''),
+                    medical_issues=entry.get('medical_issues', ''),
+                    vaccinations=entry.get('vaccinations', ''),
                     medical_notes=entry.get('medical_notes', ''),
                     vet=entry.get('vet', ''),
+                    last_vet_visit=entry.get('last_vet_visit', ''),
+                    owner_grooming=entry.get('owner_grooming', ''),
                     general_notes=entry.get('general_notes', ''),
                 )
                 for area in entry.get('problem_areas', []) or []:

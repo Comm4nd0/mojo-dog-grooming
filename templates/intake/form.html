@@ -34,6 +34,16 @@
   .area .cells { font-size: 11.5px; color: var(--ink-2); }
   fieldset { border: 0; padding: 0; margin: 0 0 6px; }
   legend { font-size: 13px; font-weight: 600; padding: 0; margin-bottom: 4px; }
+  /* ── Policies and consents ───────────────────────────────────────── */
+  .policies-box { border: 1px solid var(--hairline); padding: 12px 14px; }
+  .policies-box summary { font-weight: 600; cursor: pointer; }
+  ul.policies { margin: 12px 0 0; padding-left: 20px; }
+  ul.policies li { font-size: 13.5px; margin-bottom: 8px; line-height: 1.5; }
+  label.check.consent { display: flex; gap: 10px; align-items: flex-start; padding: 10px 0; border-bottom: 1px solid var(--hairline); }
+  label.check.consent:last-child { border-bottom: 0; }
+  label.check.consent input { margin-top: 3px; flex: 0 0 auto; }
+  label.check.consent span { font-size: 14px; line-height: 1.45; }
+
   .done { text-align: center; padding: 40px 20px; }
   .done .tick { width: 60px; height: 60px; background: var(--tint); color: var(--green); display: grid; place-items: center; margin: 0 auto 18px; font-size: 30px; }
   [hidden] { display: none !important; }
@@ -80,11 +90,58 @@
         <label for="postcode">Postcode</label>
         <input type="text" id="postcode" name="postcode" autocomplete="postal-code">
       </div>
+
+      <fieldset>
+        <legend>In case of emergency</legend>
+        <p class="hint">Someone else we can ring if we can't reach you while your dog is with us.</p>
+        <div class="row">
+          <div class="field">
+            <label for="emergency_contact_name">Their name</label>
+            <input type="text" id="emergency_contact_name" name="emergency_contact_name">
+          </div>
+          <div class="field">
+            <label for="emergency_contact_phone">Their number</label>
+            <input type="tel" id="emergency_contact_phone" name="emergency_contact_phone">
+          </div>
+        </div>
+      </fieldset>
     </div>
 
     <h2>Your dogs</h2>
     <div id="dogs"></div>
     <button type="button" class="secondary" id="add-dog" style="margin-bottom:22px">+ Add another dog</button>
+
+    <div class="card">
+      <h2>Before we start</h2>
+
+      <details class="policies-box">
+        <summary>Our policies when grooming your dog</summary>
+        {% include "intake/policies.html" %}
+      </details>
+
+      <p class="hint" style="margin-top:14px">
+        Please tick each of these. The last one is optional — everything else we need before we
+        can groom your dog.
+      </p>
+
+      <div id="consents">
+        {% for kind, label, required in consent_fields %}
+          <label class="check consent">
+            <input type="checkbox" data-c="{{ kind }}"{% if required %} data-required="1"{% endif %}>
+            <span>{{ label }}{% if required %} <span class="req">*</span>{% endif %}</span>
+          </label>
+        {% endfor %}
+      </div>
+
+      <div class="field" style="margin-top:16px">
+        <label for="signature">Type your name to sign <span class="req">*</span></label>
+        <input type="text" id="signature" name="signature" autocomplete="name"
+               placeholder="Your full name">
+        <p class="hint">
+          Dated {{ today }} when you send this form.
+        </p>
+      </div>
+    </div>
 
     <button type="submit" id="submit">Send to {{ settings.business_name }}</button>
     <p class="hint" style="text-align:center;margin-top:12px">
@@ -135,6 +192,17 @@
       </div>
     </div>
 
+    <div class="row">
+      <div class="field">
+        <label>Colour</label>
+        <input type="text" data-f="colour">
+      </div>
+      <div class="field">
+        <label>Microchip number</label>
+        <input type="text" data-f="microchip_number" inputmode="numeric">
+      </div>
+    </div>
+
     <div class="field">
       <label class="check"><input type="checkbox" data-f="is_neutered"> Neutered or spayed</label>
     </div>
@@ -150,13 +218,42 @@
       {% endfor %}
     </fieldset>
 
-    <div class="field">
-      <label>Anything medical we should know?</label>
-      <textarea data-f="medical_notes"></textarea>
-    </div>
+    <fieldset>
+      <legend>Health</legend>
+      <p class="hint">Leave anything blank if it doesn't apply.</p>
+      <div class="field">
+        <label>Any allergies?</label>
+        <textarea data-f="allergies"></textarea>
+      </div>
+      <div class="field">
+        <label>Any medication?</label>
+        <textarea data-f="medications"></textarea>
+      </div>
+      <div class="field">
+        <label>Any known medical issues?</label>
+        <textarea data-f="medical_issues"></textarea>
+      </div>
+      <div class="field">
+        <label>Which vaccinations, and when?</label>
+        <textarea data-f="vaccinations"></textarea>
+      </div>
+      <div class="field">
+        <label>Anything else medical we should know?</label>
+        <textarea data-f="medical_notes"></textarea>
+      </div>
+    </fieldset>
+
     <div class="field">
       <label>Your vet</label>
       <textarea data-f="vet" placeholder="Practice name, address and phone number"></textarea>
+    </div>
+    <div class="field">
+      <label>What was your last vet trip for?</label>
+      <textarea data-f="last_vet_visit"></textarea>
+    </div>
+    <div class="field">
+      <label>What grooming do you do yourself, and how often?</label>
+      <textarea data-f="owner_grooming" placeholder="e.g. Brush most days, bath about once a month"></textarea>
     </div>
 
     <fieldset>
@@ -404,8 +501,18 @@
       first_name: val('first_name'), last_name: val('last_name'),
       email: val('email'), phone: val('phone'),
       address: val('address'), postcode: val('postcode'),
+      emergency_contact_name: val('emergency_contact_name'),
+      emergency_contact_phone: val('emergency_contact_phone'),
+      signature: val('signature'),
+      consents: {},
       dogs: []
     };
+    // Every box is sent, ticked or not: an unticked photo box is a recorded
+    // "no", which is a different thing from never having been asked.
+    Array.prototype.forEach.call(
+      document.querySelectorAll('#consents input[data-c]'),
+      function (el) { payload.consents[el.dataset.c] = el.checked; }
+    );
     Array.prototype.forEach.call(dogsEl.querySelectorAll('.dog-block'), function (b) {
       var dog = { problem_areas: b._areas || [] };
       Array.prototype.forEach.call(b.querySelectorAll('[data-f]'), function (el) {
@@ -434,6 +541,15 @@
     if (!payload.dogs.length || payload.dogs.some(function (d) { return !d.name; })) {
       return flash('Every dog needs a name.');
     }
+    var unticked = Array.prototype.filter.call(
+      document.querySelectorAll('#consents input[data-required]'),
+      function (el) { return !el.checked; }
+    );
+    if (unticked.length) {
+      unticked[0].closest('.consent').scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return flash('Please tick each of the terms before sending.');
+    }
+    if (!payload.signature) return flash('Please type your name to sign the form.');
 
     var btn = document.getElementById('submit');
     btn.disabled = true;
@@ -454,6 +570,8 @@
       }
       var msg = r.body && (r.body.detail ||
         (r.body.dogs && [].concat(r.body.dogs)[0]) ||
+        (r.body.consents && [].concat(r.body.consents)[0]) ||
+        (r.body.signature && [].concat(r.body.signature)[0]) ||
         (r.body.email && 'Email: ' + [].concat(r.body.email)[0]));
       flash(msg || 'Sorry, something went wrong. Please try again.');
       btn.disabled = false;

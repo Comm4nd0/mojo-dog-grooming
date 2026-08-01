@@ -156,6 +156,10 @@ class _ClientProfileScreenState extends State<ClientProfileScreen> {
           DetailRow(label: 'Email', value: client.email),
           DetailRow(label: 'Address', value: client.address),
           DetailRow(label: 'Postcode', value: client.postcode),
+          DetailRow(label: 'In emergency', value: client.emergencyContactName),
+          DetailRow(label: 'Their number', value: client.emergencyContactPhone),
+
+          _consentsSection(client),
 
           const SectionHeader(title: 'Staff flags'),
           Padding(
@@ -235,6 +239,37 @@ class _ClientProfileScreenState extends State<ClientProfileScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  /// What this client agreed to on their booking form, and when.
+  ///
+  /// Read-only on purpose: a consent is a record of what somebody signed on a
+  /// particular day, and something Jess could edit afterwards would be worth
+  /// nothing. Changing an answer means asking again.
+  Widget _consentsSection(ClientRecord client) {
+    if (client.consents.isEmpty) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SectionHeader(title: 'Agreed terms'),
+        for (final consent in client.consents)
+          ListTile(
+            dense: true,
+            leading: Icon(
+              consent.agreed ? Icons.check_circle_outline : Icons.cancel_outlined,
+              size: 20,
+              color: consent.agreed ? context.mojo.accent : context.mojo.muted,
+            ),
+            title: Text(consent.kindDisplay, style: const TextStyle(fontSize: 13.5)),
+            subtitle: Text(
+              consent.signedAt == null
+                  ? consent.signedName
+                  : '${consent.signedName} · ${formatDate(consent.signedAt!)}',
+              style: TextStyle(fontSize: 11.5, color: context.mojo.muted),
+            ),
+          ),
+      ],
     );
   }
 }
