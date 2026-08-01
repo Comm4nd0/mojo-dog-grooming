@@ -24,6 +24,9 @@ router.register('equipment', views.EquipmentViewSet, basename='equipment')
 router.register('todos', views.TodoItemViewSet, basename='todo')
 router.register('opening-hours', views.OpeningHoursViewSet, basename='opening-hours')
 router.register('closures', views.ClosureDayViewSet, basename='closure')
+router.register('dog-documents', views.DogDocumentViewSet, basename='dog-document')
+router.register('client-change-requests', views.ClientChangeRequestViewSet, basename='client-change-request')
+router.register('services', views.ServiceViewSet, basename='service')
 router.register('temperament-grades', views.TemperamentGradeViewSet, basename='temperament-grade')
 # Deprecated. A push to main is the backend deploy, but the app reaches Jess
 # through TestFlight and the App Store — so the server always runs ahead of the
@@ -36,6 +39,8 @@ router.register('intake-submissions', views.IntakeSubmissionViewSet, basename='i
 
 urlpatterns = [
     path('health/', views.health, name='health'),
+    # What is waiting for Jess — the badge on the More tab.
+    path('pending/', views.PendingView.as_view(), name='pending'),
     path('me/', views.MyProfileView.as_view(), name='my-profile'),
     path('settings/', views.AppSettingsView.as_view(), name='app-settings'),
     # Public, token-authenticated intake form — no login.

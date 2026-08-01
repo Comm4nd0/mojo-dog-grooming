@@ -13,21 +13,25 @@ serializer gating alone.
 """
 
 from datetime import timedelta
+from decimal import Decimal, InvalidOperation
 from functools import lru_cache
 from pathlib import Path
 
 from django.conf import settings as django_settings
 from django.contrib.auth.models import User
 from django.db import transaction
+from django.http import FileResponse
 from django.db.models import Q, Value
 from django.db.models.functions import Replace, Upper
 from django.utils import timezone
+from django.utils.dateparse import parse_date
 from django.utils.safestring import mark_safe
 from djoser.views import TokenCreateView
 from rest_framework import status, viewsets
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import action, api_view, permission_classes, throttle_classes
 from rest_framework.exceptions import APIException
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import AllowAny, BasePermission, IsAdminUser, IsAuthenticated
 from rest_framework.renderers import TemplateHTMLRenderer
 from rest_framework.response import Response
@@ -62,11 +66,13 @@ from .models import (
     BookingType,
     Breed,
     Client,
+    ClientChangeRequest,
     ClientClaimRequest,
     ClosureDay,
     Consent,
     ConsentKind,
     Dog,
+    DogDocument,
     DogPhoto,
     Equipment,
     FALLBACK_NAIL_VISIT_MINUTES,
@@ -74,6 +80,7 @@ from .models import (
     IntakeInvite,
     IntakeSubmission,
     Invoice,
+    InvoiceLine,
     OpeningHours,
     PasswordResetRequest,
     PasswordResetToken,
@@ -81,8 +88,10 @@ from .models import (
     ProblemArea,
     REQUIRED_CONSENTS,
     ReviewStatus,
+    Service,
     ServiceType,
     TemperamentGrade,
+    resolve_slot,
     TodoItem,
     UserProfile,
 )
@@ -95,10 +104,12 @@ from .serializers import (
     AppointmentSerializer,
     BookingSeriesSerializer,
     BreedSerializer,
+    ClientChangeRequestSerializer,
     ClientClaimRequestSerializer,
     ClientSerializer,
     ClosureDaySerializer,
     DogListSerializer,
+    DogDocumentSerializer,
     DogPhotoSerializer,
     DogSerializer,
     EquipmentSerializer,
@@ -113,6 +124,7 @@ from .serializers import (
     ProblemAreaSerializer,
     PublicIntakeSubmissionSerializer,
     PublicPasswordResetRequestSerializer,
+    ServiceSerializer,
     SetPasswordSerializer,
     TemperamentGradeSerializer,
     TodoItemSerializer,
@@ -218,6 +230,26 @@ class BreedViewSet(viewsets.ModelViewSet):
         search = self.request.query_params.get('search')
         if search:
             queryset = queryset.filter(name__icontains=search)
+        return queryset
+
+
+class ServiceViewSet(viewsets.ModelViewSet):
+    """Jess's list of what she does.
+
+    ``IsStaffOrReadOnly`` rather than staff-only: a client has to be able to
+    read the catalogue to request a nail trim rather than a full groom.
+    """
+
+    queryset = Service.objects.all()
+    serializer_class = ServiceSerializer
+    permission_classes = [IsStaffOrReadOnly]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        # Retired services stay in the table so old appointments keep making
+        # sense, but nothing should offer them for a new booking.
+        if self.request.query_params.get('include_inactive') != 'true':
+            queryset = queryset.filter(is_active=True)
         return queryset
 
 
@@ -844,6 +876,86 @@ class ProblemAreaViewSet(viewsets.ModelViewSet):
         serializer.save(created_by=self.request.user, source=ProblemArea.Source.STAFF)
 
 
+class DogDocumentViewSet(ClientScopedMixin, viewsets.ModelViewSet):
+    """Scanned paperwork filed against a dog.
+
+    Both access layers, as everywhere: ``ClientScopedMixin`` puts only their
+    own dogs' documents in a client's queryset, and the ``visible_to_client``
+    filter is applied **in the queryset too** — hiding a field is not hiding a
+    row, and a document Jess is keeping for herself must not be listable at
+    all, never mind downloadable.
+    """
+
+    queryset = DogDocument.objects.select_related('dog', 'dog__client')
+    serializer_class = DogDocumentSerializer
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+    client_lookup = 'dog__client'
+
+    def get_queryset(self):
+        queryset = self.scope_to_client(super().get_queryset())
+        if not self.request.user.is_staff:
+            queryset = queryset.filter(visible_to_client=True)
+        dog_id = self.request.query_params.get('dog')
+        return queryset.filter(dog_id=dog_id) if dog_id else queryset
+
+    def perform_create(self, serializer):
+        if not self.request.user.is_staff:
+            from rest_framework.exceptions import PermissionDenied
+
+            raise PermissionDenied('Only staff can file documents.')
+        serializer.save(uploaded_by=self.request.user)
+
+    def perform_update(self, serializer):
+        if not self.request.user.is_staff:
+            from rest_framework.exceptions import PermissionDenied
+
+            raise PermissionDenied('Only staff can change documents.')
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        if not self.request.user.is_staff:
+            from rest_framework.exceptions import PermissionDenied
+
+            raise PermissionDenied('Only staff can delete documents.')
+        instance.file.delete(save=False)
+        instance.delete()
+
+    @action(detail=True, methods=['get'])
+    def download(self, request, pk=None):
+        """Hand the file over, through the same scoped queryset as everything else.
+
+        This is the only way to reach it: the files live outside
+        ``MEDIA_ROOT``, which Caddy serves with no authentication at all.
+
+        The cost is that one of two gunicorn workers is held for the transfer.
+        At one groomer and files under 10 MB that is fine, and saying so is
+        better than pretending otherwise; if it ever isn't, the upgrade is an
+        internal-redirect handler in Caddy matched on a header.
+        """
+        document = self.get_object()
+        try:
+            handle = document.file.open('rb')
+        except (FileNotFoundError, ValueError):
+            return Response(
+                {'detail': 'That file is missing from the server.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        response = FileResponse(
+            handle,
+            # The stored type, allowlisted at upload — never one echoed back
+            # from the request.
+            content_type=document.content_type or 'application/octet-stream',
+            as_attachment=True,
+            filename=document.original_filename or f'document-{document.pk}',
+        )
+        # Belt and braces against a browser deciding an allowlisted type is
+        # really something scriptable.
+        response['X-Content-Type-Options'] = 'nosniff'
+        return response
+
+
 class DogPhotoViewSet(ClientScopedMixin, viewsets.ModelViewSet):
     queryset = DogPhoto.objects.select_related('dog')
     serializer_class = DogPhotoSerializer
@@ -929,27 +1041,26 @@ class AppointmentViewSet(ClientScopedMixin, viewsets.ModelViewSet):
         data = serializer.validated_data
 
         service_type = data.get('service_type', ServiceType.GROOM)
+        services = data.get('services', [])
         warnings = booking_warnings(
             dog=data['dog'],
             start_at=data['start_at'],
             end_at=data.get('end_at'),
             exclude_appointment=data.get('exclude_appointment'),
             service_type=service_type,
+            services=services,
         )
-        if service_type == ServiceType.NAILS_FLEAS_TICKS:
-            settings_row = AppSettings.get()
-            # Price stays None when it isn't set — the warning above says so,
-            # and the form leaves the field blank rather than pre-filling a
-            # number nobody chose.
-            minutes = settings_row.nail_visit_minutes or FALLBACK_NAIL_VISIT_MINUTES
-            price = settings_row.nail_visit_price
-        else:
-            minutes, price = data['dog'].effective_groom_minutes, data['dog'].effective_price
+        # One resolver, so the figures the form pre-fills are the same ones
+        # the booking will end up with. Price stays None when anything on it
+        # is unpriced — the warning above names what, and the form shows a
+        # blank rather than a number nobody chose.
+        minutes, price, unpriced = resolve_slot(data['dog'], service_type, services)
         suggested_end = data.get('end_at') or (data['start_at'] + timedelta(minutes=minutes))
         return Response({
             'warnings': warnings,
             'suggested_end_at': suggested_end,
             'suggested_price': price,
+            'unpriced_services': unpriced,
         })
 
     @action(detail=False, methods=['get'])
@@ -996,14 +1107,21 @@ class BookingSeriesViewSet(viewsets.ModelViewSet):
                 timezone.datetime.combine(date, series.preferred_time),
                 timezone.get_current_timezone(),
             )
-            Appointment.objects.create(
+            # Through the resolver, not `effective_groom_minutes` directly.
+            # A standing nail-trim series would otherwise block out three
+            # hours a fortnight, forever, and nobody would notice until the
+            # diary was full.
+            usual = list(series.dog.default_services.all())
+            appointment = Appointment.objects.create(
                 dog=series.dog,
                 start_at=start,
-                end_at=start + timedelta(minutes=series.dog.effective_groom_minutes),
                 booking_type=BookingType.SCHEDULED,
                 series=series,
                 created_by=series.created_by,
             )
+            if usual:
+                appointment.services.set(usual)
+                appointment.apply_service_defaults(force_end=True, force_price=True)
 
 
 # ── Groom timing ───────────────────────────────────────────────────────
@@ -1063,6 +1181,150 @@ class InvoiceViewSet(ClientScopedMixin, viewsets.ModelViewSet):
 
             raise PermissionDenied('Only staff can edit invoices.')
         serializer.save()
+
+    @action(detail=False, methods=['post'], permission_classes=[IsAdminUser])
+    def from_appointment(self, request):
+        """Raise a draft invoice from what was actually done at a booking.
+
+        One line per **priced** service. An unpriced one gets no line at all
+        and comes back in ``unpriced`` instead: ``InvoiceLine.unit_price``
+        cannot be null, so the alternatives are inventing a figure or writing
+        ``0.00``, and ``0.00`` on an invoice claims the service was free.
+        Jess fills the gaps in while it is still a draft.
+        """
+        appointment_id = request.data.get('appointment')
+        appointment = Appointment.objects.filter(pk=appointment_id).select_related(
+            'dog', 'dog__client',
+        ).first()
+        if appointment is None:
+            return Response(
+                {'detail': 'No such appointment.'}, status=status.HTTP_404_NOT_FOUND,
+            )
+
+        number = str(request.data.get('number') or '').strip()
+        if not number:
+            return Response(
+                {'detail': 'Give the invoice a number.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if Invoice.objects.filter(number=number).exists():
+            return Response(
+                {'detail': f'Invoice "{number}" already exists.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        services = list(appointment.services.all())
+        unpriced = []
+        lines = []
+        if services:
+            for service in services:
+                if service.takes_dog_defaults:
+                    lines.append((service.name, appointment.dog.effective_price))
+                elif service.default_price is None:
+                    unpriced.append(service.name)
+                else:
+                    lines.append((service.name, service.default_price))
+        elif appointment.price_quoted is not None:
+            # A booking made before the catalogue, or without services on it.
+            lines.append((
+                ServiceType(appointment.service_type).label,
+                appointment.price_quoted,
+            ))
+        else:
+            unpriced.append(ServiceType(appointment.service_type).label)
+
+        with transaction.atomic():
+            invoice = Invoice.objects.create(
+                client=appointment.dog.client,
+                number=number,
+                created_by=request.user,
+            )
+            for description, price in lines:
+                InvoiceLine.objects.create(
+                    invoice=invoice,
+                    appointment=appointment,
+                    description=f'{description} — {appointment.dog.name}',
+                    quantity=Decimal('1.00'),
+                    unit_price=price,
+                )
+
+        return Response(
+            {'invoice': self.get_serializer(invoice).data, 'unpriced': unpriced},
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=True, methods=['post'], permission_classes=[IsAdminUser])
+    def mark_sent(self, request, pk=None):
+        """Record that the invoice has gone out, and when."""
+        invoice = self.get_object()
+        if not invoice.can_transition_to(Invoice.Status.SENT):
+            return Response(
+                {
+                    'detail': (
+                        'This invoice is already paid — marking it sent would '
+                        'undo that, and you would end up chasing money you '
+                        'already have.'
+                    )
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        invoice.status = Invoice.Status.SENT
+        invoice.sent_at = timezone.localdate()
+        invoice.save(update_fields=['status', 'sent_at', 'updated_at'])
+        return Response(self.get_serializer(invoice).data)
+
+    @action(detail=True, methods=['post'], permission_classes=[IsAdminUser])
+    def mark_paid(self, request, pk=None):
+        """Take payment and close the invoice, in one transaction.
+
+        ``amount`` defaults to whatever is outstanding, which is the case
+        every time in practice. ``method`` is the thing Jess asked for: the
+        column has always existed on :class:`~api.models.Payment` and nothing
+        ever filled it in, so every invoice in the books said CARD whether it
+        was cash in hand or a bank transfer.
+        """
+        invoice = self.get_object()
+        if not invoice.can_transition_to(Invoice.Status.PAID):
+            return Response(
+                {'detail': 'A void invoice cannot be paid.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        amount = request.data.get('amount')
+        try:
+            amount = Decimal(str(amount)) if amount is not None else invoice.balance
+        except (InvalidOperation, TypeError):
+            return Response(
+                {'detail': 'That amount is not a number.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        method = request.data.get('method') or Payment.Method.CARD
+        if method not in Payment.Method.values:
+            return Response(
+                {'detail': f'"{method}" is not a payment method.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        paid_on = parse_date(str(request.data.get('paid_at'))) or timezone.localdate()
+
+        with transaction.atomic():
+            # Zero is a legitimate "nothing left to pay, just close it" —
+            # writing a £0.00 payment row would claim a transaction happened.
+            if amount > 0:
+                Payment.objects.create(
+                    invoice=invoice,
+                    amount=amount,
+                    paid_at=paid_on,
+                    method=method,
+                    reference=str(request.data.get('reference') or ''),
+                    recorded_by=request.user,
+                )
+            invoice.status = Invoice.Status.PAID
+            invoice.paid_at = paid_on
+            invoice.save(update_fields=['status', 'paid_at', 'updated_at'])
+
+        return Response(self.get_serializer(invoice).data)
 
     def perform_destroy(self, instance):
         """Only staff, only drafts, and never one that has been paid against.
@@ -1390,6 +1652,125 @@ class IntakeSubmissionViewSet(viewsets.ReadOnlyModelViewSet):
         submission.review_notes = request.data.get('review_notes', '')
         submission.save()
         return Response(self.get_serializer(submission).data)
+
+
+class ClientChangeRequestViewSet(viewsets.ModelViewSet):
+    """A client asking Jess to correct their own details.
+
+    Everything else a client sends in is a request Jess reviews — a booking, a
+    claim, an intake form. Their own details were the one thing they could
+    change unreviewed, which is what Jess's "can they request detail changes as
+    well?" is about.
+    """
+
+    queryset = ClientChangeRequest.objects.select_related('client', 'requested_by')
+    serializer_class = ClientChangeRequestSerializer
+    permission_classes = [IsAuthenticated]
+    http_method_names = ['get', 'post', 'head', 'options']
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if self.request.user.is_staff:
+            status_filter = self.request.query_params.get('status')
+            if status_filter:
+                queryset = queryset.filter(status=status_filter)
+            return queryset
+        # Not `client=...`: a household could in principle share a client
+        # record, and somebody should only see the requests they lodged.
+        return queryset.filter(requested_by=self.request.user)
+
+    def perform_create(self, serializer):
+        client = getattr(self.request.user, 'client', None)
+        if client is None:
+            from rest_framework.exceptions import PermissionDenied
+
+            raise PermissionDenied(
+                'Your login is not linked to a client record yet.'
+            )
+        # Both from the session. Accepting either from the body would let any
+        # signed-in user lodge a request against any client.
+        serializer.save(client=client, requested_by=self.request.user)
+
+    @action(detail=True, methods=['post'], permission_classes=[IsAdminUser])
+    def approve(self, request, pk=None):
+        change = self.get_object()
+        if change.status != ReviewStatus.PENDING:
+            return Response(
+                {'detail': 'That request has already been dealt with.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+        with transaction.atomic():
+            applied = change.apply()
+            change.status = ReviewStatus.APPROVED
+            change.reviewed_by = request.user
+            change.reviewed_at = timezone.now()
+            change.review_notes = request.data.get('review_notes', '')
+            change.save()
+        return Response({**self.get_serializer(change).data, 'applied': applied})
+
+    @action(detail=True, methods=['post'], permission_classes=[IsAdminUser])
+    def reject(self, request, pk=None):
+        change = self.get_object()
+        if change.status != ReviewStatus.PENDING:
+            return Response(
+                {'detail': 'That request has already been dealt with.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+        # Touches nothing on the client record.
+        change.status = ReviewStatus.REJECTED
+        change.reviewed_by = request.user
+        change.reviewed_at = timezone.now()
+        change.review_notes = request.data.get('review_notes', '')
+        change.save()
+        return Response(self.get_serializer(change).data)
+
+
+class PendingView(APIView):
+    """How much is waiting for Jess, for the badge on the More tab.
+
+    There is no notification system of any kind — no push, no SMTP on the box.
+    This is the minimum that stops a requested booking sitting unseen: a count
+    the app can poll on resume and show as a badge.
+
+    Be plain about the limits when describing it: it only tells her anything
+    once she opens the app. Real push needs a device-token model, FCM and APNs
+    credentials, and either a synchronous send that makes a client's booking
+    request depend on Google's uptime or a Redis and a worker container on a
+    host already running eleven projects in under 4 GB.
+
+    Not on ``/api/settings/`` (clients read that, and the queue length is not
+    theirs) and not on ``/api/me/`` (that is about identity, and a badge wants
+    to be polled cheaply).
+    """
+
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        counts = {
+            'appointment_requests': Appointment.objects.filter(
+                status=AppointmentStatus.REQUESTED,
+            ).count(),
+            'intake_submissions': IntakeSubmission.objects.filter(
+                status=ReviewStatus.PENDING,
+            ).count(),
+            'claim_requests': ClientClaimRequest.objects.filter(
+                status=ReviewStatus.PENDING,
+            ).count(),
+            'change_requests': ClientChangeRequest.objects.filter(
+                status=ReviewStatus.PENDING,
+            ).count(),
+        }
+        # Superuser only, and not folded into the total for anyone else.
+        # `PasswordResetRequestViewSet` is IsSuperUser, so telling an ordinary
+        # staff member that three people are locked out would leak exactly
+        # what the list endpoint refuses them. Same rule as field gating, one
+        # level up.
+        if request.user.is_superuser:
+            counts['password_reset_requests'] = PasswordResetRequest.objects.filter(
+                status=PasswordResetRequest.Status.PENDING,
+            ).count()
+
+        return Response({**counts, 'total': sum(counts.values())})
 
 
 # ── Health ─────────────────────────────────────────────────────────────

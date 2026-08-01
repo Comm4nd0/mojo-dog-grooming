@@ -14,6 +14,7 @@ a client can never address another client's row at all. See ``api/views.py``.
 import re
 from decimal import Decimal
 
+from django.conf import settings
 from django.contrib.auth.models import User
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -27,11 +28,14 @@ from .models import (
     BookingSeries,
     Breed,
     Client,
+    ClientChangeRequest,
     ClientClaimRequest,
+    CLIENT_SELF_SERVICE_FIELDS,
     ClosureDay,
     Consent,
     ConsentKind,
     Dog,
+    DogDocument,
     DogPhoto,
     Equipment,
     GroomSession,
@@ -46,6 +50,7 @@ from .models import (
     PhaseTiming,
     ProblemArea,
     REQUIRED_CONSENTS,
+    Service,
     ServiceType,
     TemperamentGrade,
     temperament_label,
@@ -337,6 +342,26 @@ class BreedSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'coat_type', 'avg_groom_minutes', 'avg_price', 'avg_schedule_weeks', 'notes']
 
 
+class ServiceSerializer(serializers.ModelSerializer):
+    """One thing Jess does. Clients read this; only staff write it.
+
+    Price and length stay **null** until she fills them in — her price list of
+    28 July covers full grooms only, and there is no figure anywhere for the
+    other twelve. A blank on screen is a prompt; an invented number is a wrong
+    invoice.
+    """
+
+    class Meta:
+        model = Service
+        fields = [
+            'id', 'code', 'name', 'category', 'default_minutes', 'default_price',
+            'takes_dog_defaults', 'is_active', 'sort_order',
+        ]
+        # The code is the seed's natural key — renaming a service must not
+        # make the next boot re-create the old row, which is the bug Breed has.
+        read_only_fields = ['code']
+
+
 class TemperamentGradeSerializer(serializers.ModelSerializer):
     # Deprecated alias for `label`, kept because the TestFlight build in Jess's
     # hands reads `temperament_display` on this endpoint and a backend deploy
@@ -399,7 +424,14 @@ class ConsentSerializer(serializers.ModelSerializer):
 
 
 class ClientSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
-    staff_only_fields = ('chatty', 'leaflet_received', 'notes')
+    # `uid` is Jess's filing reference off the paper cards, not a secret —
+    # it is printed on the client's own booking card. Hiding it is a
+    # presentation choice, not the same rule as the notes beside it, and
+    # conflating the two would weaken the rule that actually matters.
+    #
+    # It reaches a client by four separate routes, so gating it here alone
+    # would be cosmetic. See DogListSerializer and InvoiceSerializer.
+    staff_only_fields = ('uid', 'chatty', 'leaflet_received', 'notes')
 
     full_name = serializers.CharField(read_only=True)
     dog_count = serializers.SerializerMethodField()
@@ -439,6 +471,52 @@ class ClientClaimRequestSerializer(serializers.ModelSerializer):
         # A claimant supplies only their own details; everything about the
         # outcome is decided server-side or by staff review.
         read_only_fields = ['id', 'user', 'matched_client', 'status', 'reviewed_at', 'created_at']
+
+
+class ClientChangeRequestSerializer(serializers.ModelSerializer):
+    client_name = serializers.CharField(source='client.full_name', read_only=True)
+    requested_by_username = serializers.CharField(
+        source='requested_by.username', read_only=True,
+    )
+
+    class Meta:
+        model = ClientChangeRequest
+        fields = [
+            'id', 'client', 'client_name', 'requested_by', 'requested_by_username',
+            'changes', 'status', 'review_notes', 'reviewed_at', 'created_at',
+        ]
+        # `client` and `requested_by` come from the session, never the body:
+        # accepting them would let any signed-in user lodge a request against
+        # any client. `status` is decided by staff review.
+        read_only_fields = [
+            'id', 'client', 'requested_by', 'status', 'reviewed_at', 'created_at',
+        ]
+
+    def validate_changes(self, value):
+        """Fence the blob before it is ever stored.
+
+        Approval applies these with ``setattr``, so an unfenced key is an
+        arbitrary write onto the client record — including Jess's staff-only
+        notes, the UID her paper filing runs on, and the FK to the login. The
+        model re-checks on the way out too; this is the layer that stops a bad
+        request even existing.
+        """
+        if not isinstance(value, dict) or not value:
+            raise serializers.ValidationError('Say what you would like changed.')
+
+        unknown = sorted(set(value) - set(CLIENT_SELF_SERVICE_FIELDS))
+        if unknown:
+            raise serializers.ValidationError(
+                f'These are not yours to change: {", ".join(unknown)}.'
+            )
+
+        cleaned = {}
+        for field, raw in value.items():
+            text = '' if raw is None else str(raw).strip()
+            if field in ('first_name', 'last_name') and not text:
+                raise serializers.ValidationError('A name cannot be blank.')
+            cleaned[field] = text
+        return cleaned
 
 
 # ── Dogs ───────────────────────────────────────────────────────────────
@@ -482,6 +560,122 @@ class DogPhotoSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at']
 
 
+#: Extensions a scanned document may have. HEIC is real — Jess will
+#: photograph the paper form on an iPhone.
+ALLOWED_DOCUMENT_EXTENSIONS = ('pdf', 'jpg', 'jpeg', 'png', 'heic')
+
+#: First bytes of a HEIC/HEIF file, at offset 4.
+_HEIF_BRANDS = (b'ftypheic', b'ftypheix', b'ftyphevc', b'ftypmif1', b'ftypmsf1')
+
+
+class AbsentMeansDefaultBooleanField(serializers.BooleanField):
+    """A boolean whose *absence* means "use the default", even in form data.
+
+    DRF's ``BooleanField.get_value`` deliberately returns ``False`` rather than
+    ``empty`` for a missing key in an HTML form, because an unticked checkbox
+    sends nothing. That is right for a browser form and wrong here: this
+    endpoint is only multipart because it carries a file, and the app omits
+    fields it isn't setting.
+
+    Left alone, ``visible_to_client`` arrived as ``False`` on every upload —
+    so every document Jess filed would have been invisible to the client,
+    silently, which is the exact opposite of what the feature is for.
+    """
+
+    def get_value(self, dictionary):
+        if self.field_name not in dictionary:
+            return serializers.empty
+        return super().get_value(dictionary)
+
+
+class DogDocumentSerializer(serializers.ModelSerializer):
+    download_url = serializers.SerializerMethodField()
+    kind_display = serializers.CharField(source='get_kind_display', read_only=True)
+    visible_to_client = AbsentMeansDefaultBooleanField(required=False, default=True)
+
+    class Meta:
+        model = DogDocument
+        fields = [
+            'id', 'dog', 'file', 'title', 'kind', 'kind_display', 'visible_to_client',
+            'original_filename', 'content_type', 'size_bytes', 'download_url', 'created_at',
+        ]
+        read_only_fields = [
+            'id', 'original_filename', 'content_type', 'size_bytes', 'created_at',
+        ]
+        # Write-only: a FileField serialises to a MEDIA_URL path, which would
+        # 404 through Caddy (the file is not under MEDIA_ROOT) but still
+        # disclose the storage layout. The gated download URL is the only way
+        # out.
+        extra_kwargs = {'file': {'write_only': True}}
+
+    def get_download_url(self, obj):
+        request = self.context.get('request')
+        path = f'/api/dog-documents/{obj.pk}/download/'
+        return request.build_absolute_uri(path) if request else path
+
+    def validate_file(self, upload):
+        """Check the bytes, not what the client claims they are.
+
+        A browser's `Content-Type` is whatever the uploader's OS guessed, and
+        an attacker sets it to anything. The magic bytes are the only thing
+        that says what a file actually is.
+        """
+        if upload.size > settings.MAX_DOCUMENT_BYTES:
+            megabytes = settings.MAX_DOCUMENT_BYTES // (1024 * 1024)
+            raise serializers.ValidationError(
+                f'That file is too big — {megabytes} MB is the limit.'
+            )
+
+        extension = (upload.name or '').rsplit('.', 1)[-1].lower()
+        if extension not in ALLOWED_DOCUMENT_EXTENSIONS:
+            raise serializers.ValidationError(
+                'Attach a PDF or a photo (PDF, JPG, PNG or HEIC).'
+            )
+
+        head = upload.read(32)
+        upload.seek(0)
+
+        # SVG is refused by name *and* would fail the sniff below anyway. It is
+        # called out because it is the dangerous one: it is scriptable, and a
+        # browser rendering it inline from the download view would be stored
+        # XSS on the API's own origin.
+        if head.lstrip()[:5] in (b'<?xml', b'<svg '):
+            raise serializers.ValidationError('SVG files are not accepted.')
+
+        if extension == 'pdf':
+            if not head.startswith(b'%PDF-'):
+                raise serializers.ValidationError(
+                    "That does not look like a PDF inside, whatever it is called."
+                )
+        elif extension == 'heic':
+            if head[4:12] not in _HEIF_BRANDS:
+                raise serializers.ValidationError(
+                    'That does not look like a HEIC photo inside.'
+                )
+        else:
+            from PIL import Image, UnidentifiedImageError
+
+            try:
+                # verify() only checks the header, and leaves the file unusable
+                # afterwards — hence the seek back.
+                Image.open(upload).verify()
+            except (UnidentifiedImageError, OSError, ValueError):
+                raise serializers.ValidationError(
+                    'That does not look like an image inside, whatever it is called.'
+                )
+            finally:
+                upload.seek(0)
+
+        return upload
+
+    def create(self, validated_data):
+        upload = validated_data['file']
+        validated_data['original_filename'] = (upload.name or '')[:255]
+        validated_data['content_type'] = (getattr(upload, 'content_type', '') or '')[:100]
+        validated_data['size_bytes'] = upload.size
+        return super().create(validated_data)
+
+
 class DogListSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
     """The Doguments row: a whole-profile summary at a glance.
 
@@ -489,7 +683,7 @@ class DogListSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
     without a second request per dog.
     """
 
-    staff_only_fields = ('temperament', 'temperament_display')
+    staff_only_fields = ('temperament', 'temperament_display', 'client_uid')
 
     client_uid = serializers.CharField(source='client.uid', read_only=True)
     client_first_name = serializers.CharField(source='client.first_name', read_only=True)
@@ -528,6 +722,11 @@ class DogSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
     # renames these in Settings. See models.temperament_label.
     temperament_display = serializers.SerializerMethodField()
     problem_areas = ProblemAreaSerializer(many=True, read_only=True)
+    # What this dog usually has. Not staff-only — it is what the owner asked
+    # for, and a client needs it to request the right kind of booking.
+    default_services_detail = ServiceSerializer(
+        source='default_services', many=True, read_only=True,
+    )
     groom_minutes_effective = serializers.IntegerField(source='effective_groom_minutes', read_only=True)
     price_effective = serializers.DecimalField(
         source='effective_price', max_digits=7, decimal_places=2, read_only=True,
@@ -543,6 +742,7 @@ class DogSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
             'groom_minutes', 'price', 'schedule_weeks',
             'groom_minutes_effective', 'price_effective', 'schedule_weeks_effective',
             'pref_body', 'pref_feet', 'pref_tail', 'pref_face', 'pref_ears', 'pref_skirt',
+            'default_services', 'default_services_detail',
             'allergies', 'medications', 'medical_issues', 'vaccinations',
             'medical_notes', 'vet', 'last_vet_visit', 'owner_grooming',
             'general_notes', 'is_active',
@@ -566,6 +766,7 @@ class AppointmentSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
     # The code alone left the diary's badges showing the seed wording after
     # Jess renamed a grade — the calendar had nothing else to draw with.
     dog_temperament_display = serializers.SerializerMethodField()
+    services_detail = ServiceSerializer(source='services', many=True, read_only=True)
     client_id = serializers.IntegerField(source='dog.client_id', read_only=True)
     client_name = serializers.CharField(source='dog.client.full_name', read_only=True)
     client_phone = serializers.CharField(source='dog.client.phone', read_only=True)
@@ -577,6 +778,7 @@ class AppointmentSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
             'id', 'dog', 'dog_name', 'dog_temperament', 'dog_temperament_display',
             'client_id', 'client_name', 'client_phone',
             'start_at', 'end_at', 'duration_minutes', 'booking_type', 'service_type', 'status',
+            'services', 'services_detail',
             'price_quoted', 'notes', 'series', 'created_at', 'updated_at',
         ]
         # end_at is optional on input — the model fills it from the dog's groom
@@ -585,6 +787,40 @@ class AppointmentSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
 
     def get_dog_temperament_display(self, obj):
         return temperament_label(obj.dog.temperament)
+
+    def create(self, validated_data):
+        """Save, attach the services, then re-derive from them.
+
+        The order matters and is not negotiable: `Appointment.save()` cannot
+        read `self.services` on a create — there is no pk yet — so the length
+        and quote it works out come from an empty list. They are recomputed
+        once the relation exists.
+
+        `force_*` is False for anything the caller actually sent, so a start
+        and end time Jess typed, or a price she overrode, is never replaced by
+        a computed one.
+        """
+        sent_end = 'end_at' in validated_data
+        sent_price = 'price_quoted' in validated_data
+        appointment = super().create(validated_data)
+        if appointment.services.exists():
+            appointment.apply_service_defaults(
+                force_end=not sent_end, force_price=not sent_price,
+            )
+        return appointment
+
+    def update(self, instance, validated_data):
+        sent_end = 'end_at' in validated_data
+        sent_price = 'price_quoted' in validated_data
+        # Whether the services changed at all — re-deriving on an unrelated
+        # edit (a note, a status) would overwrite figures Jess had adjusted.
+        touched_services = 'services' in validated_data
+        appointment = super().update(instance, validated_data)
+        if touched_services:
+            appointment.apply_service_defaults(
+                force_end=not sent_end, force_price=not sent_price,
+            )
+        return appointment
         read_only_fields = ['id', 'created_at', 'updated_at']
 
     def validate(self, data):
@@ -619,6 +855,10 @@ class AppointmentCheckSerializer(serializers.Serializer):
     )
     service_type = serializers.ChoiceField(
         choices=ServiceType.choices, required=False, default=ServiceType.GROOM,
+    )
+    services = serializers.PrimaryKeyRelatedField(
+        queryset=Service.objects.all(), many=True, required=False,
+        help_text='What is being done. Drives the suggested length and price.',
     )
 
 
@@ -738,7 +978,11 @@ class PaymentSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at']
 
 
-class InvoiceSerializer(serializers.ModelSerializer):
+class InvoiceSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
+    # Reachable by a client once `invoicing_visible_to_clients` is on, so the
+    # UID has to be gated on this route too.
+    staff_only_fields = ('client_uid',)
+
     lines = InvoiceLineSerializer(many=True, required=False)
     payments = PaymentSerializer(many=True, read_only=True)
     client_name = serializers.CharField(source='client.full_name', read_only=True)
@@ -751,10 +995,27 @@ class InvoiceSerializer(serializers.ModelSerializer):
         model = Invoice
         fields = [
             'id', 'client', 'client_name', 'client_uid', 'number', 'issue_date', 'due_date',
-            'status', 'notes', 'lines', 'payments', 'total', 'amount_paid', 'balance',
-            'created_at', 'updated_at',
+            'status', 'sent_at', 'paid_at', 'notes', 'lines', 'payments',
+            'total', 'amount_paid', 'balance', 'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def validate_status(self, value):
+        """Refuse a move the lifecycle does not allow.
+
+        Here as well as on the actions, because `status` is a plain writable
+        field and the app has always PATCHed it directly — enforcing the rule
+        only inside `mark_sent`/`mark_paid` would leave the front door open.
+        """
+        if self.instance is None:
+            return value
+        if not self.instance.can_transition_to(value):
+            current = self.instance.get_status_display().lower()
+            raise serializers.ValidationError(
+                f'This invoice is {current}. It cannot go back to '
+                f'{Invoice.Status(value).label.lower()} from there.'
+            )
+        return value
 
     def create(self, validated_data):
         lines = validated_data.pop('lines', [])

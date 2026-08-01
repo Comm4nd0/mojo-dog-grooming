@@ -184,8 +184,7 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
                 title: const Text('Mark as sent'),
                 onTap: () async {
                   Navigator.pop(context);
-                  await _data.updateInvoice(invoice.id, {'status': 'SENT'});
-                  _load();
+                  await _run(() => _data.markInvoiceSent(invoice.id), 'Marked sent.');
                 },
               ),
             if (invoice.balance > 0 && invoice.status != 'VOID')
@@ -198,10 +197,80 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
                   await _recordPayment(invoice);
                 },
               ),
+            // A draft is not a record of anything yet, so one raised by
+            // mistake can go. Past that the number has been quoted to
+            // somebody and is unique, so it is voided instead — deleting
+            // would free the number for a later invoice with a different
+            // total. The server enforces both.
+            if (invoice.status == 'DRAFT')
+              ListTile(
+                leading: const Icon(Icons.delete_outline, color: AppColors.error),
+                title: const Text('Delete', style: TextStyle(color: AppColors.error)),
+                subtitle: const Text('Only while it is a draft'),
+                onTap: () async {
+                  Navigator.pop(context);
+                  await _delete(invoice);
+                },
+              )
+            else if (invoice.status != 'VOID')
+              ListTile(
+                leading: Icon(Icons.block_outlined, color: context.mojo.muted),
+                title: const Text('Void'),
+                subtitle: const Text('Keeps the number used up'),
+                onTap: () async {
+                  Navigator.pop(context);
+                  await _run(
+                    () => _data.updateInvoice(invoice.id, {'status': 'VOID'}),
+                    'Voided.',
+                  );
+                },
+              ),
           ],
         ),
       ),
     );
+  }
+
+  /// Runs an invoice action, surfacing whatever the server says if it refuses.
+  ///
+  /// The refusals are the point: marking a paid invoice sent, or deleting one
+  /// that has gone out, both come back as a 409 with a sentence explaining
+  /// why, and that sentence is more use than "something went wrong".
+  Future<void> _run(Future<void> Function() action, String done) async {
+    try {
+      await action();
+    } catch (error) {
+      if (mounted) showSnack(context, error.toString(), isError: true);
+      return;
+    }
+    if (mounted) showSnack(context, done);
+    _load();
+  }
+
+  Future<void> _delete(Invoice invoice) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Delete ${invoice.number}?'),
+        content: const Text(
+          'It is still a draft, so nothing has been sent to anyone. This '
+          'cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('KEEP IT'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            style: TextButton.styleFrom(foregroundColor: AppColors.error),
+            child: const Text('DELETE'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await _run(() => _data.deleteInvoice(invoice.id), 'Deleted.');
   }
 
   /// Renders a line quantity without a pointless `.00`.
@@ -249,19 +318,13 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
     );
     if (method == null) return;
 
-    try {
-      await _data.recordPayment(
-        invoiceId: invoice.id,
-        amount: invoice.balance,
-        method: method,
-      );
-      await _data.updateInvoice(invoice.id, {'status': 'PAID'});
-    } catch (error) {
-      if (mounted) showSnack(context, error.toString(), isError: true);
-      return;
-    }
-    if (mounted) showSnack(context, 'Marked paid — ${methods[method]!.$1.toLowerCase()}.');
-    _load();
+    // One call: the server writes the payment and closes the invoice in a
+    // single transaction, so a failure halfway can't leave a payment recorded
+    // against an invoice still showing as unpaid.
+    await _run(
+      () => _data.markInvoicePaid(invoice.id, method: method),
+      'Marked paid — ${methods[method]!.$1.toLowerCase()}.',
+    );
   }
 }
 

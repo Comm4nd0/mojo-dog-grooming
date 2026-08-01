@@ -45,6 +45,17 @@ services:
       # serve them read-only and so they are trivially backed up, matching how
       # p4td does it on this host.
       - ./media:/app/media
+      # Scanned paperwork — intake forms, vaccination cards, vet letters.
+      #
+      # A SIBLING of ./media, never a child, and it must NOT be added to
+      # Caddy's mount. Caddy serves /media/* with `file_server` and no
+      # authentication, so anything reachable from there is world-readable to
+      # anyone with the URL — and these carry a client's name, address,
+      # postcode, phone, emergency contact and signature. They are served by a
+      # gated Django view instead.
+      #
+      # Not covered by deploy.sh's pre-deploy pg_dump, which is database only.
+      - ./private-media:/app/private-media
     depends_on:
       db:
         condition: service_healthy

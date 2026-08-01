@@ -340,6 +340,32 @@ class DataService {
     return Invoice.fromJson(payload as Map<String, dynamic>);
   }
 
+  /// Record that an invoice has gone out.
+  ///
+  /// An action rather than a status PATCH, because the server stamps the date
+  /// and refuses the move if the invoice is already paid.
+  Future<void> markInvoiceSent(int id) => _api.post('/invoices/$id/mark_sent/', {});
+
+  /// Take payment and close the invoice in one call.
+  ///
+  /// [amount] left null means "whatever is outstanding", which is the case
+  /// every time in practice.
+  Future<void> markInvoicePaid(
+    int id, {
+    required String method,
+    num? amount,
+    String reference = '',
+  }) =>
+      _api.post('/invoices/$id/mark_paid/', {
+        'method': method,
+        'amount': ?amount?.toString(),
+        'reference': reference,
+      });
+
+  /// Only a draft can go. Anything further along is voided instead — the
+  /// number has been quoted to somebody and it is unique.
+  Future<void> deleteInvoice(int id) => _api.delete('/invoices/$id/');
+
   Future<void> updateInvoice(int id, Map<String, dynamic> changes) =>
       _api.patch('/invoices/$id/', changes);
 

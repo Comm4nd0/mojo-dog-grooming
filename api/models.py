@@ -16,10 +16,12 @@ Three conventions run through this file and matter for security:
 import secrets
 from datetime import timedelta
 from decimal import Decimal
+from pathlib import Path
 
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.cache import cache
+from django.core.files.storage import FileSystemStorage
 from django.core.validators import MinValueValidator
 from django.db import models
 from django.db.models.signals import post_save
@@ -344,6 +346,81 @@ class ClientClaimRequest(models.Model):
         return f'Claim by {self.user.username} → {self.matched_client or "unmatched"} ({self.status})'
 
 
+#: The only fields a client may ask to change about themselves.
+#:
+#: This is the security-critical part of :class:`ClientChangeRequest`, not a
+#: tidiness measure. Approving a request applies ``changes`` with ``setattr``,
+#: which is an arbitrary-field-write primitive unless it is fenced:
+#: ``{"notes": "..."}`` writes one of Jess's private staff fields,
+#: ``{"uid": "MOJO-001"}`` collides her numbering, and ``{"user": 3}``
+#: re-points the record at somebody else's login.
+CLIENT_SELF_SERVICE_FIELDS = (
+    'first_name',
+    'last_name',
+    'phone',
+    'email',
+    'address',
+    'postcode',
+    'emergency_contact_name',
+    'emergency_contact_phone',
+)
+
+
+class ClientChangeRequest(models.Model):
+    """A client asking Jess to correct their own details.
+
+    Same shape as :class:`ClientClaimRequest` on purpose — pending, approved
+    or rejected, with who reviewed it and when. Everything else a client sends
+    in is a request Jess reviews (a booking, a claim, an intake form); their
+    own details were the one thing they could edit unreviewed, which is what
+    Jess's "can they request detail changes as well?" is about.
+
+    ``client`` is resolved from the session, never from the request body.
+    Taking it from the body would let any signed-in user lodge a request
+    against any client, and put another client's data in front of Jess for
+    approval.
+    """
+
+    client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name='change_requests')
+    requested_by = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name='change_requests',
+    )
+    changes = models.JSONField(
+        default=dict,
+        help_text='Field name to new value. Whitelisted by CLIENT_SELF_SERVICE_FIELDS.',
+    )
+    status = models.CharField(max_length=10, choices=ReviewStatus.choices, default=ReviewStatus.PENDING)
+    reviewed_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name='reviewed_changes',
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'Change request from {self.client.full_name} ({self.status})'
+
+    def apply(self):
+        """Write the requested changes onto the client record.
+
+        Re-checks the whitelist on the way out as well as on the way in. A
+        request could have been lodged before the whitelist shrank, and the
+        cost of checking twice is nothing next to the cost of missing one.
+        """
+        applied = []
+        for field, value in (self.changes or {}).items():
+            if field not in CLIENT_SELF_SERVICE_FIELDS:
+                continue
+            setattr(self.client, field, value)
+            applied.append(field)
+        if applied:
+            self.client.save(update_fields=[*applied, 'updated_at'])
+        return applied
+
+
 # ── Passwords ──────────────────────────────────────────────────────────
 
 def generate_reset_token():
@@ -531,6 +608,17 @@ class Dog(models.Model):
         help_text='What the owner does themselves between grooms, and how often.',
     )
     general_notes = models.TextField(blank=True)
+
+    # What this dog usually has done. NOT staff-only, deliberately: it is what
+    # the owner asked for, and a client needs to read it to request the right
+    # kind of booking. Do not "helpfully" add it to staff_only_fields later.
+    #
+    # By name rather than the class, because Service is declared further down
+    # the file — it needs Dog for the resolver.
+    default_services = models.ManyToManyField(
+        'Service', blank=True, related_name='dogs',
+        help_text='What this dog normally has. Pre-fills a new booking.',
+    )
     is_active = models.BooleanField(default=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -611,6 +699,77 @@ class ProblemArea(models.Model):
 
     def __str__(self):
         return f'{self.dog.name}: {self.reason[:40]}'
+
+
+def private_storage():
+    """Storage for scanned paperwork, outside the Caddy-served tree.
+
+    A callable rather than an instance so the absolute path is not baked into
+    the migration — it differs between a laptop and the container.
+    """
+    return FileSystemStorage(location=settings.PRIVATE_MEDIA_ROOT)
+
+
+def document_upload_path(instance, filename):
+    """``dog_documents/<dog id>/<random>.<ext>``.
+
+    Never the uploader's own filename: it defends against path traversal, and
+    against the filename itself leaking the client's name into a path that
+    ends up in a log.
+    """
+    extension = Path(filename).suffix.lower().lstrip('.') or 'bin'
+    return f'dog_documents/{instance.dog_id}/{secrets.token_hex(8)}.{extension}'
+
+
+class DogDocument(models.Model):
+    """A scanned or photographed document filed against a dog.
+
+    Jess asked to attach the original paper intake form to a dog's profile and
+    let the owner see it. Not a :class:`DogPhoto`: that is an image in a
+    date-ordered gallery with caption and appointment semantics that do not
+    apply here, no notion of kind, no way to say "this one is shareable", and
+    no room for a PDF. A signed intake form is evidence, not a picture of a
+    haircut.
+
+    The file lives under ``PRIVATE_MEDIA_ROOT`` and is only ever reached
+    through a gated download view — see that setting for why an unguessable
+    filename under ``/media/`` is not good enough here.
+    """
+
+    class Kind(models.TextChoices):
+        INTAKE_FORM = 'INTAKE_FORM', 'Intake form'
+        VACCINATION = 'VACCINATION', 'Vaccination record'
+        VET = 'VET', 'Vet letter'
+        OTHER = 'OTHER', 'Other'
+
+    dog = models.ForeignKey(Dog, on_delete=models.CASCADE, related_name='documents')
+    file = models.FileField(upload_to=document_upload_path, storage=private_storage)
+    title = models.CharField(max_length=200)
+    kind = models.CharField(max_length=20, choices=Kind.choices, default=Kind.OTHER)
+    visible_to_client = models.BooleanField(
+        default=True,
+        help_text=(
+            "Whether the dog's owner can see and download this. On by "
+            'default because the point of the feature is letting them see '
+            'their own form — turn it off for anything you are filing for '
+            'yourself.'
+        ),
+    )
+    # Kept alongside the stored file so a listing does not have to stat every
+    # one, and so the original name survives for the download.
+    original_filename = models.CharField(max_length=255, blank=True)
+    content_type = models.CharField(max_length=100, blank=True)
+    size_bytes = models.PositiveIntegerField(default=0)
+    uploaded_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name='dog_documents',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+
+    def __str__(self):
+        return f'{self.dog.name}: {self.title}'
 
 
 class DogPhoto(models.Model):
@@ -782,6 +941,115 @@ class BookingSeries(models.Model):
         return dates
 
 
+class Service(models.Model):
+    """One thing Jess does, from the list she sent.
+
+    Nail Clipping, Full Groom, Health Check, Ear Cleaning, De-Shedding, Paws
+    Clipped, Hygiene Clip, Tick/Flea Removal, Puppy's First Groom, Bath and
+    Blow Dry, Tidy Up, Clipped Coat, Hand Stripping.
+
+    **This does not replace :class:`ServiceType`.** That stays as the coarse
+    category, for three reasons:
+
+    * ``GroomSession.visit_type`` is a *paper-card discriminator*. Jess keeps
+      two record cards and one model exists precisely so a dog's history isn't
+      split in half; keying record cards off a thirteen-row catalogue would
+      split it thirteen ways.
+    * ``apply_to_dog()`` needs a coarse guard, and the catalogue makes it need
+      a stricter one — a 25-minute "Tidy Up" recorded against a groom would
+      otherwise overwrite a 105-minute ``Dog.groom_minutes``.
+    * It is purely additive. An appointment with no services behaves
+      byte-identically to one from before this existed, which is the property
+      that makes it safe to ship.
+
+    Keyed by ``code``, not name — a deliberate improvement on :class:`Breed`,
+    which is keyed by name, so renaming a breed in the app makes the next
+    boot's seed re-create the old row.
+    """
+
+    code = models.SlugField(max_length=40, unique=True)
+    name = models.CharField(max_length=120)
+    category = models.CharField(
+        max_length=10, choices=ServiceType.choices, default=ServiceType.GROOM,
+        help_text='Which record card this belongs to, and how it is priced.',
+    )
+    default_minutes = models.PositiveIntegerField(
+        null=True, blank=True, help_text='Blank until Jess sets one.',
+    )
+    default_price = models.DecimalField(
+        max_digits=7, decimal_places=2, null=True, blank=True,
+        help_text='Blank until Jess sets one. Never invent a figure here.',
+    )
+    takes_dog_defaults = models.BooleanField(
+        default=False,
+        help_text=(
+            'Take both the length and the price from the dog — i.e. from the '
+            'breed grid. Set on Full Groom only.'
+        ),
+    )
+    is_active = models.BooleanField(default=True)
+    sort_order = models.IntegerField(default=0)
+
+    class Meta:
+        ordering = ['sort_order', 'name']
+
+    def __str__(self):
+        return self.name
+
+
+def resolve_slot(dog, service_type, services=()):
+    """How long a booking runs, what it costs, and what has no price yet.
+
+    Returns ``(minutes, price_or_None, unpriced_names)``.
+
+    Three rules, in order:
+
+    * **No services means exactly the old behaviour.** A nails visit takes its
+      length and price from :class:`AppSettings`; anything else takes the
+      dog's. This is the compatibility guarantee, and there is a test on it.
+    * A service marked ``takes_dog_defaults`` contributes the dog's own
+      figures — that is what "Full Groom" means, and the breed grid supplies
+      both from the same row.
+    * **If any chosen service has no price, the total is None**, and the names
+      come back so the booking check can say which. A partial sum is a wrong
+      number on an invoice, and getting a wrong number onto an invoice is the
+      whole reason ``nail_visit_price`` is deliberately blank.
+    """
+    services = list(services)
+    settings_row = AppSettings.get()
+
+    if not services:
+        if service_type == ServiceType.NAILS_FLEAS_TICKS:
+            minutes = settings_row.nail_visit_minutes or FALLBACK_NAIL_VISIT_MINUTES
+            return minutes, settings_row.nail_visit_price, []
+        return dog.effective_groom_minutes, dog.effective_price, []
+
+    minutes = 0
+    total = Decimal('0.00')
+    unpriced = []
+    for service in services:
+        if service.takes_dog_defaults:
+            minutes += dog.effective_groom_minutes
+            total += dog.effective_price
+            continue
+        minutes += service.default_minutes or 0
+        if service.default_price is None:
+            unpriced.append(service.name)
+        else:
+            total += service.default_price
+
+    if minutes == 0:
+        # Every chosen service has a blank length. A zero-minute booking is
+        # invisible in the diary, so fall back to the category's figure —
+        # same reasoning as FALLBACK_NAIL_VISIT_MINUTES.
+        if service_type == ServiceType.NAILS_FLEAS_TICKS:
+            minutes = settings_row.nail_visit_minutes or FALLBACK_NAIL_VISIT_MINUTES
+        else:
+            minutes = dog.effective_groom_minutes
+
+    return minutes, (None if unpriced else total), unpriced
+
+
 class Appointment(models.Model):
     dog = models.ForeignKey(Dog, on_delete=models.CASCADE, related_name='appointments')
     start_at = models.DateTimeField()
@@ -791,6 +1059,10 @@ class Appointment(models.Model):
         max_length=10, choices=ServiceType.choices, default=ServiceType.GROOM,
     )
     status = models.CharField(max_length=12, choices=AppointmentStatus.choices, default=AppointmentStatus.BOOKED)
+    services = models.ManyToManyField(
+        Service, blank=True, related_name='appointments',
+        help_text='What is being done. Drives the length and the quote.',
+    )
     price_quoted = models.DecimalField(max_digits=7, decimal_places=2, null=True, blank=True)
     notes = models.TextField(blank=True)
     series = models.ForeignKey(
@@ -809,24 +1081,54 @@ class Appointment(models.Model):
 
     def save(self, *args, **kwargs):
         # Default the slot length and the quote so a booking made with just a
-        # start time is still complete. A nails/fleas/ticks visit takes neither
-        # from the dog: the breed grid prices full grooms, and inheriting it
-        # would block out three hours and quote £80 for a nail trim.
-        if self.service_type == ServiceType.NAILS_FLEAS_TICKS:
-            settings_row = AppSettings.get()
-            minutes = settings_row.nail_visit_minutes or FALLBACK_NAIL_VISIT_MINUTES
-            # Left as None when Jess hasn't set one. An invented price on an
-            # invoice is worse than a blank to fill in, and the booking check
-            # warns about it.
-            price = settings_row.nail_visit_price
-        else:
-            minutes = self.dog.effective_groom_minutes
-            price = self.dog.effective_price
-        if self.start_at and not self.end_at:
-            self.end_at = self.start_at + timedelta(minutes=minutes)
-        if self.price_quoted is None:
-            self.price_quoted = price
+        # start time is still complete.
+        #
+        # Deliberately resolved *without* services: on a create there is no pk
+        # yet, so `self.services` cannot be read, and DRF sets many-to-manys
+        # after `.save()` anyway. Reading it here would silently resolve every
+        # new appointment against an empty list. Callers that know the
+        # services set them and then call `apply_service_defaults()`.
+        #
+        # Only on insert. On an update the caller has been explicit, and a
+        # null price is a real answer — "nothing on this booking has a price
+        # yet". Defaulting on every save meant `apply_service_defaults`
+        # carefully worked out None and then `save()` immediately replaced it
+        # with the dog's groom price, quoting £50 for an unpriced service.
+        if self._state.adding:
+            minutes, price, _ = resolve_slot(self.dog, self.service_type)
+            if self.start_at and not self.end_at:
+                self.end_at = self.start_at + timedelta(minutes=minutes)
+            if self.price_quoted is None:
+                self.price_quoted = price
         super().save(*args, **kwargs)
+
+    def apply_service_defaults(self, force_end=False, force_price=False):
+        """Re-derive the end time and quote from the attached services.
+
+        Call this **after** ``services.set(...)``, never before — see
+        :meth:`save` for why it cannot happen there.
+
+        ``force_*`` says whether to overwrite a value the caller supplied. The
+        serializers pass ``field not in validated_data``, so an end time or a
+        price Jess typed in is never quietly replaced by a computed one.
+
+        Easy to miss: :class:`BookingSeries` materialisation also has to call
+        this, or a standing nail-trim series blocks out three hours a
+        fortnight forever.
+        """
+        services = list(self.services.all())
+        minutes, price, _ = resolve_slot(self.dog, self.service_type, services)
+
+        changed = []
+        if force_end or not self.end_at:
+            self.end_at = self.start_at + timedelta(minutes=minutes)
+            changed.append('end_at')
+        if force_price or self.price_quoted is None:
+            self.price_quoted = price
+            changed.append('price_quoted')
+        if changed:
+            self.save(update_fields=[*changed, 'updated_at'])
+        return self
 
     @property
     def duration_minutes(self):
@@ -950,8 +1252,16 @@ class GroomSession(models.Model):
         Refused for a nails visit: twenty minutes is how long a nail trim
         takes, and writing it to the dog would book the next full groom into a
         twenty-minute slot.
+
+        Refused too when the visit's appointment was only a *part* of a groom.
+        The service catalogue made this necessary: before it, a GROOM visit
+        was always a whole groom, but a 25-minute "Tidy Up" or "Bath and Blow
+        Dry" is now one as well, and letting that overwrite a 105-minute
+        ``Dog.groom_minutes`` is the same bug in a new coat.
         """
         if self.visit_type != ServiceType.GROOM:
+            return False
+        if not self._was_a_whole_groom():
             return False
         minutes = self.total_minutes
         if minutes <= 0:
@@ -961,6 +1271,21 @@ class GroomSession(models.Model):
         self.applied_to_dog_at = timezone.now()
         self.save(update_fields=['applied_to_dog_at'])
         return True
+
+    def _was_a_whole_groom(self):
+        """Whether this session's time is a fair default for a full groom.
+
+        True when nothing says otherwise — no appointment, or an appointment
+        with no services attached, which is every booking made before the
+        catalogue existed. Once services *are* attached, only a full groom
+        counts.
+        """
+        if self.appointment_id is None:
+            return True
+        services = list(self.appointment.services.all())
+        if not services:
+            return True
+        return any(service.takes_dog_defaults for service in services)
 
 
 class PhaseTiming(models.Model):
@@ -997,16 +1322,51 @@ class Invoice(models.Model):
     issue_date = models.DateField(default=timezone.localdate)
     due_date = models.DateField(null=True, blank=True)
     status = models.CharField(max_length=6, choices=Status.choices, default=Status.DRAFT)
+    # When, not just whether. "Record sent" wants a date against it, and a
+    # status column alone cannot say when it happened.
+    sent_at = models.DateField(null=True, blank=True)
+    # Not redundant with Payment.paid_at: Jess can mark cash-in-hand paid
+    # without recording an amount against it.
+    paid_at = models.DateField(null=True, blank=True)
     notes = models.TextField(blank=True)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='invoices')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    #: Where an invoice may go next.
+    #:
+    #: Paid is the end of the road. Jess's complaint was that marking an
+    #: invoice sent *after* recording payment left it showing as merely sent,
+    #: so she would chase money she already had. ``PAID -> VOID`` stays,
+    #: because a one-groomer business needs a way to cancel a mistake and a
+    #: credit-note model is more machinery than this deserves.
+    #:
+    #: ``SENT -> DRAFT`` stays too: an invoice sent with the wrong figure on
+    #: it has to be editable again.
+    TRANSITIONS = {
+        Status.DRAFT: {Status.SENT, Status.PAID, Status.VOID},
+        Status.SENT: {Status.PAID, Status.VOID, Status.DRAFT},
+        Status.PAID: {Status.VOID},
+        Status.VOID: set(),
+    }
 
     class Meta:
         ordering = ['-issue_date', '-id']
 
     def __str__(self):
         return f'{self.number} — {self.client.full_name}'
+
+    def can_transition_to(self, new_status):
+        """Whether this invoice may move to ``new_status``.
+
+        Checked by the ``mark_sent``/``mark_paid`` actions *and* by
+        ``InvoiceSerializer.validate_status``. Status is a plain writable
+        field that the app PATCHes directly, so governing only the actions
+        would make them decorative.
+        """
+        if new_status == self.status:
+            return True
+        return new_status in self.TRANSITIONS.get(self.status, set())
 
     @property
     def total(self):

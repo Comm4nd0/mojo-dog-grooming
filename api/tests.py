@@ -10,8 +10,10 @@ single-use intake links, groom timings feeding back into the diary.
 from datetime import date, time, timedelta
 from decimal import Decimal
 
+from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.cache import cache
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
@@ -25,17 +27,20 @@ from .models import (
     AppointmentStatus,
     Breed,
     Client,
+    ClientChangeRequest,
     ClientClaimRequest,
     ClosureDay,
     Consent,
     ConsentKind,
     Dog,
+    DogDocument,
     Equipment,
     GroomPhase,
     GroomSession,
     IntakeInvite,
     IntakeSubmission,
     Invoice,
+    InvoiceLine,
     OpeningHours,
     PasswordResetRequest,
     Payment,
@@ -43,6 +48,8 @@ from .models import (
     PhaseTiming,
     ProblemArea,
     REQUIRED_CONSENTS,
+    ReviewStatus,
+    Service,
     ServiceType,
     Temperament,
     TemperamentGrade,
@@ -89,6 +96,8 @@ class BaseAPITestCase(APITestCase):
         self.staff_client.force_authenticate(self.staff)
         self.alice_client = APIClient()
         self.alice_client.force_authenticate(self.alice_user)
+        self.bob_client = APIClient()
+        self.bob_client.force_authenticate(self.bob_user)
 
 
 class ClientIsolationTests(BaseAPITestCase):
@@ -1454,6 +1463,891 @@ class NeuterUnknownTests(BaseAPITestCase):
             format='json',
         )
         self.assertIs(Dog.objects.get(name='Bramble').is_neutered, True)
+
+
+class ClientChangeRequestTests(BaseAPITestCase):
+    """A client asking to correct their details is a request, not an edit.
+
+    And ``changes`` is an arbitrary-field-write primitive unless it is fenced:
+    approval applies it with ``setattr``, so an unwhitelisted key writes
+    straight onto the client record — including Jess's private notes, the UID
+    her paper filing runs on, and the FK to the login.
+    """
+
+    def _request(self, changes, client=None):
+        return (client or self.alice_client).post(
+            '/api/client-change-requests/', {'changes': changes}, format='json',
+        )
+
+    def test_a_request_lands_pending_and_changes_nothing_yet(self):
+        response = self._request({'phone': '07700 900123'})
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(response.data['status'], ReviewStatus.PENDING)
+
+        self.alice.refresh_from_db()
+        self.assertNotEqual(self.alice.phone, '07700 900123')
+
+    def test_the_target_client_comes_from_the_session_not_the_body(self):
+        response = self.alice_client.post(
+            '/api/client-change-requests/',
+            {'client': self.bob.pk, 'changes': {'phone': '07700 900999'}},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(
+            ClientChangeRequest.objects.get(pk=response.data['id']).client_id,
+            self.alice.pk,
+            'otherwise any signed-in user could lodge a request against any '
+            'client and put their data in front of Jess',
+        )
+
+    def test_a_staff_only_field_is_refused_outright(self):
+        for field in ('notes', 'chatty', 'leaflet_received'):
+            response = self._request({field: 'anything'})
+            self.assertEqual(
+                response.status_code, status.HTTP_400_BAD_REQUEST, field,
+            )
+            self.assertFalse(ClientChangeRequest.objects.exists())
+
+    def test_the_uid_and_the_login_are_refused(self):
+        for field, value in (('uid', 'MOJO-001'), ('user', 3), ('id', 99)):
+            response = self._request({field: value})
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, field)
+
+    def test_an_empty_request_is_refused(self):
+        self.assertEqual(self._request({}).status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_approval_applies_only_whitelisted_keys(self):
+        change = ClientChangeRequest.objects.create(
+            client=self.alice,
+            requested_by=self.alice_user,
+            # Straight onto the model, bypassing the serializer — this is what
+            # a request written before the whitelist shrank would look like.
+            changes={'phone': '07700 900123', 'notes': 'sneaky'},
+        )
+        response = self.staff_client.post(
+            f'/api/client-change-requests/{change.pk}/approve/', {}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.alice.refresh_from_db()
+        self.assertEqual(self.alice.phone, '07700 900123')
+        self.assertNotEqual(
+            self.alice.notes, 'sneaky',
+            'the model re-checks the whitelist on the way out, not just the '
+            'serializer on the way in',
+        )
+
+    def test_rejection_leaves_the_record_alone(self):
+        before = self.alice.phone
+        change = ClientChangeRequest.objects.create(
+            client=self.alice, requested_by=self.alice_user,
+            changes={'phone': '07700 900123'},
+        )
+        self.staff_client.post(f'/api/client-change-requests/{change.pk}/reject/')
+
+        self.alice.refresh_from_db()
+        self.assertEqual(self.alice.phone, before)
+
+    def test_a_client_sees_only_their_own_requests(self):
+        self._request({'phone': '07700 900001'})
+        ClientChangeRequest.objects.create(
+            client=self.bob, requested_by=self.bob_user, changes={'phone': '1'},
+        )
+        response = self.alice_client.get('/api/client-change-requests/')
+        self.assertEqual(response.data['count'], 1)
+
+    def test_a_client_cannot_approve_their_own(self):
+        change = ClientChangeRequest.objects.create(
+            client=self.alice, requested_by=self.alice_user,
+            changes={'phone': '07700 900123'},
+        )
+        response = self.alice_client.post(
+            f'/api/client-change-requests/{change.pk}/approve/', {}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.alice.refresh_from_db()
+        self.assertNotEqual(self.alice.phone, '07700 900123')
+
+    def test_approving_twice_is_refused(self):
+        change = ClientChangeRequest.objects.create(
+            client=self.alice, requested_by=self.alice_user,
+            changes={'phone': '07700 900123'},
+        )
+        self.staff_client.post(f'/api/client-change-requests/{change.pk}/approve/')
+        again = self.staff_client.post(f'/api/client-change-requests/{change.pk}/approve/')
+        self.assertEqual(again.status_code, status.HTTP_409_CONFLICT)
+
+
+class PendingSummaryTests(BaseAPITestCase):
+    """Jess has no notifications at all — this count is the only thing that
+    tells her something is waiting.
+
+    Worth being plain with her about the limit: it only shows when she opens
+    the app. Push needs device tokens, FCM and APNs credentials, and either a
+    synchronous send that makes a client's booking request depend on Google's
+    uptime, or Redis and a worker container on a host already running eleven
+    projects in under 4 GB. Email is closed too — there is no SMTP on the box.
+    """
+
+    def test_it_counts_each_kind_of_thing_waiting(self):
+        Appointment.objects.create(
+            dog=self.alice_dog,
+            start_at=timezone.now() + timedelta(days=1),
+            status=AppointmentStatus.REQUESTED,
+        )
+        ClientChangeRequest.objects.create(
+            client=self.alice, requested_by=self.alice_user, changes={'phone': '1'},
+        )
+
+        response = self.staff_client.get('/api/pending/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['appointment_requests'], 1)
+        self.assertEqual(response.data['change_requests'], 1)
+        self.assertEqual(response.data['total'], 2)
+
+    def test_a_booked_appointment_is_not_waiting_for_anything(self):
+        Appointment.objects.create(
+            dog=self.alice_dog,
+            start_at=timezone.now() + timedelta(days=1),
+            status=AppointmentStatus.BOOKED,
+        )
+        self.assertEqual(self.staff_client.get('/api/pending/').data['total'], 0)
+
+    def test_dealing_with_something_decrements_it(self):
+        change = ClientChangeRequest.objects.create(
+            client=self.alice, requested_by=self.alice_user, changes={'phone': '1'},
+        )
+        self.assertEqual(self.staff_client.get('/api/pending/').data['total'], 1)
+
+        self.staff_client.post(f'/api/client-change-requests/{change.pk}/reject/')
+        self.assertEqual(self.staff_client.get('/api/pending/').data['total'], 0)
+
+    def test_a_client_cannot_see_the_queue(self):
+        self.assertEqual(
+            self.alice_client.get('/api/pending/').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    def test_ordinary_staff_are_not_told_who_is_locked_out(self):
+        # `PasswordResetRequestViewSet` is IsSuperUser, so a count here would
+        # leak exactly what the list endpoint refuses them. The base fixture's
+        # staff login is a superuser, hence a second one.
+        PasswordResetRequest.objects.create(identifier='someone@example.com')
+        helper = User.objects.create_user('helper', password='pw', is_staff=True)
+        helper_client = APIClient()
+        helper_client.force_authenticate(helper)
+
+        response = helper_client.get('/api/pending/')
+        self.assertNotIn('password_reset_requests', response.data)
+        self.assertEqual(response.data['total'], 0)
+
+    def test_a_superuser_is(self):
+        PasswordResetRequest.objects.create(identifier='someone@example.com')
+
+        response = self.staff_client.get('/api/pending/')
+        self.assertEqual(response.data['password_reset_requests'], 1)
+        self.assertEqual(response.data['total'], 1)
+
+
+class DogDocumentTests(BaseAPITestCase):
+    """A scanned intake form is the client's name, address and signature.
+
+    `/media/` is served by Caddy with `file_server` and no authentication at
+    all, so these cannot be media URLs. They live outside `MEDIA_ROOT` and are
+    only reachable through a gated view that goes down the same scoped
+    queryset as everything else.
+    """
+
+    #: A one-pixel PNG, and the smallest thing that survives a real header check.
+    PNG = (
+        b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01'
+        b'\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01'
+        b'\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82'
+    )
+    PDF = b'%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n'
+
+    def _upload(self, content=None, name='form.pdf', **extra):
+        upload = SimpleUploadedFile(
+            name, content if content is not None else self.PDF,
+            content_type='application/pdf',
+        )
+        return self.staff_client.post(
+            '/api/dog-documents/',
+            {
+                'dog': self.alice_dog.pk,
+                'file': upload,
+                'title': 'Signed intake form',
+                'kind': 'INTAKE_FORM',
+                **extra,
+            },
+            format='multipart',
+        )
+
+    def test_staff_can_file_a_document(self):
+        response = self._upload()
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(response.data['original_filename'], 'form.pdf')
+        self.assertGreater(response.data['size_bytes'], 0)
+
+    def test_the_serializer_never_emits_a_media_path(self):
+        response = self._upload()
+        self.assertNotIn('file', response.data)
+        self.assertIn('/api/dog-documents/', response.data['download_url'])
+        self.assertNotIn('/media/', str(response.data))
+
+    def test_the_stored_path_does_not_contain_the_uploaded_filename(self):
+        self._upload(name='alice-adams-intake.pdf')
+        document = DogDocument.objects.get()
+        self.assertNotIn('alice-adams', document.file.name)
+        self.assertTrue(document.file.name.startswith('dog_documents/'))
+
+    def test_a_client_can_download_their_own_dogs_document(self):
+        self._upload()
+        document = DogDocument.objects.get()
+        response = self.alice_client.get(f'/api/dog-documents/{document.pk}/download/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response['X-Content-Type-Options'], 'nosniff')
+
+    def test_another_client_gets_nothing(self):
+        self._upload()
+        document = DogDocument.objects.get()
+        self.assertEqual(
+            self.bob_client.get(f'/api/dog-documents/{document.pk}/download/').status_code,
+            status.HTTP_404_NOT_FOUND,
+            'the queryset layer, not just the field layer',
+        )
+
+    def test_the_default_is_visible_even_on_a_multipart_upload(self):
+        # DRF turns a *missing* boolean into False for form data, which made
+        # every uploaded document invisible to the client. See
+        # AbsentMeansDefaultBooleanField.
+        self._upload()
+        self.assertTrue(DogDocument.objects.get().visible_to_client)
+
+    def test_a_private_document_is_invisible_to_the_client(self):
+        self._upload(visible_to_client=False)
+        document = DogDocument.objects.get()
+
+        self.assertEqual(self.alice_client.get('/api/dog-documents/').data['count'], 0)
+        self.assertEqual(
+            self.alice_client.get(f'/api/dog-documents/{document.pk}/download/').status_code,
+            status.HTTP_404_NOT_FOUND,
+            'filtered in the queryset — hiding a field is not hiding a row',
+        )
+        self.assertEqual(self.staff_client.get('/api/dog-documents/').data['count'], 1)
+
+    def test_a_client_cannot_upload(self):
+        upload = SimpleUploadedFile('sneaky.pdf', self.PDF, content_type='application/pdf')
+        response = self.alice_client.post(
+            '/api/dog-documents/',
+            {'dog': self.alice_dog.pk, 'file': upload, 'title': 'Mine'},
+            format='multipart',
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_an_executable_renamed_as_a_pdf_is_rejected(self):
+        response = self._upload(content=b'MZ\x90\x00\x03\x00\x00\x00' + b'\x00' * 40)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(DogDocument.objects.exists())
+
+    def test_an_svg_is_rejected(self):
+        # Scriptable, and a browser rendering it inline off the download view
+        # would be stored XSS on the API's own origin.
+        response = self._upload(
+            content=b'<svg xmlns="http://www.w3.org/2000/svg"><script/></svg>',
+            name='form.svg',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_an_svg_renamed_as_a_png_is_rejected_too(self):
+        response = self._upload(
+            content=b'<svg xmlns="http://www.w3.org/2000/svg"></svg>', name='form.png',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_a_real_photo_is_accepted(self):
+        response = self._upload(content=self.PNG, name='form.png')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+
+    def test_an_unlisted_extension_is_rejected(self):
+        response = self._upload(content=self.PDF, name='form.exe')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_an_oversized_file_is_rejected(self):
+        big = self.PDF + b'\x00' * (settings.MAX_DOCUMENT_BYTES + 1)
+        response = self._upload(content=big)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class ServiceCatalogueTests(BaseAPITestCase):
+    """A nail trim must not inherit a full groom's three hours and £80.
+
+    The catalogue drives how long a booking runs and what it costs. The coarse
+    ``ServiceType`` still decides which of Jess's two record cards she fills in
+    afterwards and whether the time writes back to the dog — those are
+    different questions and collapsing them is how a Tidy Up ends up as a
+    dog's default groom time.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # Built here rather than seeded: `seed_breeds` also inserts 224
+        # breeds, which is a lot of rows to write for three services. The seed
+        # itself is covered by ServiceSeedTests.
+        self.full_groom = Service.objects.create(
+            code='full_groom', name='Full Groom',
+            category=ServiceType.GROOM, takes_dog_defaults=True, sort_order=10,
+        )
+        self.nail_clipping = Service.objects.create(
+            code='nail_clipping', name='Nail Clipping',
+            category=ServiceType.NAILS_FLEAS_TICKS, sort_order=120,
+        )
+        self.tidy_up = Service.objects.create(
+            code='tidy_up', name='Tidy Up', category=ServiceType.GROOM, sort_order=60,
+        )
+        self.start = (timezone.now() + timedelta(days=2)).replace(
+            hour=10, minute=0, second=0, microsecond=0,
+        )
+
+    def _book(self, services=None, **extra):
+        body = {'dog': self.alice_dog.pk, 'start_at': self.start.isoformat(), **extra}
+        if services is not None:
+            body['services'] = [service.pk for service in services]
+        response = self.staff_client.post('/api/appointments/', body, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        return Appointment.objects.get(pk=response.data['id'])
+
+    def test_no_services_behaves_exactly_as_before(self):
+        """The compatibility guarantee this whole design rests on."""
+        appointment = self._book()
+        self.assertEqual(
+            appointment.duration_minutes, self.alice_dog.effective_groom_minutes,
+        )
+        self.assertEqual(appointment.price_quoted, self.alice_dog.effective_price)
+
+    def test_a_nail_trim_does_not_inherit_the_groom_slot(self):
+        self.nail_clipping.default_minutes = 20
+        self.nail_clipping.default_price = Decimal('8.00')
+        self.nail_clipping.save()
+
+        appointment = self._book([self.nail_clipping])
+        self.assertEqual(appointment.duration_minutes, 20)
+        self.assertEqual(appointment.price_quoted, Decimal('8.00'))
+
+    def test_a_full_groom_takes_the_dogs_own_figures(self):
+        appointment = self._book([self.full_groom])
+        self.assertEqual(
+            appointment.duration_minutes, self.alice_dog.effective_groom_minutes,
+        )
+        self.assertEqual(appointment.price_quoted, self.alice_dog.effective_price)
+
+    def test_two_services_add_up(self):
+        self.nail_clipping.default_minutes = 20
+        self.nail_clipping.default_price = Decimal('8.00')
+        self.nail_clipping.save()
+        self.tidy_up.default_minutes = 25
+        self.tidy_up.default_price = Decimal('15.00')
+        self.tidy_up.save()
+
+        appointment = self._book([self.nail_clipping, self.tidy_up])
+        self.assertEqual(appointment.duration_minutes, 45)
+        self.assertEqual(appointment.price_quoted, Decimal('23.00'))
+
+    def test_an_unpriced_service_leaves_the_quote_blank_and_still_books(self):
+        self.tidy_up.default_minutes = 25
+        self.tidy_up.save()
+
+        appointment = self._book([self.tidy_up])
+        self.assertEqual(appointment.duration_minutes, 25)
+        self.assertIsNone(
+            appointment.price_quoted,
+            'a partial sum is a wrong number on an invoice — same rule as '
+            'nail_visit_price',
+        )
+
+    def test_a_price_typed_in_is_never_overwritten(self):
+        self.tidy_up.default_minutes = 25
+        self.tidy_up.default_price = Decimal('15.00')
+        self.tidy_up.save()
+
+        appointment = self._book([self.tidy_up], price_quoted='40.00')
+        self.assertEqual(
+            appointment.price_quoted, Decimal('40.00'),
+            'the force_* guard: Jess overrode it, so the resolver must not '
+            'quietly replace it',
+        )
+
+    def test_an_end_time_typed_in_is_never_overwritten(self):
+        self.tidy_up.default_minutes = 25
+        self.tidy_up.save()
+
+        end = self.start + timedelta(minutes=90)
+        appointment = self._book([self.tidy_up], end_at=end.isoformat())
+        self.assertEqual(appointment.duration_minutes, 90)
+
+    def test_every_service_blank_still_gives_a_visible_block(self):
+        # A zero-minute booking would be invisible in the diary.
+        appointment = self._book([self.tidy_up])
+        self.assertGreater(appointment.duration_minutes, 0)
+
+    def test_the_check_endpoint_uses_the_same_resolver(self):
+        self.nail_clipping.default_minutes = 20
+        self.nail_clipping.default_price = Decimal('8.00')
+        self.nail_clipping.save()
+
+        response = self.staff_client.post(
+            '/api/appointments/check/',
+            {
+                'dog': self.alice_dog.pk,
+                'start_at': self.start.isoformat(),
+                'services': [self.nail_clipping.pk],
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(Decimal(response.data['suggested_price']), Decimal('8.00'))
+        self.assertEqual(
+            response.data['suggested_end_at'], self.start + timedelta(minutes=20),
+        )
+
+    def test_the_check_names_what_has_no_price(self):
+        response = self.staff_client.post(
+            '/api/appointments/check/',
+            {
+                'dog': self.alice_dog.pk,
+                'start_at': self.start.isoformat(),
+                'services': [self.tidy_up.pk],
+            },
+            format='json',
+        )
+        warning = next(
+            w for w in response.data['warnings'] if w['code'] == 'service_not_priced'
+        )
+        self.assertIn('Tidy Up', warning['message'])
+        self.assertEqual(response.data['unpriced_services'], ['Tidy Up'])
+
+    def test_a_groom_booked_with_only_nails_services_warns(self):
+        response = self.staff_client.post(
+            '/api/appointments/check/',
+            {
+                'dog': self.alice_dog.pk,
+                'start_at': self.start.isoformat(),
+                'service_type': ServiceType.GROOM,
+                'services': [self.nail_clipping.pk],
+            },
+            format='json',
+        )
+        codes = [w['code'] for w in response.data['warnings']]
+        self.assertIn('service_category_mismatch', codes)
+
+    def test_a_standing_series_uses_the_dogs_usual_services(self):
+        """`_materialise` hard-coded the groom time.
+
+        A standing nail-trim series would have blocked out three hours a
+        fortnight, forever, and nobody would notice until the diary was full.
+        """
+        self.nail_clipping.default_minutes = 20
+        self.nail_clipping.save()
+        self.alice_dog.default_services.set([self.nail_clipping])
+
+        response = self.staff_client.post(
+            '/api/booking-series/',
+            {
+                'dog': self.alice_dog.pk,
+                'interval_weeks': 2,
+                'start_date': (timezone.localdate() + timedelta(days=7)).isoformat(),
+                'preferred_time': '10:00',
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+
+        made = Appointment.objects.filter(series_id=response.data['id']).first()
+        self.assertIsNotNone(made)
+        self.assertEqual(made.duration_minutes, 20)
+
+    def test_a_part_groom_does_not_become_the_dogs_default_time(self):
+        """`apply_to_dog` guarded on the coarse type only.
+
+        Before the catalogue a GROOM visit was always a whole groom. A
+        25-minute Tidy Up is one now too, and letting that overwrite a
+        105-minute default is the same bug in a new coat.
+        """
+        appointment = self._book([self.tidy_up])
+        session = GroomSession.objects.create(
+            dog=self.alice_dog, appointment=appointment, recorded_minutes=25,
+        )
+        before = self.alice_dog.groom_minutes
+
+        self.assertFalse(session.apply_to_dog())
+        self.alice_dog.refresh_from_db()
+        self.assertEqual(self.alice_dog.groom_minutes, before)
+
+    def test_a_full_groom_still_writes_back(self):
+        appointment = self._book([self.full_groom])
+        session = GroomSession.objects.create(
+            dog=self.alice_dog, appointment=appointment, recorded_minutes=115,
+        )
+        self.assertTrue(session.apply_to_dog())
+        self.alice_dog.refresh_from_db()
+        self.assertEqual(self.alice_dog.groom_minutes, 115)
+
+    def test_a_session_with_no_appointment_still_writes_back(self):
+        # Every timing recorded before the catalogue existed.
+        session = GroomSession.objects.create(dog=self.alice_dog, recorded_minutes=120)
+        self.assertTrue(session.apply_to_dog())
+
+    def test_a_client_can_read_the_catalogue(self):
+        # They need it to request a nail trim rather than a full groom.
+        response = self.alice_client.get('/api/services/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertGreater(response.data['count'], 0)
+
+    def test_a_client_cannot_edit_the_catalogue(self):
+        response = self.alice_client.patch(
+            f'/api/services/{self.tidy_up.pk}/', {'default_price': '5.00'}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_a_retired_service_is_not_offered(self):
+        self.tidy_up.is_active = False
+        self.tidy_up.save()
+
+        codes = [row['code'] for row in self.staff_client.get('/api/services/').data['results']]
+        self.assertNotIn('tidy_up', codes)
+
+    def test_a_dogs_usual_services_are_visible_to_its_owner(self):
+        # Not staff-only: it is what the owner asked for, and they need it to
+        # request the right kind of booking.
+        self.alice_dog.default_services.set([self.nail_clipping])
+        response = self.alice_client.get(f'/api/dogs/{self.alice_dog.pk}/')
+        self.assertEqual(response.data['default_services'], [self.nail_clipping.pk])
+
+
+class ServiceSeedTests(TestCase):
+    """Jess's prices must survive a redeploy — entrypoint.sh reseeds on boot."""
+
+    def test_every_service_is_created_once(self):
+        call_command('seed_breeds', verbosity=0)
+        call_command('seed_breeds', verbosity=0)
+        self.assertEqual(Service.objects.count(), 13)
+        self.assertEqual(Service.objects.filter(name='Health Check').count(), 1)
+
+    def test_prices_and_lengths_seed_blank(self):
+        call_command('seed_breeds', verbosity=0)
+        for service in Service.objects.all():
+            self.assertIsNone(service.default_price, service.code)
+            self.assertIsNone(service.default_minutes, service.code)
+
+    def test_a_price_jess_sets_survives_a_reseed_and_an_overwrite(self):
+        call_command('seed_breeds', verbosity=0)
+        Service.objects.filter(code='tidy_up').update(
+            default_price=Decimal('18.00'), default_minutes=30,
+        )
+
+        call_command('seed_breeds', verbosity=0)
+        call_command('seed_breeds', '--overwrite', verbosity=0)
+
+        tidy = Service.objects.get(code='tidy_up')
+        self.assertEqual(
+            tidy.default_price, Decimal('18.00'),
+            'unlike breeds, Jess is the source of truth for a service price — '
+            '--overwrite must not touch it',
+        )
+        self.assertEqual(tidy.default_minutes, 30)
+
+    def test_renaming_a_service_does_not_resurrect_the_old_one(self):
+        # Breed is keyed by name and has exactly this bug; Service is keyed by
+        # code so it does not.
+        call_command('seed_breeds', verbosity=0)
+        Service.objects.filter(code='tidy_up').update(name='Quick tidy')
+
+        call_command('seed_breeds', verbosity=0)
+
+        self.assertEqual(Service.objects.filter(code='tidy_up').count(), 1)
+        self.assertEqual(Service.objects.get(code='tidy_up').name, 'Quick tidy')
+        self.assertFalse(Service.objects.filter(name='Tidy Up').exists())
+
+    def test_only_the_full_groom_takes_the_dogs_figures(self):
+        call_command('seed_breeds', verbosity=0)
+        takers = list(
+            Service.objects.filter(takes_dog_defaults=True).values_list('code', flat=True)
+        )
+        self.assertEqual(takers, ['full_groom'])
+
+
+class InvoiceFromAppointmentTests(BaseAPITestCase):
+    """An invoice raised from what was actually done.
+
+    An unpriced service gets no line rather than a £0.00 one — `unit_price`
+    cannot be null, so the alternatives are inventing a figure or claiming the
+    service was free.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.nail_clipping = Service.objects.create(
+            code='nail_clipping', name='Nail Clipping',
+            category=ServiceType.NAILS_FLEAS_TICKS, sort_order=120,
+        )
+        self.tidy_up = Service.objects.create(
+            code='tidy_up', name='Tidy Up', category=ServiceType.GROOM, sort_order=60,
+        )
+        self.appointment = Appointment.objects.create(
+            dog=self.alice_dog,
+            start_at=timezone.now() + timedelta(days=1),
+        )
+
+    def test_one_line_per_priced_service(self):
+        self.nail_clipping.default_price = Decimal('8.00')
+        self.nail_clipping.save()
+        self.appointment.services.set([self.nail_clipping])
+
+        response = self.staff_client.post(
+            '/api/invoices/from_appointment/',
+            {'appointment': self.appointment.pk, 'number': 'INV-900'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        invoice = Invoice.objects.get(number='INV-900')
+        self.assertEqual(invoice.lines.count(), 1)
+        self.assertEqual(invoice.total, Decimal('8.00'))
+        self.assertEqual(response.data['unpriced'], [])
+
+    def test_an_unpriced_service_is_reported_rather_than_written_as_free(self):
+        self.nail_clipping.default_price = Decimal('8.00')
+        self.nail_clipping.save()
+        self.appointment.services.set([self.nail_clipping, self.tidy_up])
+
+        response = self.staff_client.post(
+            '/api/invoices/from_appointment/',
+            {'appointment': self.appointment.pk, 'number': 'INV-901'},
+            format='json',
+        )
+        self.assertEqual(response.data['unpriced'], ['Tidy Up'])
+        invoice = Invoice.objects.get(number='INV-901')
+        self.assertEqual(invoice.lines.count(), 1, 'no £0.00 line for the unpriced one')
+
+    def test_a_booking_with_no_services_uses_its_quote(self):
+        response = self.staff_client.post(
+            '/api/invoices/from_appointment/',
+            {'appointment': self.appointment.pk, 'number': 'INV-902'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(
+            Invoice.objects.get(number='INV-902').total,
+            self.alice_dog.effective_price,
+        )
+
+    def test_a_duplicate_number_is_refused(self):
+        Invoice.objects.create(client=self.alice, number='INV-903')
+        response = self.staff_client.post(
+            '/api/invoices/from_appointment/',
+            {'appointment': self.appointment.pk, 'number': 'INV-903'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+
+    def test_a_client_cannot_raise_one(self):
+        response = self.alice_client.post(
+            '/api/invoices/from_appointment/',
+            {'appointment': self.appointment.pk, 'number': 'INV-904'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
+class ClientUidVisibilityTests(BaseAPITestCase):
+    """The UID is Jess's filing reference, and she asked to hide it from clients.
+
+    Not the same kind of rule as the staff-only notes beside it — the UID is
+    printed on the client's own paper booking card, so this is a presentation
+    preference rather than a confidentiality fix, and conflating the two would
+    weaken the rule that matters.
+
+    It reaches a client by four separate routes, so gating one is cosmetic.
+    """
+
+    def setUp(self):
+        super().setUp()
+        settings_row = AppSettings.get()
+        settings_row.invoicing_visible_to_clients = True
+        settings_row.save()
+        self.invoice = Invoice.objects.create(client=self.alice, number='INV-001')
+
+    def test_hidden_on_their_own_client_record(self):
+        response = self.alice_client.get(f'/api/clients/{self.alice.pk}/')
+        self.assertNotIn('uid', response.data)
+
+    def test_hidden_on_the_owner_block_of_a_dog(self):
+        response = self.alice_client.get(f'/api/dogs/{self.alice_dog.pk}/')
+        self.assertNotIn('uid', response.data['client_detail'])
+
+    def test_hidden_on_the_dog_list(self):
+        # A separate declared field, so it needs its own entry — gating only
+        # ClientSerializer would leave this one open.
+        response = self.alice_client.get('/api/dogs/')
+        self.assertNotIn('client_uid', response.data['results'][0])
+
+    def test_hidden_on_an_invoice(self):
+        response = self.alice_client.get('/api/invoices/')
+        self.assertNotIn('client_uid', response.data['results'][0])
+
+    def test_staff_still_see_it_everywhere(self):
+        self.assertIn('uid', self.staff_client.get(f'/api/clients/{self.alice.pk}/').data)
+        self.assertIn(
+            'client_uid', self.staff_client.get('/api/dogs/').data['results'][0],
+        )
+        self.assertIn(
+            'client_uid', self.staff_client.get('/api/invoices/').data['results'][0],
+        )
+        self.assertIn(
+            'uid',
+            self.staff_client.get(f'/api/dogs/{self.alice_dog.pk}/').data['client_detail'],
+        )
+
+    def test_staff_can_still_search_by_uid(self):
+        response = self.staff_client.get('/api/dogs/?search=MOJO-001')
+        self.assertEqual(response.data['count'], 1)
+
+
+class InvoiceLifecycleTests(BaseAPITestCase):
+    """Paid is the end of the road.
+
+    Jess's complaint: "PAID should always be the final? As if recorded as paid
+    then sent it just shows as sent." Marking an invoice sent after it has been
+    paid would quietly un-pay it, and she would chase money she already has.
+
+    The rule is enforced on the actions *and* in the serializer, because
+    ``status`` is a plain writable field the app has always PATCHed directly —
+    governing only the actions would leave the front door open.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.invoice = Invoice.objects.create(client=self.alice, number='INV-001')
+        InvoiceLine.objects.create(
+            invoice=self.invoice, description='Full groom',
+            quantity=Decimal('1.00'), unit_price=Decimal('50.00'),
+        )
+
+    def test_mark_sent_records_the_date(self):
+        response = self.staff_client.post(f'/api/invoices/{self.invoice.pk}/mark_sent/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.invoice.refresh_from_db()
+        self.assertEqual(self.invoice.status, Invoice.Status.SENT)
+        self.assertEqual(self.invoice.sent_at, date.today())
+
+    def test_mark_paid_records_the_payment_and_how_it_was_paid(self):
+        response = self.staff_client.post(
+            f'/api/invoices/{self.invoice.pk}/mark_paid/',
+            {'method': 'CASH'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.invoice.refresh_from_db()
+        self.assertEqual(self.invoice.status, Invoice.Status.PAID)
+        self.assertEqual(self.invoice.paid_at, date.today())
+
+        payment = Payment.objects.get(invoice=self.invoice)
+        self.assertEqual(payment.amount, Decimal('50.00'), 'defaults to the balance')
+        self.assertEqual(
+            payment.method, 'CASH',
+            'the column always existed and nothing ever filled it in, so every '
+            'invoice in the books said CARD',
+        )
+        self.assertEqual(payment.recorded_by, self.staff)
+
+    def test_mark_paid_rejects_a_method_that_is_not_one(self):
+        response = self.staff_client.post(
+            f'/api/invoices/{self.invoice.pk}/mark_paid/',
+            {'method': 'CRYPTO'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(Payment.objects.filter(invoice=self.invoice).exists())
+
+    def test_marking_a_paid_invoice_sent_is_refused(self):
+        self.staff_client.post(f'/api/invoices/{self.invoice.pk}/mark_paid/', {}, format='json')
+
+        response = self.staff_client.post(f'/api/invoices/{self.invoice.pk}/mark_sent/')
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+
+        self.invoice.refresh_from_db()
+        self.assertEqual(
+            self.invoice.status, Invoice.Status.PAID,
+            'this is the whole complaint — it must not slip back to sent',
+        )
+
+    def test_patching_a_paid_invoice_back_to_sent_is_refused_too(self):
+        # The actions are not the only door: the app PATCHes status directly.
+        self.invoice.status = Invoice.Status.PAID
+        self.invoice.save()
+
+        response = self.staff_client.patch(
+            f'/api/invoices/{self.invoice.pk}/', {'status': 'SENT'}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.invoice.refresh_from_db()
+        self.assertEqual(self.invoice.status, Invoice.Status.PAID)
+
+    def test_a_paid_invoice_can_still_be_voided(self):
+        # The one escape. A one-groomer business needs a way to cancel a
+        # mistake, and a credit-note model is more machinery than this earns.
+        self.invoice.status = Invoice.Status.PAID
+        self.invoice.save()
+
+        response = self.staff_client.patch(
+            f'/api/invoices/{self.invoice.pk}/', {'status': 'VOID'}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_a_sent_invoice_can_go_back_to_draft(self):
+        # An invoice sent with the wrong figure on it has to be editable again.
+        self.invoice.status = Invoice.Status.SENT
+        self.invoice.save()
+
+        response = self.staff_client.patch(
+            f'/api/invoices/{self.invoice.pk}/', {'status': 'DRAFT'}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_a_void_invoice_goes_nowhere(self):
+        self.invoice.status = Invoice.Status.VOID
+        self.invoice.save()
+
+        for target in ('DRAFT', 'SENT', 'PAID'):
+            response = self.staff_client.patch(
+                f'/api/invoices/{self.invoice.pk}/', {'status': target}, format='json',
+            )
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, target)
+
+    def test_saving_an_invoice_without_touching_the_status_still_works(self):
+        # Guards the obvious way to break this: treating "same status" as an
+        # illegal transition would make every ordinary edit fail.
+        self.invoice.status = Invoice.Status.PAID
+        self.invoice.save()
+
+        response = self.staff_client.patch(
+            f'/api/invoices/{self.invoice.pk}/',
+            {'status': 'PAID', 'notes': 'Paid at the door'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_a_client_cannot_mark_their_own_invoice_paid(self):
+        settings_row = AppSettings.get()
+        settings_row.invoicing_visible_to_clients = True
+        settings_row.save()
+
+        response = self.alice_client.post(
+            f'/api/invoices/{self.invoice.pk}/mark_paid/', {}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(Payment.objects.filter(invoice=self.invoice).exists())
 
 
 class InvoiceDeletionTests(BaseAPITestCase):

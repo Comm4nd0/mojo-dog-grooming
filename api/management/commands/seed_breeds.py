@@ -33,6 +33,8 @@ from api.models import (
     AppSettings,
     OpeningHours,
     TEMPERAMENT_ORDER,
+    Service,
+    ServiceType,
     Temperament,
     TemperamentGrade,
 )
@@ -372,6 +374,35 @@ TEMPERAMENT_LIMITS = {
     Temperament.FEISTY: 1,
 }
 
+# Jess's list of what she does, from her feedback of 1 August. Her list had
+# "Health Check" on it twice; it is one row here.
+#
+# **Every price and length seeds blank, and that is deliberate.** Her price
+# list of 28 July covers full grooms only — there is no figure anywhere for
+# the other twelve, and an invented one is indistinguishable from a real one
+# once it is in the table. That is the mistake migration 0006 had to clean up.
+# Full Groom takes both from the dog instead, i.e. from the breed grid.
+#
+# The category is our reading, not hers: it decides which of her two record
+# cards a visit produces, so it is worth her checking.
+SERVICES = [
+    # code, name, category, takes_dog_defaults
+    ('full_groom', 'Full Groom', ServiceType.GROOM, True),
+    ('puppy_first_groom', "Puppy's First Groom", ServiceType.GROOM, False),
+    ('bath_blow_dry', 'Bath and Blow Dry', ServiceType.GROOM, False),
+    ('clipped_coat', 'Clipped Coat', ServiceType.GROOM, False),
+    ('hand_stripping', 'Hand Stripping', ServiceType.GROOM, False),
+    ('tidy_up', 'Tidy Up', ServiceType.GROOM, False),
+    ('de_shedding', 'De-Shedding / Brushing Out', ServiceType.GROOM, False),
+    ('hygiene_clip', 'Hygiene Clip', ServiceType.GROOM, False),
+    ('paws_clipped', 'Paws Clipped', ServiceType.GROOM, False),
+    ('ear_cleaning', 'Ear Cleaning', ServiceType.GROOM, False),
+    ('health_check', 'Health Check', ServiceType.GROOM, False),
+    ('nail_clipping', 'Nail Clipping', ServiceType.NAILS_FLEAS_TICKS, False),
+    ('tick_flea_removal', 'Tick / Flea Removal', ServiceType.NAILS_FLEAS_TICKS, False),
+]
+
+
 # Monday–Friday 09:00–17:00, Saturday 09:00–13:00, closed Sunday.
 OPENING_HOURS = {
     0: ('09:00', '17:00', False),
@@ -435,6 +466,33 @@ class Command(BaseCommand):
                 },
             )
 
+        # Keyed on `code`, so renaming a service in the app does not make the
+        # next boot re-create the old row — the bug Breed has, where the name
+        # is the key.
+        #
+        # `--overwrite` corrects the name, category and order but **never** the
+        # price or length: for breeds the grid is Jess's source of truth, but
+        # for services she is. Since everything seeds blank there is nothing a
+        # redeploy could trample, so no 0006-style corrective will be needed.
+        for order, (code, name, category, takes_defaults) in enumerate(SERVICES, start=1):
+            service, created = Service.objects.get_or_create(
+                code=code,
+                defaults={
+                    'name': name,
+                    'category': category,
+                    'takes_dog_defaults': takes_defaults,
+                    'sort_order': order * 10,
+                },
+            )
+            if not created and options['overwrite']:
+                service.name = name
+                service.category = category
+                service.takes_dog_defaults = takes_defaults
+                service.sort_order = order * 10
+                service.save(update_fields=[
+                    'name', 'category', 'takes_dog_defaults', 'sort_order',
+                ])
+
         for weekday, (opens, closes, closed) in OPENING_HOURS.items():
             OpeningHours.objects.get_or_create(
                 weekday=weekday,
@@ -451,7 +509,7 @@ class Command(BaseCommand):
             f'Breeds: {created} created, {updated} updated, {skipped} left alone.'
         ))
         self.stdout.write(
-            'Temperament limits, opening hours and app settings are in place.'
+            'Services, temperament grades, opening hours and app settings are in place.'
         )
         if skipped and not overwrite:
             self.stdout.write(self.style.WARNING(

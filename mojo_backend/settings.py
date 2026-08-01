@@ -142,6 +142,26 @@ STORAGES = {
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
+# Scanned paperwork — intake forms, vaccination cards, vet letters.
+#
+# **Deliberately outside MEDIA_ROOT.** Caddy serves `/media/*` with
+# `file_server` and no authentication at all, so anything under MEDIA_ROOT is
+# readable by anyone with the URL. A dog photo is low stakes; a scanned intake
+# form carries the client's name, address, postcode, phone, emergency contact,
+# vet and signature, which is personal data under UK GDPR — and obscurity
+# fails the moment a URL lands in a browser history, a Referer header, or a
+# screenshot in a WhatsApp thread.
+#
+# Served instead by a gated download view that goes through the same scoped
+# queryset as everything else. Keeping it a sibling of `media` rather than a
+# child means a future edit to Caddy's `handle_path` cannot expose it by
+# accident.
+PRIVATE_MEDIA_ROOT = BASE_DIR / 'private-media'
+
+# Sized against `mem_limit: 384m` and two gunicorn workers on a host running
+# eleven projects in under 4 GB.
+MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
+
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # ── DRF ────────────────────────────────────────────────────────────────

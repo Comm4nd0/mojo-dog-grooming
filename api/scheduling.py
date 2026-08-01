@@ -20,6 +20,7 @@ from .models import (
     ServiceType,
     TemperamentGrade,
     temperament_label,
+    resolve_slot,
 )
 
 
@@ -124,14 +125,34 @@ def overlap_warning(start_at, end_at, exclude_appointment=None):
     }
 
 
-def unpriced_service_warning(service_type):
-    """Nails, fleas and ticks with nothing set for it yet.
+def unpriced_service_warning(service_type, services=()):
+    """Anything in this booking that has no price set yet.
 
     A warning rather than a refusal, like everything else here — Jess can take
-    the booking and sort the price out after. It exists because the figure is
-    null on purpose: nothing in her price list covers this service, so the app
-    has nothing to fall back on and says so rather than inventing one.
+    the booking and sort the price out after. It exists because the figures are
+    null on purpose: her price list covers full grooms only, so the app has
+    nothing to fall back on for anything else and says so rather than
+    inventing one.
+
+    Named services take precedence when there are any, because they are the
+    more specific answer to "what is this booking".
     """
+    unpriced = [service.name for service in services if _has_no_price(service)]
+    if unpriced:
+        return {
+            'code': 'service_not_priced',
+            'message': (
+                f'{_join(unpriced)} {"have" if len(unpriced) > 1 else "has"} no '
+                'price set yet, so this booking is unquoted. Add it in '
+                'Settings, Services.'
+            ),
+            'detail': {'services': unpriced},
+        }
+
+    if services:
+        # Every chosen service is priced; the category default is irrelevant.
+        return None
+
     if service_type != ServiceType.NAILS_FLEAS_TICKS:
         return None
     settings_row = AppSettings.get()
@@ -153,20 +174,54 @@ def unpriced_service_warning(service_type):
     }
 
 
+def _has_no_price(service):
+    """A full groom is priced off the dog, so it is never "unpriced"."""
+    return not service.takes_dog_defaults and service.default_price is None
+
+
+def _join(names):
+    if len(names) == 1:
+        return names[0]
+    return f'{", ".join(names[:-1])} and {names[-1]}'
+
+
+def service_category_warning(service_type, services=()):
+    """A groom booking carrying only nails-card services, or the reverse.
+
+    Almost always a mis-tap, and it matters: `service_type` decides which of
+    Jess's two record cards she is handed afterwards. A warning, never a
+    block — she may well have a reason.
+    """
+    if not services:
+        return None
+    categories = {service.category for service in services}
+    if service_type in categories:
+        return None
+    other = ', '.join(sorted(categories))
+    return {
+        'code': 'service_category_mismatch',
+        'message': (
+            f'This is booked as {ServiceType(service_type).label.lower()}, but '
+            f'everything on it is {other.lower()}. You will get the wrong '
+            'record card to fill in afterwards.'
+        ),
+        'detail': {'service_type': service_type, 'categories': sorted(categories)},
+    }
+
+
 def booking_warnings(dog, start_at, end_at=None, exclude_appointment=None,
-                     service_type=ServiceType.GROOM):
+                     service_type=ServiceType.GROOM, services=()):
     """All warnings for a proposed slot, in the order they matter to Jess."""
+    services = list(services)
     if end_at is None:
-        if service_type == ServiceType.NAILS_FLEAS_TICKS:
-            minutes = AppSettings.get().nail_visit_minutes or FALLBACK_NAIL_VISIT_MINUTES
-        else:
-            minutes = dog.effective_groom_minutes
+        minutes, _, _ = resolve_slot(dog, service_type, services)
         end_at = start_at + timedelta(minutes=minutes)
 
     checks = [
         temperament_warning(dog, start_at, exclude_appointment),
         opening_hours_warning(start_at, end_at),
         overlap_warning(start_at, end_at, exclude_appointment),
-        unpriced_service_warning(service_type),
+        service_category_warning(service_type, services),
+        unpriced_service_warning(service_type, services),
     ]
     return [warning for warning in checks if warning is not None]
