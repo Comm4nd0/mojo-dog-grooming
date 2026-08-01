@@ -1,0 +1,177 @@
+name: Deploy backend
+
+# Deploys the backend to the Hetzner host on every push to main, once the test
+# suite has gone green. Same shape as luma-tech-solutions' deploy on the same
+# box, so there is one pattern to learn rather than two.
+#
+# The gate is ci.yml ("Tests") rather than a copy of its jobs here: a second
+# copy of the backend test setup is a second thing to keep in step, and it
+# would drift. The cost is that a red *mobile* job also blocks a backend
+# deploy, since workflow_run can only wait on a whole workflow. That is usually
+# what you want — a red main is a red main — and workflow_dispatch is the
+# escape hatch when it isn't.
+#
+# One required repository secret (Settings → Secrets and variables → Actions):
+#   DEPLOY_SSH_KEY  private SSH key whose public half is in the server's
+#                   ~/.ssh/authorized_keys
+#
+# The host and user are not secrets and are not treated as such: this repo is
+# public and already commits the address in Caddyfile and in
+# mobile/lib/services/service_locator.dart, so hiding it here would buy nothing
+# while making the workflow impossible to run until three values are entered by
+# hand. They stay overridable — set DEPLOY_HOST, DEPLOY_USER or DEPLOY_PORT as
+# secrets and they win, which is the way out if the box ever moves.
+
+on:
+  workflow_run:
+    workflows: [Tests]
+    types: [completed]
+  workflow_dispatch:
+
+# One deploy at a time, and never cancel one halfway: this stops containers and
+# runs migrations, so an interrupted deploy leaves the server part-updated.
+concurrency:
+  group: deploy-mojo
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    # workflow_run fires for pull requests and for failures too, so the branch,
+    # the triggering event and the conclusion all have to be checked. Without
+    # the head_branch test, a green PR build from a fork would deploy.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main')
+    steps:
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p "${DEPLOY_PORT:-22}" -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST || '178.104.29.66' }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+
+      - name: Back up, pull and rebuild on the server
+        run: |
+          ssh -i ~/.ssh/deploy_key -p "${DEPLOY_PORT:-22}" \
+            -o StrictHostKeyChecking=yes \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          cd /root/mojo-dog-grooming
+
+          BACKUP_DIR=/root/backups/mojo-dog-grooming
+          mkdir -p "$BACKUP_DIR"
+          STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+
+          # entrypoint.sh runs `migrate --noinput` on every container start, so a
+          # deploy can change the schema before anyone has looked at it. Dump
+          # first; a bad migration is otherwise unrecoverable.
+          #
+          # Credentials come from .env, defaulting the same way the compose file
+          # does — read them rather than hardcoding "mojo", so renaming the
+          # database in .env doesn't turn the backup into a silent no-op.
+          PGUSER=$(sed -n 's/^POSTGRES_USER=//p' .env | head -1)
+          PGDB=$(sed -n 's/^POSTGRES_DB=//p' .env | head -1)
+          if docker compose -f docker-compose.prod.yml ps --services --filter status=running \
+               | grep -qx db; then
+            docker compose -f docker-compose.prod.yml exec -T db \
+              pg_dump -U "${PGUSER:-mojo}" -d "${PGDB:-mojo}" --clean --if-exists \
+              | gzip -9 > "$BACKUP_DIR/db-$STAMP.sql.gz"
+            echo "backed up $(du -h "$BACKUP_DIR/db-$STAMP.sql.gz" | cut -f1) to $BACKUP_DIR/db-$STAMP.sql.gz"
+            # Keep the 20 most recent. The host is at 72% disk; these are ~15 KB
+            # each, but unbounded is unbounded.
+            ls -1t "$BACKUP_DIR"/db-*.sql.gz 2>/dev/null | tail -n +21 | xargs -r rm -f
+          else
+            echo "db container is not running — skipping the backup (first deploy?)"
+          fi
+
+          # Remember what to roll back to, before deploy.sh pulls over it.
+          PREVIOUS_SHA=$(git rev-parse HEAD)
+          echo "$PREVIOUS_SHA" > "$BACKUP_DIR/previous-sha"
+          echo "current revision: $PREVIOUS_SHA"
+
+          # deploy.sh pulls, builds, restarts and waits for the health check.
+          # Calling it rather than reimplementing it here keeps one description
+          # of how this project deploys — the one that also gets used by hand.
+          ./deploy.sh --yes
+
+          echo "--- smoke test ---"
+          # No `|| true` anywhere below: a failure here has to fail the step, or
+          # the rollback never runs and the point of the check is lost.
+          #
+          # Host: because the bridge IP is not in DJANGO_ALLOWED_HOSTS, and
+          # X-Forwarded-Proto: because SECURE_SSL_REDIRECT would otherwise
+          # answer 301 and curl -f does not treat a 3xx as failure.
+          for path in /api/health/ /admin/login/; do
+            curl -fsS -o /dev/null -w "$path %{http_code}\n" \
+              -H 'Host: localhost' -H 'X-Forwarded-Proto: https' \
+              "http://172.17.0.1:8010$path"
+          done
+
+          # Neither path above touches the database — /api/health/ returns a
+          # literal {"status": "ok"} and the admin login page renders without a
+          # query — so on their own they would pass with Postgres unreachable.
+          # This asserts the schema is current, which needs a live connection and
+          # also proves entrypoint.sh's `migrate --noinput` actually finished
+          # rather than dying after gunicorn came up.
+          echo "--- migrations are applied ---"
+          docker compose -f docker-compose.prod.yml exec -T web \
+            python manage.py migrate --check
+          echo "schema is up to date"
+          REMOTE
+        env:
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER || 'root' }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST || '178.104.29.66' }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+
+      - name: Roll back on failure
+        if: failure()
+        run: |
+          ssh -i ~/.ssh/deploy_key -p "${DEPLOY_PORT:-22}" \
+            -o StrictHostKeyChecking=yes \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          cd /root/mojo-dog-grooming
+          BACKUP_DIR=/root/backups/mojo-dog-grooming
+
+          if [ ! -f "$BACKUP_DIR/previous-sha" ]; then
+            echo "no previous revision recorded — not rolling back" >&2
+            exit 1
+          fi
+          PREVIOUS_SHA=$(cat "$BACKUP_DIR/previous-sha")
+          echo "rolling back to $PREVIOUS_SHA"
+
+          # reset --hard, not checkout: a detached HEAD would leave the clone off
+          # main, and the next deploy's `git pull origin main` would merge into
+          # the detachment instead of fast-forwarding. This keeps main checked
+          # out, just pointed backwards, so the next push rolls straight forward.
+          git reset --hard "$PREVIOUS_SHA"
+          ./deploy.sh --yes --skip-pull
+
+          echo
+          echo "Rolled back to $PREVIOUS_SHA."
+          echo "NOTE: the database was NOT restored. If the failed deploy applied a"
+          echo "      migration, the old code is now running against the new schema."
+          echo "      Restore the newest dump in $BACKUP_DIR by hand:"
+          echo "        gunzip -c \$BACKUP_DIR/db-<stamp>.sql.gz |"
+          echo "          docker compose -f docker-compose.prod.yml exec -T db psql -U mojo -d mojo"
+          REMOTE
+        env:
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER || 'root' }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST || '178.104.29.66' }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+
+      - name: Clean up key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

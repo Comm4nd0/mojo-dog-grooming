@@ -67,7 +67,25 @@ notes) never appear in a client-facing payload.
 
 ## Deploying
 
-**Backend** — the Hetzner host, port 8010, behind Caddy.
+**Backend** — the Hetzner host, port 8010, behind Caddy. **A push to `main` deploys it**, once
+the tests pass: `.github/workflows/deploy.yml` dumps the database, pulls, rebuilds and rolls
+back if the health check or smoke test fails. Nothing to run by hand.
+
+Turning it on takes one secret. Generate a key, put the public half on the host, and paste the
+private half into `DEPLOY_SSH_KEY` under Settings → Secrets and variables → Actions:
+
+```bash
+ssh-keygen -t ed25519 -N "" -C "mojo-github-actions-deploy" -f ~/.ssh/mojo_deploy
+ssh root@178.104.29.66 "cat >> ~/.ssh/authorized_keys" < ~/.ssh/mojo_deploy.pub
+cat ~/.ssh/mojo_deploy     # this is the secret
+```
+
+The host and user are not secrets — this repo is public and already names the address in
+`Caddyfile` — so the workflow defaults them and only the key has to be entered. Run the first
+deploy from the Actions tab by hand: `workflow_run` usually doesn't fire for the push that adds
+the workflow itself.
+
+The first-time setup, and the way in if CI is not an option:
 
 ```bash
 cp .env.example .env          # fill in the secrets
