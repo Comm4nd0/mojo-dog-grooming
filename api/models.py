@@ -19,6 +19,7 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.contrib.auth.models import User
+from django.core.cache import cache
 from django.core.validators import MinValueValidator
 from django.db import models
 from django.db.models.signals import post_save
@@ -29,9 +30,39 @@ from django.utils import timezone
 # ── Choice vocabularies ────────────────────────────────────────────────
 
 class Temperament(models.TextChoices):
+    """The five handling grades, by code.
+
+    Jess asked for five rather than three — "may up bitey not hard" — because
+    the old middle grade, "Fidgety / bitey", was doing two jobs at once.
+
+    **The labels here are seed defaults, not the labels the app shows.** Jess
+    renames grades herself in Settings, so the wording lives on
+    :class:`TemperamentGrade` rows in the database. Read a label with
+    :func:`temperament_label`; ``get_temperament_display()`` would return this
+    frozen wording and quietly contradict what she has on screen.
+
+    The *codes* are permanent. Every ``Dog.temperament`` and
+    ``GroomSession.temperament_observed`` stores one, so changing a code means
+    rewriting history; changing a label means changing a word.
+    """
+
     EASY = 'EASY', 'Easy'
-    FIDGETY = 'FIDGETY', 'Fidgety / bitey'
+    WRIGGLY = 'WRIGGLY', 'Wriggly, but fine'
+    FIDGETY = 'FIDGETY', 'Fidgety'
+    BITEY = 'BITEY', 'Bitey, not hard'
     FEISTY = 'FEISTY', 'Feisty / hard'
+
+
+#: Easiest to hardest. ``TextChoices`` has no inherent order, and at five
+#: grades the order is the whole point — a list sorted alphabetically reads
+#: BITEY, EASY, FEISTY, FIDGETY, WRIGGLY, which is nonsense to look at.
+TEMPERAMENT_ORDER = {
+    Temperament.EASY: 1,
+    Temperament.WRIGGLY: 2,
+    Temperament.FIDGETY: 3,
+    Temperament.BITEY: 4,
+    Temperament.FEISTY: 5,
+}
 
 
 class GroomPhase(models.TextChoices):
@@ -445,7 +476,12 @@ class Dog(models.Model):
     )
     date_of_birth = models.DateField(null=True, blank=True)
     sex = models.CharField(max_length=1, choices=SEX_CHOICES, blank=True)
-    is_neutered = models.BooleanField(default=False)
+    # Three states, not two: null is "never asked", which is not the same as
+    # "intact". It defaulted to False, so a dog nobody had asked about was
+    # indistinguishable from one confirmed entire — and the profile would have
+    # labelled every one of them "Intact". Same rule as photo_consent and
+    # bathed_well_behaved: null is not false, on both sides of the wire.
+    is_neutered = models.BooleanField(null=True, blank=True, default=None)
     colour = models.CharField(max_length=60, blank=True)
     microchip_number = models.CharField(max_length=30, blank=True)
     profile_image = models.ImageField(upload_to='dog_profiles/', null=True, blank=True)
@@ -599,24 +635,83 @@ class DogPhoto(models.Model):
 
 # ── Scheduling ─────────────────────────────────────────────────────────
 
-class TemperamentLimit(models.Model):
-    """How many dogs of a given temperament Jess will take in one day.
+class TemperamentGrade(models.Model):
+    """One handling grade: what Jess calls it, and how many she'll take a day.
 
-    Exceeding a limit produces a warning, never a block — the notes are
-    explicit that Jess can always override her own rule.
+    Was ``TemperamentLimit``, when a daily cap was all it held. It now owns the
+    *label* too, because the five names we shipped were our reading of Jess's
+    "may up bitey not hard" and she should be able to correct them without a
+    deploy. See :class:`Temperament` for why the codes cannot move the same
+    way.
+
+    Exceeding a cap produces a warning, never a block — the notes are explicit
+    that Jess can always override her own rule.
     """
 
     temperament = models.CharField(max_length=10, choices=Temperament.choices, unique=True)
+    label = models.CharField(
+        max_length=40,
+        help_text="What this grade is called in the app. Jess's wording wins.",
+    )
     max_per_day = models.PositiveIntegerField(
         null=True, blank=True, help_text='Blank means no limit.',
     )
+    sort_order = models.PositiveIntegerField(
+        default=0, help_text='Easiest first. Seeded from TEMPERAMENT_ORDER.',
+    )
+
+    #: Where the label map lives between requests. A list of dogs renders one
+    #: label per row, and re-querying five rows for each would be silly.
+    #:
+    #: Invalidated in ``save`` and ``delete``, which covers every path the app
+    #: takes. A queryset-level ``.update()`` would slip past that, so the entry
+    #: also expires on its own — five rows every few minutes costs nothing and
+    #: bounds how long a missed invalidation could show Jess the old wording.
+    CACHE_KEY = 'temperament_labels'
+    CACHE_SECONDS = 300
 
     class Meta:
-        ordering = ['temperament']
+        ordering = ['sort_order', 'temperament']
 
     def __str__(self):
         cap = 'no limit' if self.max_per_day is None else f'max {self.max_per_day}/day'
-        return f'{self.get_temperament_display()}: {cap}'
+        return f'{self.label}: {cap}'
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        cache.delete(self.CACHE_KEY)
+
+    def delete(self, *args, **kwargs):
+        super().delete(*args, **kwargs)
+        cache.delete(self.CACHE_KEY)
+
+    @classmethod
+    def labels(cls):
+        """``{code: label}`` for every grade, falling back to the seed wording.
+
+        The fallback matters on two paths: a fresh database before the seed has
+        run, and a code that has no row yet because the seed added it after
+        this deployment booted. Neither should render a blank chip.
+        """
+        cached = cache.get(cls.CACHE_KEY)
+        if cached is not None:
+            return cached
+        labels = dict(Temperament.choices)
+        labels.update(cls.objects.values_list('temperament', 'label'))
+        cache.set(cls.CACHE_KEY, labels, cls.CACHE_SECONDS)
+        return labels
+
+
+def temperament_label(code):
+    """What to call ``code`` on screen, or '' if it isn't set.
+
+    Always use this rather than ``get_temperament_display()``: the latter reads
+    the frozen labels off :class:`Temperament` and would disagree with anything
+    Jess has renamed.
+    """
+    if not code:
+        return ''
+    return TemperamentGrade.labels().get(code, code)
 
 
 class OpeningHours(models.Model):

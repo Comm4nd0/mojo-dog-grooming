@@ -94,6 +94,40 @@ class Breed {
       );
 }
 
+/// One handling grade: what Jess calls it, and how many she'll take a day.
+///
+/// The five [code]s are fixed — every dog stores one — but the [label] is
+/// hers to change in Settings, so nothing in the app should hardcode wording.
+/// Anywhere a grade is named, the name comes from here or from the server's
+/// `temperament_display`.
+class TemperamentGrade {
+  final int id;
+  final String code;
+  final String label;
+
+  /// Blank means no limit, not zero.
+  final int? maxPerDay;
+  final int sortOrder;
+
+  const TemperamentGrade({
+    required this.id,
+    required this.code,
+    required this.label,
+    required this.maxPerDay,
+    required this.sortOrder,
+  });
+
+  factory TemperamentGrade.fromJson(Map<String, dynamic> json) => TemperamentGrade(
+        id: json['id'] as int,
+        code: json['temperament']?.toString() ?? '',
+        label: json['label']?.toString() ?? '',
+        maxPerDay: (json['max_per_day'] as num?)?.toInt(),
+        sortOrder: (json['sort_order'] as num?)?.toInt() ?? 0,
+      );
+
+  String get capLabel => maxPerDay == null ? 'No limit' : '$maxPerDay a day';
+}
+
 /// One of the six disclaimers off the paper booking card, as answered.
 class Consent {
   final int id;
@@ -317,7 +351,12 @@ class Dog {
   final String breedLabel;
   final DateTime? dateOfBirth;
   final String sex;
-  final bool isNeutered;
+  /// Yes, no, or **null for "nobody asked"**.
+  ///
+  /// Not a plain bool. It used to be `json['is_neutered'] == true`, which
+  /// turned an unanswered question into a confident "intact" — the same
+  /// coercion CLAUDE.md forbids for every other withheld or unset field.
+  final bool? isNeutered;
   final String colour;
   final String microchipNumber;
   final String? profileImage;
@@ -411,7 +450,7 @@ class Dog {
         breedLabel: json['breed_label']?.toString() ?? '',
         dateOfBirth: _dateTime(json['date_of_birth']),
         sex: json['sex']?.toString() ?? '',
-        isNeutered: json['is_neutered'] == true,
+        isNeutered: json['is_neutered'] as bool?,
         colour: json['colour']?.toString() ?? '',
         microchipNumber: json['microchip_number']?.toString() ?? '',
         profileImage: json['profile_image']?.toString(),
@@ -520,6 +559,11 @@ class Appointment {
   /// Staff-only.
   final String? dogTemperament;
 
+  /// Jess's own name for that grade. Null for a client login, and null on an
+  /// older server — the chip falls back to the seed wording rather than
+  /// rendering blank.
+  final String? dogTemperamentDisplay;
+
   const Appointment({
     required this.id,
     required this.dogId,
@@ -536,6 +580,7 @@ class Appointment {
     required this.notes,
     this.priceQuoted,
     this.dogTemperament,
+    this.dogTemperamentDisplay,
   });
 
   factory Appointment.fromJson(Map<String, dynamic> json) => Appointment(
@@ -554,6 +599,7 @@ class Appointment {
         priceQuoted: json['price_quoted'] == null ? null : _num(json['price_quoted']),
         notes: json['notes']?.toString() ?? '',
         dogTemperament: json['dog_temperament']?.toString(),
+        dogTemperamentDisplay: json['dog_temperament_display']?.toString(),
       );
 
   String get timeRange => '${formatTime(startAt)} – ${formatTime(endAt)}';

@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart';
+
 import '../models/models.dart';
 import 'api_client.dart';
 
@@ -248,9 +250,32 @@ class DataService {
 
   // ── To-dos ─────────────────────────────────────────────────────────
 
+  /// The five handling grades, easiest first.
+  ///
+  /// Fetched rather than hardcoded because Jess renames them in Settings —
+  /// anything in the app that spells out "Fidgety" will be wrong the day she
+  /// changes it.
+  Future<List<TemperamentGrade>> getTemperamentGrades() async {
+    final payload = await _api.get('/temperament-grades/');
+    return ApiClient.resultsOf(payload).map(TemperamentGrade.fromJson).toList();
+  }
+
+  Future<void> updateTemperamentGrade(int id, Map<String, dynamic> changes) =>
+      _api.patch('/temperament-grades/$id/', changes);
+
+  /// How many to-dos are still outstanding, for the badge on the More tab.
+  ///
+  /// A notifier rather than a `FutureBuilder` because `MoreScreen` sits in the
+  /// shell's `IndexedStack` and never rebuilds on its own — a future resolved
+  /// once when the tab was first built would show a count from whenever that
+  /// happened to be and never move again.
+  static final ValueNotifier<int> outstandingTodos = ValueNotifier<int>(0);
+
   Future<List<TodoItem>> getTodos() async {
     final payload = await _api.get('/todos/');
-    return ApiClient.resultsOf(payload).map(TodoItem.fromJson).toList();
+    final todos = ApiClient.resultsOf(payload).map(TodoItem.fromJson).toList();
+    outstandingTodos.value = todos.where((todo) => !todo.isDone).length;
+    return todos;
   }
 
   Future<TodoItem> createTodo(String text, {DateTime? dueDate}) async {
@@ -258,11 +283,22 @@ class DataService {
       'text': text,
       'due_date': ?dueDate?.toIso8601String().split('T').first,
     });
+    outstandingTodos.value += 1;
     return TodoItem.fromJson(payload as Map<String, dynamic>);
   }
 
-  Future<TodoItem> updateTodo(int id, Map<String, dynamic> changes) async =>
-      TodoItem.fromJson(await _api.patch('/todos/$id/', changes) as Map<String, dynamic>);
+  Future<TodoItem> updateTodo(int id, Map<String, dynamic> changes) async {
+    final todo =
+        TodoItem.fromJson(await _api.patch('/todos/$id/', changes) as Map<String, dynamic>);
+    // Ticking one off is the common edit and the one the badge cares about.
+    // Every caller reloads the list straight after, which sets the exact
+    // figure; this only keeps the badge honest in between.
+    if (changes.containsKey('is_done')) {
+      outstandingTodos.value =
+          (outstandingTodos.value + (todo.isDone ? -1 : 1)).clamp(0, 999);
+    }
+    return todo;
+  }
 
   Future<void> deleteTodo(int id) => _api.delete('/todos/$id/');
 

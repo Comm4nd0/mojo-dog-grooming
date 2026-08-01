@@ -29,7 +29,13 @@ from decimal import Decimal
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
-from api.models import AppSettings, OpeningHours, TemperamentLimit, Temperament
+from api.models import (
+    AppSettings,
+    OpeningHours,
+    TEMPERAMENT_ORDER,
+    Temperament,
+    TemperamentGrade,
+)
 
 # Jess's price list, 28 July 2026: (size band, coat type) -> (minutes, price).
 # The blank coat is the fallback for a dog whose coat we don't know; it takes
@@ -350,11 +356,19 @@ BREEDS = [
     ('Crossbreed (large)', 'large', ''),
 ]
 
-# Jess's starting limits. Easy dogs are unlimited; the harder the dog, the
-# fewer she'll take in a day. All three are editable in the app.
+# Jess's starting caps. Easy dogs are unlimited; the harder the dog, the fewer
+# she'll take in a day. All five are editable in the app, names included.
+#
+# The two grades added when the scale went from three to five seed with **no
+# cap**, deliberately. Interpolating between the old 2 and 1 would invent a
+# rule Jess never set, and a made-up limit is indistinguishable from a real one
+# once it's in the database — the same reasoning that keeps nail_visit_price
+# blank. Blank means no limit; she fills them in when she knows.
 TEMPERAMENT_LIMITS = {
     Temperament.EASY: None,
+    Temperament.WRIGGLY: None,
     Temperament.FIDGETY: 2,
+    Temperament.BITEY: None,
     Temperament.FEISTY: 1,
 }
 
@@ -409,9 +423,16 @@ class Command(BaseCommand):
             else:
                 skipped += 1
 
+        # get_or_create, so a grade Jess has renamed or re-capped survives
+        # every redeploy — entrypoint.sh runs this on each boot.
         for temperament, cap in TEMPERAMENT_LIMITS.items():
-            TemperamentLimit.objects.get_or_create(
-                temperament=temperament, defaults={'max_per_day': cap},
+            TemperamentGrade.objects.get_or_create(
+                temperament=temperament,
+                defaults={
+                    'label': Temperament(temperament).label,
+                    'max_per_day': cap,
+                    'sort_order': TEMPERAMENT_ORDER[temperament],
+                },
             )
 
         for weekday, (opens, closes, closed) in OPENING_HOURS.items():

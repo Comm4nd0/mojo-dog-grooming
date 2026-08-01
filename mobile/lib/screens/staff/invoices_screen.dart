@@ -165,33 +165,103 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
               ListTile(
                 dense: true,
                 title: Text(line.description),
+                // The quantity and unit price were dropped here, so a line
+                // reading "£15.00" gave no clue it was two nail trims at
+                // £7.50. Only shown when there is more than one — "1 × £50.00"
+                // is noise.
+                subtitle: line.quantity == 1
+                    ? null
+                    : Text('${_qty(line.quantity)} × ${formatMoney(line.unitPrice)}'),
                 trailing: Text(formatMoney(line.lineTotal)),
               ),
             const Divider(height: 1),
-            if (invoice.balance > 0)
+            // Sent before paid: that is the order the paperwork happens in,
+            // and having them the other way round meant reaching past the
+            // destructive-feeling one every time.
+            if (invoice.status != 'PAID' && invoice.status != 'VOID')
               ListTile(
-                leading: Icon(Icons.payments_outlined, color: context.mojo.accent),
-                title: const Text('Record payment'),
+                leading: Icon(Icons.send_outlined, color: context.mojo.accent),
+                title: const Text('Mark as sent'),
                 onTap: () async {
                   Navigator.pop(context);
-                  await _data.recordPayment(invoiceId: invoice.id, amount: invoice.balance);
-                  await _data.updateInvoice(invoice.id, {'status': 'PAID'});
+                  await _data.updateInvoice(invoice.id, {'status': 'SENT'});
                   _load();
                 },
               ),
-            ListTile(
-              leading: Icon(Icons.send_outlined, color: context.mojo.accent),
-              title: const Text('Mark as sent'),
-              onTap: () async {
-                Navigator.pop(context);
-                await _data.updateInvoice(invoice.id, {'status': 'SENT'});
-                _load();
-              },
-            ),
+            if (invoice.balance > 0 && invoice.status != 'VOID')
+              ListTile(
+                leading: Icon(Icons.payments_outlined, color: context.mojo.accent),
+                title: const Text('Record payment'),
+                subtitle: Text('${formatMoney(invoice.balance)} outstanding'),
+                onTap: () async {
+                  Navigator.pop(context);
+                  await _recordPayment(invoice);
+                },
+              ),
           ],
         ),
       ),
     );
+  }
+
+  /// Renders a line quantity without a pointless `.00`.
+  static String _qty(num quantity) =>
+      quantity == quantity.roundToDouble() ? quantity.round().toString() : quantity.toString();
+
+  /// Takes payment, asking how it was paid.
+  ///
+  /// It used to post the full balance as a card payment without asking, so
+  /// every invoice in the books said CARD whether it was cash in hand or a
+  /// bank transfer. `Payment.method` has always been there; nothing filled it
+  /// in.
+  Future<void> _recordPayment(Invoice invoice) async {
+    const methods = {
+      'CASH': ('Cash', Icons.payments_outlined),
+      'CARD': ('Card', Icons.credit_card),
+      'BANK': ('Bank transfer', Icons.account_balance_outlined),
+      'OTHER': ('Something else', Icons.more_horiz),
+    };
+
+    final method = await showModalBottomSheet<String>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              title: Text(
+                'How was ${formatMoney(invoice.balance)} paid?',
+                style: Theme.of(sheetContext).textTheme.titleMedium,
+              ),
+              subtitle: Text(invoice.clientName),
+            ),
+            const Divider(height: 1),
+            for (final entry in methods.entries)
+              ListTile(
+                leading: Icon(entry.value.$2, color: sheetContext.mojo.accent),
+                title: Text(entry.value.$1),
+                onTap: () => Navigator.pop(sheetContext, entry.key),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (method == null) return;
+
+    try {
+      await _data.recordPayment(
+        invoiceId: invoice.id,
+        amount: invoice.balance,
+        method: method,
+      );
+      await _data.updateInvoice(invoice.id, {'status': 'PAID'});
+    } catch (error) {
+      if (mounted) showSnack(context, error.toString(), isError: true);
+      return;
+    }
+    if (mounted) showSnack(context, 'Marked paid — ${methods[method]!.$1.toLowerCase()}.');
+    _load();
   }
 }
 
@@ -304,7 +374,7 @@ class _InvoiceFormScreenState extends State<_InvoiceFormScreen> {
             }),
           ),
           const SizedBox(height: 14),
-          TextField(
+          MojoTextField(
             controller: _number,
             decoration: const InputDecoration(labelText: 'Invoice number *'),
           ),
@@ -393,14 +463,14 @@ class _InvoiceFormScreenState extends State<_InvoiceFormScreen> {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(
+            MojoTextField(
               controller: description,
               autofocus: true,
               decoration: const InputDecoration(labelText: 'Description'),
               textCapitalization: TextCapitalization.sentences,
             ),
             const SizedBox(height: 12),
-            TextField(
+            MojoTextField(
               controller: price,
               decoration: const InputDecoration(labelText: 'Price (£)'),
               keyboardType: const TextInputType.numberWithOptions(decimal: true),

@@ -25,6 +25,13 @@ dependencies:
   flutter:
     sdk: flutter
 
+  # en_GB for every Material picker. Without this the app runs on Flutter's
+  # built-in en_US fallback, which starts the week on a Sunday and offers a
+  # 12-hour clock — wrong for a British groomer, and inconsistent with the
+  # HH:mm the app formats every other time in.
+  flutter_localizations:
+    sdk: flutter
+
   cupertino_icons: ^1.0.8
 
   # Networking and credential storage
@@ -52,6 +59,10 @@ dependencies:
   # flutter.dev; keeping the silhouette as an SVG asset means swapping it for a
   # different outline later is dropping in a file, not regenerating code.
   flutter_svg: ^2.3.0
+
+  # Tap a client's number to ring it, their email to write, their address to
+  # open a map. Same package and same URI shapes p4td uses.
+  url_launcher: ^6.3.1
 
   # Service locator
   get_it: ^7.7.0

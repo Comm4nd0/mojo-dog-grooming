@@ -6,7 +6,9 @@ import '../../services/auth_service.dart';
 import '../../services/data_service.dart';
 import '../../services/service_locator.dart';
 import '../../widgets/common.dart';
+import '../../widgets/contact_actions.dart';
 import '../../widgets/dog_silhouette.dart';
+import 'booking_form_screen.dart';
 import 'client_profile_screen.dart';
 import 'dog_form_screen.dart';
 import 'dog_photos_screen.dart';
@@ -111,6 +113,11 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
               label: const Text('TIME A GROOM'),
             )
           : null,
+      // Bottom-left, so it doesn't fight the timer FAB on the right. Booking
+      // the next groom is the thing Jess reaches for straight off a dog's
+      // profile, and it used to mean backing out to the diary and searching
+      // for the dog again.
+      bottomNavigationBar: (_isStaff && dog != null) ? _bookBar(dog) : null,
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
@@ -136,6 +143,42 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
           if (dog.client != null) _ownerSection(dog.client!),
           _notesSection(dog),
         ],
+      ),
+    );
+  }
+
+  /// The bar under the profile carrying "book a groom".
+  ///
+  /// Left-aligned with a wide gap on the right: the timer FAB floats over that
+  /// corner, and a button underneath it can't be tapped.
+  Widget _bookBar(Dog dog) {
+    return SafeArea(
+      child: Container(
+        decoration: BoxDecoration(
+          border: Border(top: BorderSide(color: context.mojo.hairline)),
+          color: Theme.of(context).colorScheme.surface,
+        ),
+        padding: const EdgeInsets.fromLTRB(16, 8, 180, 8),
+        child: Align(
+          alignment: Alignment.centerLeft,
+          child: OutlinedButton.icon(
+            icon: const Icon(Icons.event_available_outlined, size: 18),
+            label: const Text('BOOK A GROOM'),
+            onPressed: () async {
+              final saved = await Navigator.of(context).push<bool>(
+                MaterialPageRoute(
+                  builder: (_) => BookingFormScreen(
+                    initialDate: DateTime.now(),
+                    initialDogId: dog.id,
+                  ),
+                ),
+              );
+              if (saved == true && mounted) {
+                showSnack(context, 'Booked in.');
+              }
+            },
+          ),
+        ),
       ),
     );
   }
@@ -172,10 +215,23 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
                   spacing: 6,
                   runSpacing: 6,
                   children: [
-                    if (dog.ageLabel != null) InfoTag(label: dog.ageLabel!, icon: Icons.cake_outlined),
+                    if (dog.ageLabel != null)
+                      InfoTag(
+                        // Age and the birthday together — an owner asking
+                        // "when's her birthday?" shouldn't need the edit form.
+                        label: '${dog.ageLabel!} · ${formatDate(dog.dateOfBirth!)}',
+                        icon: Icons.cake_outlined,
+                      ),
                     if (dog.sex.isNotEmpty)
                       InfoTag(label: dog.sex == 'M' ? 'Male' : 'Female'),
-                    if (dog.isNeutered) const InfoTag(label: 'Neutered'),
+                    // Jess's "intact / done" tag, up by the age. Null means
+                    // nobody has asked — which shows as neither, because
+                    // guessing "Intact" is how a wrong answer gets written
+                    // down as a fact.
+                    if (dog.isNeutered == true)
+                      const InfoTag(label: 'Done', icon: Icons.check),
+                    if (dog.isNeutered == false)
+                      InfoTag(label: 'Intact', color: AppColors.warning),
                     if (dog.colour.isNotEmpty) InfoTag(label: dog.colour),
                     if (!dog.isActive)
                       InfoTag(label: 'Inactive', color: context.mojo.muted),
@@ -278,7 +334,7 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
           action: TextButton.icon(
             onPressed: () async {
               final changed = await Navigator.of(context).push<bool>(
-                MaterialPageRoute(builder: (_) => ProblemAreaEditor(dog: dog)),
+                MaterialPageRoute(builder: (_) => ProblemAreaEditor.forDog(dog: dog)),
               );
               if (changed == true) _load();
             },
@@ -430,9 +486,24 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
             ],
           ),
         ),
-        DetailRow(label: 'Client UID', value: client.uid),
-        DetailRow(label: 'Phone', value: client.phone),
-        DetailRow(label: 'Email', value: client.email),
+        // The UID is Jess's filing reference off the paper cards. It means
+        // nothing to an owner looking at their own dog, so it stays on the
+        // staff side of the screen.
+        if (_isStaff) DetailRow(label: 'Client UID', value: client.uid),
+        ContactRow(
+          label: 'Phone',
+          value: client.phone,
+          icon: Icons.call_outlined,
+          tooltip: 'Ring ${client.fullName}',
+          onTap: () => callNumber(context, client.phone),
+        ),
+        ContactRow(
+          label: 'Email',
+          value: client.email,
+          icon: Icons.mail_outlined,
+          tooltip: 'Email ${client.fullName}',
+          onTap: () => emailAddress(context, client.email),
+        ),
         DetailRow(label: 'Postcode', value: client.postcode),
       ],
     );

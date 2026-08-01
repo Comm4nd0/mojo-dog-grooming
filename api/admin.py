@@ -23,7 +23,7 @@ from .models import (
     Payment,
     PhaseTiming,
     ProblemArea,
-    TemperamentLimit,
+    TemperamentGrade,
     TodoItem,
     UserProfile,
 )
@@ -162,10 +162,13 @@ class PasswordResetRequestAdmin(admin.ModelAdmin):
     search_fields = ['identifier', 'user__username']
 
 
-@admin.register(TemperamentLimit)
-class TemperamentLimitAdmin(admin.ModelAdmin):
-    list_display = ['temperament', 'max_per_day']
-    list_editable = ['max_per_day']
+@admin.register(TemperamentGrade)
+class TemperamentGradeAdmin(admin.ModelAdmin):
+    list_display = ['label', 'temperament', 'max_per_day', 'sort_order']
+    list_editable = ['max_per_day', 'sort_order']
+    # The code is what every dog points at; renaming a grade is editing the
+    # label, never repointing the row.
+    readonly_fields = ['temperament']
 
 
 admin.site.register([

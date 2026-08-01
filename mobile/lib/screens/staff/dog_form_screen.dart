@@ -5,6 +5,10 @@ import '../../models/models.dart';
 import '../../services/data_service.dart';
 import '../../services/service_locator.dart';
 import '../../widgets/common.dart';
+import '../../widgets/dog_silhouette.dart';
+import '../../widgets/searchable_picker.dart';
+import '../../widgets/temperament_picker.dart';
+import 'problem_area_editor.dart';
 
 /// Add or edit a dog.
 ///
@@ -46,11 +50,12 @@ class _DogFormScreenState extends State<DogFormScreen> {
 
   List<ClientRecord> _clients = const [];
   List<Breed> _breeds = const [];
+  List<TemperamentGrade> _grades = TemperamentChipLabels.fallback;
   int? _clientId;
   int? _breedId;
   String _temperament = 'EASY';
   String _sex = '';
-  bool _isNeutered = false;
+  bool? _isNeutered;
   bool _isActive = true;
   DateTime? _dateOfBirth;
   bool _loading = true;
@@ -91,7 +96,7 @@ class _DogFormScreenState extends State<DogFormScreen> {
     _breedId = dog?.breedId;
     _temperament = dog?.temperament ?? 'EASY';
     _sex = dog?.sex ?? '';
-    _isNeutered = dog?.isNeutered ?? false;
+    _isNeutered = dog?.isNeutered;
     _isActive = dog?.isActive ?? true;
     _dateOfBirth = dog?.dateOfBirth;
     _loadReferenceData();
@@ -114,10 +119,19 @@ class _DogFormScreenState extends State<DogFormScreen> {
     try {
       final clients = await _data.getClients();
       final breeds = await _data.getBreeds();
+      // Jess's own names for the handling grades. Falls back to the seed
+      // wording rather than failing the whole form if this one call errors.
+      List<TemperamentGrade> grades = TemperamentChipLabels.fallback;
+      try {
+        grades = await _data.getTemperamentGrades();
+      } catch (_) {
+        // Left on the fallback.
+      }
       if (!mounted) return;
       setState(() {
         _clients = clients;
         _breeds = breeds;
+        if (grades.isNotEmpty) _grades = grades;
         _loading = false;
       });
     } catch (error) {
@@ -125,6 +139,64 @@ class _DogFormScreenState extends State<DogFormScreen> {
       setState(() => _loading = false);
       showSnack(context, error.toString(), isError: true);
     }
+  }
+
+  /// Sore or sensitive areas marked here but not yet saved.
+  ///
+  /// They can't be posted as they're added: on a new dog there is no id to
+  /// hang them off until the form is saved. Jess asked to be able to record
+  /// them "if known" while adding the dog, which is exactly when the owner is
+  /// standing there telling her.
+  final List<ProblemAreaDraft> _areaDrafts = [];
+
+  Widget _problemAreasSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SectionHeader(
+          title: 'Sore or sensitive areas',
+          action: TextButton(
+            onPressed: _addArea,
+            child: const Text('ADD'),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Text(
+            _areaDrafts.isEmpty
+                ? _isEditing
+                    ? 'Anything already marked is on the profile. Adding here adds to it.'
+                    : "Mark anywhere they don't like being touched, if you know."
+                : 'Saved with the dog. Not visible to the client.',
+            style: TextStyle(fontSize: 12.5, color: context.mojo.muted),
+          ),
+        ),
+        for (final (index, draft) in _areaDrafts.indexed)
+          ListTile(
+            dense: true,
+            leading: DogSilhouetteThumbnail(cells: draft.cells),
+            title: Text(draft.reason),
+            subtitle: Text(
+              '${draft.cells.length} square${draft.cells.length == 1 ? '' : 's'}',
+            ),
+            trailing: IconButton(
+              icon: const Icon(Icons.close),
+              tooltip: 'Remove',
+              onPressed: () => setState(() => _areaDrafts.removeAt(index)),
+            ),
+          ),
+        const SizedBox(height: 8),
+      ],
+    );
+  }
+
+  Future<void> _addArea() async {
+    final draft = await Navigator.of(context).push<ProblemAreaDraft>(
+      MaterialPageRoute(
+        builder: (_) => ProblemAreaEditor.draft(dogName: _name.text.trim()),
+      ),
+    );
+    if (draft != null) setState(() => _areaDrafts.add(draft));
   }
 
   Breed? get _selectedBreed {
@@ -177,12 +249,40 @@ class _DogFormScreenState extends State<DogFormScreen> {
     };
 
     try {
+      final int dogId;
       if (_isEditing) {
         await _data.updateDog(widget.dog!.id, body);
+        dogId = widget.dog!.id;
       } else {
-        await _data.createDog(body);
+        dogId = (await _data.createDog(body)).id;
       }
-      if (mounted) Navigator.of(context).pop(true);
+
+      // Areas marked on the form go up now the dog has an id. Deliberately
+      // after the dog is saved and not rolled back with it: if one of these
+      // fails, the dog is still recorded and Jess is told which areas didn't
+      // make it, rather than losing the whole form.
+      final failed = <String>[];
+      for (final draft in _areaDrafts) {
+        try {
+          await _data.createProblemArea(
+            dogId: dogId,
+            gridCells: draft.cells,
+            reason: draft.reason,
+          );
+        } catch (_) {
+          failed.add(draft.reason);
+        }
+      }
+      if (!mounted) return;
+      if (failed.isNotEmpty) {
+        showSnack(
+          context,
+          'Dog saved, but ${failed.length} marked area'
+          '${failed.length == 1 ? '' : 's'} did not. Add again from the profile.',
+          isError: true,
+        );
+      }
+      Navigator.of(context).pop(true);
     } catch (error) {
       if (!mounted) return;
       setState(() => _busy = false);
@@ -223,7 +323,7 @@ class _DogFormScreenState extends State<DogFormScreen> {
               validator: (value) => value == null ? 'Choose an owner' : null,
             ),
             const SizedBox(height: 14),
-            TextFormField(
+            MojoTextField(
               controller: _name,
               decoration: const InputDecoration(labelText: "Dog's name *"),
               textCapitalization: TextCapitalization.words,
@@ -231,20 +331,26 @@ class _DogFormScreenState extends State<DogFormScreen> {
                   (value == null || value.trim().isEmpty) ? 'Enter a name' : null,
             ),
             const SizedBox(height: 14),
-            DropdownButtonFormField<int?>(
-              initialValue: _breedId,
-              decoration: const InputDecoration(labelText: 'Breed'),
-              isExpanded: true,
-              items: [
-                const DropdownMenuItem(value: null, child: Text('Not listed / cross')),
-                for (final breed in _breeds)
-                  DropdownMenuItem(value: breed.id, child: Text(breed.name)),
-              ],
-              onChanged: (value) => setState(() => _breedId = value),
+            // 224 breeds is far too many to scroll a dropdown through, which
+            // is what Jess ran into. Clearing the field is how you say "not
+            // listed / cross" and reveal the free-text box below.
+            SearchablePicker<Breed>(
+              items: _breeds,
+              selected: _selectedBreed,
+              decoration: const InputDecoration(
+                labelText: 'Breed',
+                hintText: 'Start typing, or leave blank for a cross',
+              ),
+              labelOf: (breed) => breed.name,
+              subtitleOf: (breed) => breed.coatType,
+              matches: (breed, query) =>
+                  breed.name.toLowerCase().contains(query.toLowerCase()),
+              emptyLabel: 'Not on the list — leave this blank and use the box below',
+              onSelected: (breed) => setState(() => _breedId = breed?.id),
             ),
             if (_breedId == null) ...[
               const SizedBox(height: 14),
-              TextFormField(
+              MojoTextField(
                 controller: _breedOther,
                 decoration: const InputDecoration(
                   labelText: 'Breed (free text)',
@@ -293,7 +399,7 @@ class _DogFormScreenState extends State<DogFormScreen> {
             Row(
               children: [
                 Expanded(
-                  child: TextFormField(
+                  child: MojoTextField(
                     controller: _colour,
                     decoration: const InputDecoration(labelText: 'Colour'),
                     textCapitalization: TextCapitalization.sentences,
@@ -301,7 +407,7 @@ class _DogFormScreenState extends State<DogFormScreen> {
                 ),
                 const SizedBox(width: 12),
                 Expanded(
-                  child: TextFormField(
+                  child: MojoTextField(
                     controller: _microchip,
                     decoration: const InputDecoration(labelText: 'Microchip number'),
                     keyboardType: TextInputType.number,
@@ -309,12 +415,26 @@ class _DogFormScreenState extends State<DogFormScreen> {
                 ),
               ],
             ),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              value: _isNeutered,
-              onChanged: (value) => setState(() => _isNeutered = value),
-              title: const Text('Neutered'),
+            // Three states, not a switch. A switch can only be on or off, so
+            // a dog nobody had asked about looked exactly like one confirmed
+            // entire — and the profile would have tagged it "Intact".
+            Padding(
+              padding: const EdgeInsets.only(top: 8, bottom: 4),
+              child: Text(
+                'Neutered or spayed',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
             ),
+            SegmentedButton<bool?>(
+              segments: const [
+                ButtonSegment(value: true, label: Text('Done')),
+                ButtonSegment(value: false, label: Text('Intact')),
+                ButtonSegment(value: null, label: Text("Don't know")),
+              ],
+              selected: {_isNeutered},
+              onSelectionChanged: (value) => setState(() => _isNeutered = value.first),
+            ),
+            const SizedBox(height: 8),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               value: _isActive,
@@ -331,17 +451,14 @@ class _DogFormScreenState extends State<DogFormScreen> {
                 style: TextStyle(fontSize: 12, color: context.mojo.muted),
               ),
             ),
-            SegmentedButton<String>(
-              segments: const [
-                ButtonSegment(value: 'EASY', label: Text('Easy')),
-                ButtonSegment(value: 'FIDGETY', label: Text('Fidgety')),
-                ButtonSegment(value: 'FEISTY', label: Text('Feisty')),
-              ],
-              selected: {_temperament},
-              onSelectionChanged: (value) => setState(() => _temperament = value.first),
+            TemperamentPicker(
+              grades: _grades,
+              selected: _temperament,
+              onSelected: (code) =>
+                  setState(() => _temperament = code ?? _temperament),
             ),
             const SizedBox(height: 14),
-            TextFormField(
+            MojoTextField(
               controller: _temperamentNotes,
               decoration: const InputDecoration(labelText: 'Handling notes'),
               maxLines: 3,
@@ -358,7 +475,7 @@ class _DogFormScreenState extends State<DogFormScreen> {
                 style: TextStyle(fontSize: 12, color: context.mojo.muted),
               ),
             ),
-            TextFormField(
+            MojoTextField(
               controller: _groomMinutes,
               decoration: InputDecoration(
                 labelText: 'Groom time (minutes)',
@@ -367,7 +484,7 @@ class _DogFormScreenState extends State<DogFormScreen> {
               keyboardType: TextInputType.number,
             ),
             const SizedBox(height: 14),
-            TextFormField(
+            MojoTextField(
               controller: _price,
               decoration: InputDecoration(
                 labelText: 'Price (£)',
@@ -376,7 +493,7 @@ class _DogFormScreenState extends State<DogFormScreen> {
               keyboardType: const TextInputType.numberWithOptions(decimal: true),
             ),
             const SizedBox(height: 14),
-            TextFormField(
+            MojoTextField(
               controller: _scheduleWeeks,
               decoration: InputDecoration(
                 labelText: 'Groom every (weeks)',
@@ -387,7 +504,7 @@ class _DogFormScreenState extends State<DogFormScreen> {
 
             const SectionHeader(title: 'Grooming preferences'),
             for (final entry in _prefs.entries) ...[
-              TextFormField(
+              MojoTextField(
                 controller: entry.value,
                 decoration: InputDecoration(labelText: _prefLabel(entry.key)),
                 textCapitalization: TextCapitalization.sentences,
@@ -395,49 +512,51 @@ class _DogFormScreenState extends State<DogFormScreen> {
               const SizedBox(height: 14),
             ],
 
+            _problemAreasSection(),
+
             const SectionHeader(title: 'Health'),
-            TextFormField(
+            MojoTextField(
               controller: _allergies,
               decoration: const InputDecoration(labelText: 'Allergies'),
               maxLines: 2,
               textCapitalization: TextCapitalization.sentences,
             ),
             const SizedBox(height: 14),
-            TextFormField(
+            MojoTextField(
               controller: _medications,
               decoration: const InputDecoration(labelText: 'Medication'),
               maxLines: 2,
               textCapitalization: TextCapitalization.sentences,
             ),
             const SizedBox(height: 14),
-            TextFormField(
+            MojoTextField(
               controller: _medicalIssues,
               decoration: const InputDecoration(labelText: 'Known medical issues'),
               maxLines: 2,
               textCapitalization: TextCapitalization.sentences,
             ),
             const SizedBox(height: 14),
-            TextFormField(
+            MojoTextField(
               controller: _vaccinations,
               decoration: const InputDecoration(labelText: 'Vaccinations, and when'),
               maxLines: 2,
               textCapitalization: TextCapitalization.sentences,
             ),
             const SizedBox(height: 14),
-            TextFormField(
+            MojoTextField(
               controller: _medicalNotes,
               decoration: const InputDecoration(labelText: 'Other medical notes'),
               maxLines: 3,
               textCapitalization: TextCapitalization.sentences,
             ),
             const SizedBox(height: 14),
-            TextFormField(
+            MojoTextField(
               controller: _vet,
               decoration: const InputDecoration(labelText: 'Vet'),
               maxLines: 2,
             ),
             const SizedBox(height: 14),
-            TextFormField(
+            MojoTextField(
               controller: _lastVetVisit,
               decoration: const InputDecoration(labelText: 'What the last vet trip was for'),
               maxLines: 2,
@@ -445,7 +564,7 @@ class _DogFormScreenState extends State<DogFormScreen> {
             ),
 
             const SectionHeader(title: 'Notes'),
-            TextFormField(
+            MojoTextField(
               controller: _ownerGrooming,
               decoration: const InputDecoration(
                 labelText: 'What the owner does themselves, and how often',
@@ -454,7 +573,7 @@ class _DogFormScreenState extends State<DogFormScreen> {
               textCapitalization: TextCapitalization.sentences,
             ),
             const SizedBox(height: 14),
-            TextFormField(
+            MojoTextField(
               controller: _generalNotes,
               decoration: const InputDecoration(labelText: 'General notes'),
               maxLines: 3,

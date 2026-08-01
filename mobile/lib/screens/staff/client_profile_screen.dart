@@ -5,6 +5,7 @@ import '../../models/models.dart';
 import '../../services/data_service.dart';
 import '../../services/service_locator.dart';
 import '../../widgets/common.dart';
+import '../../widgets/contact_actions.dart';
 import 'client_form_screen.dart';
 import 'dog_form_screen.dart';
 import 'dog_profile_screen.dart';
@@ -152,12 +153,52 @@ class _ClientProfileScreenState extends State<ClientProfileScreen> {
             ),
           ),
           const SectionHeader(title: 'Contact'),
-          DetailRow(label: 'Phone', value: client.phone),
-          DetailRow(label: 'Email', value: client.email),
-          DetailRow(label: 'Address', value: client.address),
-          DetailRow(label: 'Postcode', value: client.postcode),
-          DetailRow(label: 'In emergency', value: client.emergencyContactName),
-          DetailRow(label: 'Their number', value: client.emergencyContactPhone),
+          ContactRow(
+            label: 'Phone',
+            value: client.phone,
+            icon: Icons.call_outlined,
+            tooltip: 'Ring ${client.fullName}',
+            onTap: () => callNumber(context, client.phone),
+          ),
+          ContactRow(
+            label: 'Email',
+            value: client.email,
+            icon: Icons.mail_outlined,
+            tooltip: 'Email ${client.fullName}',
+            onTap: () => emailAddress(context, client.email),
+          ),
+          ContactRow(
+            label: 'Address',
+            value: [client.address, client.postcode]
+                .where((part) => part.trim().isNotEmpty)
+                .join('\n'),
+            icon: Icons.map_outlined,
+            tooltip: 'Open in maps',
+            onTap: () => openMap(context, client.address, client.postcode),
+          ),
+          // Postcode on its own only when there is no address to fold it into
+          // — otherwise it appears twice.
+          if (client.address.trim().isEmpty)
+            DetailRow(label: 'Postcode', value: client.postcode),
+
+          const SectionHeader(title: 'In an emergency'),
+          DetailRow(label: 'Contact', value: client.emergencyContactName),
+          ContactRow(
+            label: 'Their number',
+            value: client.emergencyContactPhone,
+            icon: Icons.call_outlined,
+            tooltip: 'Ring ${client.emergencyContactName}',
+            onTap: () => callNumber(context, client.emergencyContactPhone),
+          ),
+          if (client.emergencyContactName.trim().isEmpty &&
+              client.emergencyContactPhone.trim().isEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+              child: Text(
+                'Not on file. Worth asking next time they are in.',
+                style: TextStyle(fontSize: 12.5, color: context.mojo.muted),
+              ),
+            ),
 
           _consentsSection(client),
 

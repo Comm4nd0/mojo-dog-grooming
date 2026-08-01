@@ -16,7 +16,7 @@ class TemperamentChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (temperament == null) return const SizedBox.shrink();
-    final color = AppColors.temperamentColor(temperament);
+    final color = context.temperamentColour(temperament);
     final text = label ?? _defaultLabel(temperament!);
     return Container(
       padding: EdgeInsets.symmetric(horizontal: compact ? 6 : 8, vertical: compact ? 2 : 4),
@@ -36,10 +36,25 @@ class TemperamentChip extends StatelessWidget {
     );
   }
 
+  /// Wording of last resort, for a caller with no [label] to hand.
+  ///
+  /// Jess renames the grades in Settings, so the server's
+  /// `temperament_display` is the real answer and every screen that has one
+  /// passes it in. These are the seed names, used only when there is nothing
+  /// better.
+  ///
+  /// **The fallback returns the code itself, not "Easy".** It used to be
+  /// `_ => 'Easy'`, so a build that had not heard of a grade — an older phone
+  /// against a newer server — would quietly label a bitey dog as easy. An
+  /// unfamiliar code shown raw is odd-looking; the same code shown as "Easy"
+  /// gets someone bitten.
   static String _defaultLabel(String temperament) => switch (temperament) {
-        'FEISTY' => 'Feisty',
+        'EASY' => 'Easy',
+        'WRIGGLY' => 'Wriggly',
         'FIDGETY' => 'Fidgety',
-        _ => 'Easy',
+        'BITEY' => 'Bitey',
+        'FEISTY' => 'Feisty',
+        _ => temperament,
       };
 }
 
@@ -96,6 +111,111 @@ class SectionHeader extends StatelessWidget {
           ?action,
         ],
       ),
+    );
+  }
+}
+
+/// A [TextFormField] that selects its contents when you tap into it.
+///
+/// Jess asked for "type to reset across the board — click on then not have to
+/// delete text to enter details". Every form here is mostly *editing* existing
+/// details rather than filling in blanks, and Flutter's default puts the caret
+/// where you tapped, so correcting a phone number meant holding backspace.
+///
+/// The selection is set once per focus gain, not on every rebuild: doing it in
+/// `build` would fight the user the moment they tried to place the caret
+/// deliberately. Tapping a second time inside an already-focused field behaves
+/// normally, which is the escape hatch for editing one character.
+///
+/// Owns its [FocusNode] unless given one, so migrating a field is renaming the
+/// widget and nothing else.
+class MojoTextField extends StatefulWidget {
+  const MojoTextField({
+    super.key,
+    required this.controller,
+    this.decoration,
+    this.focusNode,
+    this.keyboardType,
+    this.textCapitalization = TextCapitalization.none,
+    this.textInputAction,
+    this.maxLines = 1,
+    this.minLines,
+    this.enabled = true,
+    this.autofocus = false,
+    this.validator,
+    this.onChanged,
+    this.onFieldSubmitted,
+    this.selectOnFocus,
+  });
+
+  final TextEditingController controller;
+  final InputDecoration? decoration;
+  final FocusNode? focusNode;
+  final TextInputType? keyboardType;
+  final TextCapitalization textCapitalization;
+  final TextInputAction? textInputAction;
+  final int? maxLines;
+  final int? minLines;
+  final bool enabled;
+  final bool autofocus;
+  final String? Function(String?)? validator;
+  final ValueChanged<String>? onChanged;
+  final ValueChanged<String>? onFieldSubmitted;
+
+  /// Defaults to on for single-line fields only.
+  ///
+  /// A phone number or a price is a value you replace; a notes box is one you
+  /// add to, and selecting several paragraphs on focus would put the lot one
+  /// keystroke from being wiped. Pass it explicitly to override either way.
+  final bool? selectOnFocus;
+
+  @override
+  State<MojoTextField> createState() => _MojoTextFieldState();
+}
+
+class _MojoTextFieldState extends State<MojoTextField> {
+  FocusNode? _owned;
+  FocusNode get _focus => widget.focusNode ?? (_owned ??= FocusNode());
+
+  @override
+  void initState() {
+    super.initState();
+    _focus.addListener(_onFocusChanged);
+  }
+
+  @override
+  void dispose() {
+    _focus.removeListener(_onFocusChanged);
+    _owned?.dispose();
+    super.dispose();
+  }
+
+  bool get _selectOnFocus => widget.selectOnFocus ?? widget.maxLines == 1;
+
+  void _onFocusChanged() {
+    if (!_selectOnFocus || !_focus.hasFocus) return;
+    final text = widget.controller.text;
+    if (text.isEmpty) return;
+    widget.controller.selection =
+        TextSelection(baseOffset: 0, extentOffset: text.length);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return TextFormField(
+      controller: widget.controller,
+      focusNode: _focus,
+      decoration: widget.decoration,
+      keyboardType: widget.keyboardType,
+      textCapitalization: widget.textCapitalization,
+      textInputAction: widget.textInputAction,
+      maxLines: widget.maxLines,
+      minLines: widget.minLines,
+      enabled: widget.enabled,
+      autofocus: widget.autofocus,
+      validator: widget.validator,
+      onChanged: widget.onChanged,
+      onFieldSubmitted: widget.onFieldSubmitted,
     );
   }
 }
@@ -326,6 +446,16 @@ class _TextPromptDialog extends StatefulWidget {
 class _TextPromptDialogState extends State<_TextPromptDialog> {
   late final TextEditingController _controller =
       TextEditingController(text: widget.initialValue);
+
+  @override
+  void initState() {
+    super.initState();
+    // The field autofocuses with the caret at the end, so editing a phase's
+    // minutes meant backspacing over the existing number first. Pre-selecting
+    // it means typing replaces — same as [MojoTextField].
+    _controller.selection =
+        TextSelection(baseOffset: 0, extentOffset: _controller.text.length);
+  }
 
   @override
   void dispose() {

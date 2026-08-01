@@ -343,7 +343,7 @@ class _LoginScreenState extends State<LoginScreen> {
           ),
           trailing: Icon(
             account.biometricsEnabled ? Icons.fingerprint : Icons.chevron_right,
-            color: account.biometricsEnabled ? AppColors.primary : null,
+            color: account.biometricsEnabled ? context.mojo.accent : null,
           ),
           onTap: _busy ? null : () => _useSaved(account),
         ),

@@ -27,6 +27,8 @@ class _ClientFormScreenState extends State<ClientFormScreen> {
   late final TextEditingController _phone;
   late final TextEditingController _address;
   late final TextEditingController _postcode;
+  late final TextEditingController _emergencyName;
+  late final TextEditingController _emergencyPhone;
   late final TextEditingController _notes;
 
   late bool _chatty;
@@ -46,6 +48,8 @@ class _ClientFormScreenState extends State<ClientFormScreen> {
     _phone = TextEditingController(text: client?.phone ?? '');
     _address = TextEditingController(text: client?.address ?? '');
     _postcode = TextEditingController(text: client?.postcode ?? '');
+    _emergencyName = TextEditingController(text: client?.emergencyContactName ?? '');
+    _emergencyPhone = TextEditingController(text: client?.emergencyContactPhone ?? '');
     _notes = TextEditingController(text: client?.notes ?? '');
     _chatty = client?.chatty ?? false;
     _leafletReceived = client?.leafletReceived ?? false;
@@ -54,7 +58,8 @@ class _ClientFormScreenState extends State<ClientFormScreen> {
   @override
   void dispose() {
     for (final controller in [
-      _uid, _firstName, _lastName, _email, _phone, _address, _postcode, _notes,
+      _uid, _firstName, _lastName, _email, _phone, _address, _postcode,
+      _emergencyName, _emergencyPhone, _notes,
     ]) {
       controller.dispose();
     }
@@ -72,6 +77,8 @@ class _ClientFormScreenState extends State<ClientFormScreen> {
       'phone': _phone.text.trim(),
       'address': _address.text.trim(),
       'postcode': _postcode.text.trim(),
+      'emergency_contact_name': _emergencyName.text.trim(),
+      'emergency_contact_phone': _emergencyPhone.text.trim(),
       'chatty': _chatty,
       'leaflet_received': _leafletReceived,
       'notes': _notes.text.trim(),
@@ -105,7 +112,7 @@ class _ClientFormScreenState extends State<ClientFormScreen> {
         child: ListView(
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
           children: [
-            TextFormField(
+            MojoTextField(
               controller: _uid,
               decoration: const InputDecoration(
                 labelText: 'Client UID *',
@@ -116,7 +123,7 @@ class _ClientFormScreenState extends State<ClientFormScreen> {
                   (value == null || value.trim().isEmpty) ? 'Give this client a UID' : null,
             ),
             const SizedBox(height: 14),
-            TextFormField(
+            MojoTextField(
               controller: _firstName,
               decoration: const InputDecoration(labelText: 'First name *'),
               textCapitalization: TextCapitalization.words,
@@ -124,19 +131,19 @@ class _ClientFormScreenState extends State<ClientFormScreen> {
                   (value == null || value.trim().isEmpty) ? 'Enter a first name' : null,
             ),
             const SizedBox(height: 14),
-            TextFormField(
+            MojoTextField(
               controller: _lastName,
               decoration: const InputDecoration(labelText: 'Last name'),
               textCapitalization: TextCapitalization.words,
             ),
             const SizedBox(height: 14),
-            TextFormField(
+            MojoTextField(
               controller: _phone,
               decoration: const InputDecoration(labelText: 'Phone'),
               keyboardType: TextInputType.phone,
             ),
             const SizedBox(height: 14),
-            TextFormField(
+            MojoTextField(
               controller: _email,
               decoration: const InputDecoration(labelText: 'Email'),
               keyboardType: TextInputType.emailAddress,
@@ -145,17 +152,37 @@ class _ClientFormScreenState extends State<ClientFormScreen> {
                   : null,
             ),
             const SizedBox(height: 14),
-            TextFormField(
+            MojoTextField(
               controller: _address,
               decoration: const InputDecoration(labelText: 'Address'),
               maxLines: 3,
               textCapitalization: TextCapitalization.sentences,
             ),
             const SizedBox(height: 14),
-            TextFormField(
+            MojoTextField(
               controller: _postcode,
               decoration: const InputDecoration(labelText: 'Postcode'),
               textCapitalization: TextCapitalization.characters,
+            ),
+
+            // The paper booking card asks for an "additional contact name and
+            // number (ICE)", and the intake form has always collected it — but
+            // there was nowhere to type it in or read it back for a client Jess
+            // adds herself.
+            const SectionHeader(title: 'In an emergency'),
+            MojoTextField(
+              controller: _emergencyName,
+              decoration: const InputDecoration(
+                labelText: 'Who to contact',
+                helperText: 'Someone other than them — a partner, a neighbour',
+              ),
+              textCapitalization: TextCapitalization.words,
+            ),
+            const SizedBox(height: 14),
+            MojoTextField(
+              controller: _emergencyPhone,
+              decoration: const InputDecoration(labelText: 'Their number'),
+              keyboardType: TextInputType.phone,
             ),
 
             const SectionHeader(title: 'Staff only'),
@@ -173,7 +200,7 @@ class _ClientFormScreenState extends State<ClientFormScreen> {
               title: const Text('Leaflet received'),
             ),
             const SizedBox(height: 8),
-            TextFormField(
+            MojoTextField(
               controller: _notes,
               decoration: const InputDecoration(
                 labelText: 'Private notes',

@@ -110,6 +110,14 @@ extension MojoPaletteContext on BuildContext {
   /// into a bare `MaterialApp` in a test still renders.
   MojoPalette get mojo =>
       Theme.of(this).extension<MojoPalette>() ?? MojoPalette.light;
+
+  /// The badge colour for a temperament grade, for the theme in force here.
+  ///
+  /// Use this rather than [AppColors.temperamentColor] directly — the bare
+  /// call defaults to the light set, which is how the badges ended up at
+  /// 3.1:1 on the dark scaffold.
+  Color temperamentColour(String? grade) =>
+      AppColors.temperamentColor(grade, brightness: Theme.of(this).brightness);
 }
 
 class AppColors {
@@ -143,20 +151,59 @@ class AppColors {
   static const Color warning = Color(0xFFB26A00);
   static const Color error = Color(0xFFC62828);
 
-  /// Temperament colours. Deliberately not green — green is the brand, and a
-  /// temperament badge needs to read as a status, not a decoration.
-  static const Color temperamentEasy = Color(0xFF2E7D32);
-  static const Color temperamentFidgety = Color(0xFFB26A00);
-  static const Color temperamentFeisty = Color(0xFFC62828);
+  /// Temperament colours, easiest to hardest. Deliberately not green — green
+  /// is the brand, and a temperament badge needs to read as a status, not a
+  /// decoration.
+  ///
+  /// Five grades, so the ramp runs green → olive → amber → burnt orange → red.
+  ///
+  /// **Two sets, because these are a role, not a constant.** The badge draws
+  /// the grade name as *text* in this colour on a 12%-alpha wash of itself, so
+  /// it has to clear AA against whatever is behind it — and the original three
+  /// were only ever checked on white. On the dark scaffold they came out
+  /// between 3.1:1 and 3.9:1, which is the same class of bug CLAUDE.md
+  /// describes for the deep green. Read them through
+  /// [MojoPaletteContext.temperamentColour], never directly.
+  static const Color temperamentEasy = Color(0xFF2A732E);
+  static const Color temperamentWriggly = Color(0xFF526E1B);
+  static const Color temperamentFidgety = Color(0xFF925700);
+  static const Color temperamentBitey = Color(0xFFAE420B);
+  static const Color temperamentFeisty = Color(0xFFBE2626);
 
-  static Color temperamentColor(String? temperament) {
+  static const Color temperamentEasyDark = Color(0xFF66A069);
+  static const Color temperamentWrigglyDark = Color(0xFF849B56);
+  static const Color temperamentFidgetyDark = Color(0xFFC18833);
+  static const Color temperamentBiteyDark = Color(0xFFCD8159);
+  static const Color temperamentFeistyDark = Color(0xFFDB7575);
+
+  /// Neutral, for a grade this build has never heard of.
+  static const Color temperamentUnknown = inkSecondary;
+  static const Color temperamentUnknownDark = Color(0xFFB0B0B0);
+
+  /// The colour for a grade code, in the given theme.
+  ///
+  /// The default is **not** the easy green. It used to be, so an older build
+  /// talking to a newer server — exactly what happens between an API deploy
+  /// and an App Store release — would paint an unrecognised grade reassuring
+  /// green. Grey says "I don't know this one", which is true.
+  static Color temperamentColor(
+    String? temperament, {
+    Brightness brightness = Brightness.light,
+  }) {
+    final isDark = brightness == Brightness.dark;
     switch (temperament) {
-      case 'FEISTY':
-        return temperamentFeisty;
+      case 'EASY':
+        return isDark ? temperamentEasyDark : temperamentEasy;
+      case 'WRIGGLY':
+        return isDark ? temperamentWrigglyDark : temperamentWriggly;
       case 'FIDGETY':
-        return temperamentFidgety;
+        return isDark ? temperamentFidgetyDark : temperamentFidgety;
+      case 'BITEY':
+        return isDark ? temperamentBiteyDark : temperamentBitey;
+      case 'FEISTY':
+        return isDark ? temperamentFeistyDark : temperamentFeisty;
       default:
-        return temperamentEasy;
+        return isDark ? temperamentUnknownDark : temperamentUnknown;
     }
   }
 

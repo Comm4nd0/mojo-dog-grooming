@@ -5,6 +5,7 @@ import '../../models/models.dart';
 import '../../services/data_service.dart';
 import '../../services/service_locator.dart';
 import '../../widgets/common.dart';
+import '../../widgets/temperament_picker.dart';
 
 /// Jess's "Ongoing Record" card, as a screen.
 ///
@@ -65,6 +66,7 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
   Set<int> _equipmentIds = {};
 
   List<Equipment> _equipment = const [];
+  List<TemperamentGrade> _grades = TemperamentChipLabels.fallback;
   bool _loading = true;
   bool _busy = false;
 
@@ -98,7 +100,7 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
     _temperament = session?.temperamentObserved ?? '';
     _equipmentIds = {for (final item in session?.equipmentUsed ?? const []) item.id};
 
-    _loadEquipment();
+    _loadReferenceData();
   }
 
   @override
@@ -112,9 +114,18 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
     super.dispose();
   }
 
-  Future<void> _loadEquipment() async {
+  Future<void> _loadReferenceData() async {
+    // Both cards ask how the dog was, so the grades are fetched whichever one
+    // this is. Equipment is on the groom card only.
+    try {
+      final grades = await _data.getTemperamentGrades();
+      if (mounted && grades.isNotEmpty) setState(() => _grades = grades);
+    } catch (_) {
+      // Left on the seed wording.
+    }
+
     if (!_isGroom) {
-      setState(() => _loading = false);
+      if (mounted) setState(() => _loading = false);
       return;
     }
     try {
@@ -201,7 +212,7 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
                 Text(widget.dogName, style: AppColors.display(22)),
                 const SizedBox(height: 16),
 
-                TextFormField(
+                MojoTextField(
                   controller: _recordedMinutes,
                   decoration: const InputDecoration(
                     labelText: 'How long the visit took (minutes)',
@@ -234,7 +245,7 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
 
                 if (_isGroom) ...[
                   const SectionHeader(title: 'Health check'),
-                  TextFormField(
+                  MojoTextField(
                     controller: _healthCheck,
                     decoration: const InputDecoration(labelText: 'Anything found'),
                     maxLines: 3,
@@ -268,7 +279,7 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
                     ],
                   ),
                   const SizedBox(height: 12),
-                  TextFormField(
+                  MojoTextField(
                     controller: _mattingNotes,
                     decoration: const InputDecoration(labelText: 'Where, and how bad'),
                     maxLines: 2,
@@ -295,7 +306,7 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
                     onChanged: (value) => setState(() => _hvDryer = value),
                     title: const Text('High velocity dryer used'),
                   ),
-                  TextFormField(
+                  MojoTextField(
                     controller: _shampoo,
                     decoration: const InputDecoration(labelText: 'Shampoo used'),
                   ),
@@ -327,19 +338,19 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
                     ),
 
                   const SectionHeader(title: 'How it was left'),
-                  TextFormField(
+                  MojoTextField(
                     controller: _finalBody,
                     decoration: const InputDecoration(labelText: 'Final body trim'),
                     textCapitalization: TextCapitalization.sentences,
                   ),
                   const SizedBox(height: 14),
-                  TextFormField(
+                  MojoTextField(
                     controller: _finalFeet,
                     decoration: const InputDecoration(labelText: 'Final feet shape'),
                     textCapitalization: TextCapitalization.sentences,
                   ),
                   const SizedBox(height: 14),
-                  TextFormField(
+                  MojoTextField(
                     controller: _finalTail,
                     decoration: const InputDecoration(labelText: 'Final tail'),
                     textCapitalization: TextCapitalization.sentences,
@@ -347,16 +358,18 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
                 ],
 
                 const SectionHeader(title: 'How the dog was'),
-                DropdownButtonFormField<String>(
-                  initialValue: _temperament,
-                  decoration: const InputDecoration(labelText: 'Overall temperament'),
-                  items: const [
-                    DropdownMenuItem(value: '', child: Text('Not recorded')),
-                    DropdownMenuItem(value: 'EASY', child: Text('Easy')),
-                    DropdownMenuItem(value: 'FIDGETY', child: Text('Fidgety')),
-                    DropdownMenuItem(value: 'FEISTY', child: Text('Feisty')),
-                  ],
-                  onChanged: (value) => setState(() => _temperament = value ?? ''),
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Text(
+                    'Overall temperament',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+                TemperamentPicker(
+                  grades: _grades,
+                  selected: _temperament,
+                  includeUnset: true,
+                  onSelected: (code) => setState(() => _temperament = code ?? ''),
                 ),
                 const SizedBox(height: 6),
                 Text(
@@ -365,7 +378,7 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
                   style: TextStyle(fontSize: 11.5, color: context.mojo.muted),
                 ),
                 const SizedBox(height: 14),
-                TextFormField(
+                MojoTextField(
                   controller: _sensitive,
                   decoration: const InputDecoration(
                     labelText: "Anywhere they didn't want to be touched",
@@ -374,7 +387,7 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
                   textCapitalization: TextCapitalization.sentences,
                 ),
                 const SizedBox(height: 14),
-                TextFormField(
+                MojoTextField(
                   controller: _notes,
                   decoration: const InputDecoration(labelText: 'Anything to note'),
                   maxLines: 3,

@@ -38,13 +38,15 @@ from .models import (
     Invoice,
     OpeningHours,
     PasswordResetRequest,
+    Payment,
     PasswordResetToken,
     PhaseTiming,
     ProblemArea,
     REQUIRED_CONSENTS,
     ServiceType,
     Temperament,
-    TemperamentLimit,
+    TemperamentGrade,
+    temperament_label,
 )
 
 
@@ -257,7 +259,7 @@ class PrivilegeEscalationTests(BaseAPITestCase):
 
     def test_client_cannot_reach_staff_only_endpoints(self):
         for path in ['/api/equipment/', '/api/todos/', '/api/groom-sessions/',
-                     '/api/intake-submissions/', '/api/temperament-limits/', '/api/booking-series/']:
+                     '/api/intake-submissions/', '/api/temperament-grades/', '/api/booking-series/']:
             self.assertEqual(
                 self.alice_client.get(path).status_code, status.HTTP_403_FORBIDDEN,
                 f'{path} was reachable by a client',
@@ -269,9 +271,14 @@ class BookingWarningTests(BaseAPITestCase):
 
     def setUp(self):
         super().setUp()
-        TemperamentLimit.objects.create(temperament=Temperament.FEISTY, max_per_day=1)
-        TemperamentLimit.objects.create(temperament=Temperament.FIDGETY, max_per_day=2)
-        TemperamentLimit.objects.create(temperament=Temperament.EASY, max_per_day=None)
+        # All five grades exist from migration 0007, so these set the caps
+        # rather than creating the rows.
+        for temperament, cap in (
+            (Temperament.FEISTY, 1),
+            (Temperament.FIDGETY, 2),
+            (Temperament.EASY, None),
+        ):
+            TemperamentGrade.objects.filter(temperament=temperament).update(max_per_day=cap)
         for weekday in range(5):
             OpeningHours.objects.create(
                 weekday=weekday, open_time=time(9, 0), close_time=time(17, 0),
@@ -1179,6 +1186,297 @@ class InvoiceVisibilityTests(BaseAPITestCase):
         invoice = Invoice.objects.get(number='INV-100')
         self.assertEqual(invoice.total, Decimal('65.00'))
         self.assertEqual(invoice.balance, Decimal('65.00'))
+
+
+class TemperamentScaleTests(BaseAPITestCase):
+    """Five grades, named by Jess, keyed by codes that never move.
+
+    She asked for five rather than three — "may up bitey not hard" — and the
+    names we picked are our reading of that one line, so she can rename them in
+    Settings. That is the whole reason the label lives in the database: a
+    label is a word, but a *code* is what every dog points at, and moving one
+    would rewrite history.
+    """
+
+    def test_all_five_grades_are_seeded_in_order(self):
+        grades = list(TemperamentGrade.objects.values_list('temperament', flat=True))
+        self.assertEqual(
+            grades, ['EASY', 'WRIGGLY', 'FIDGETY', 'BITEY', 'FEISTY'],
+            'easiest to hardest — alphabetical order reads as nonsense here',
+        )
+
+    def test_the_new_grades_have_no_invented_cap(self):
+        for code in ('WRIGGLY', 'BITEY'):
+            grade = TemperamentGrade.objects.get(temperament=code)
+            self.assertIsNone(
+                grade.max_per_day,
+                'blank means no limit; interpolating between 2 and 1 would '
+                'invent a rule Jess never set',
+            )
+
+    def test_every_grade_is_accepted_on_a_dog(self):
+        for code in ('EASY', 'WRIGGLY', 'FIDGETY', 'BITEY', 'FEISTY'):
+            response = self.staff_client.patch(
+                f'/api/dogs/{self.alice_dog.pk}/', {'temperament': code}, format='json',
+            )
+            self.assertEqual(response.status_code, status.HTTP_200_OK, code)
+            self.assertEqual(response.data['temperament'], code)
+
+    def test_a_renamed_grade_shows_through_on_a_dog(self):
+        TemperamentGrade.objects.filter(temperament=Temperament.FIDGETY).update(
+            label='Wiggly little sod',
+        )
+        cache.delete(TemperamentGrade.CACHE_KEY)
+        self.alice_dog.temperament = Temperament.FIDGETY
+        self.alice_dog.save()
+
+        response = self.staff_client.get(f'/api/dogs/{self.alice_dog.pk}/')
+        self.assertEqual(
+            response.data['temperament_display'], 'Wiggly little sod',
+            "the app must show Jess's wording, not the frozen enum label",
+        )
+
+    def test_renaming_a_grade_invalidates_the_cached_labels(self):
+        # Reading it first is the point: a stale entry is exactly what a
+        # cache-invalidation bug would leave behind.
+        self.assertEqual(temperament_label(Temperament.EASY), 'Easy')
+
+        grade = TemperamentGrade.objects.get(temperament=Temperament.EASY)
+        grade.label = 'Good as gold'
+        grade.save()
+
+        self.assertEqual(temperament_label(Temperament.EASY), 'Good as gold')
+
+    def test_a_grade_cannot_be_repointed_at_another_code(self):
+        grade = TemperamentGrade.objects.get(temperament=Temperament.EASY)
+        response = self.staff_client.patch(
+            f'/api/temperament-grades/{grade.pk}/',
+            {'temperament': 'FEISTY', 'label': 'Easy'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        grade.refresh_from_db()
+        self.assertEqual(
+            grade.temperament, Temperament.EASY,
+            'every dog stores the code; the settings screen renames, it does '
+            'not repoint',
+        )
+
+    def test_a_grade_cannot_be_deleted(self):
+        grade = TemperamentGrade.objects.get(temperament=Temperament.EASY)
+        response = self.staff_client.delete(f'/api/temperament-grades/{grade.pk}/')
+        self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    def test_a_blank_label_is_refused(self):
+        grade = TemperamentGrade.objects.get(temperament=Temperament.EASY)
+        response = self.staff_client.patch(
+            f'/api/temperament-grades/{grade.pk}/', {'label': '   '}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_a_cap_on_a_new_grade_warns_but_still_books(self):
+        TemperamentGrade.objects.filter(temperament=Temperament.BITEY).update(max_per_day=1)
+        cache.delete(TemperamentGrade.CACHE_KEY)
+        for dog in (self.alice_dog, self.bob_dog):
+            dog.temperament = Temperament.BITEY
+            dog.save()
+
+        start = timezone.now() + timedelta(days=3)
+        start = start.replace(hour=10, minute=0, second=0, microsecond=0)
+        Appointment.objects.create(
+            dog=self.alice_dog, start_at=start, status=AppointmentStatus.BOOKED,
+        )
+
+        response = self.staff_client.post(
+            '/api/appointments/check/',
+            {'dog': self.bob_dog.pk, 'start_at': (start + timedelta(hours=4)).isoformat()},
+            format='json',
+        )
+        codes = [warning['code'] for warning in response.data['warnings']]
+        self.assertIn('temperament_limit', codes)
+
+        # And it is still only a warning.
+        booked = self.staff_client.post(
+            '/api/appointments/',
+            {'dog': self.bob_dog.pk, 'start_at': (start + timedelta(hours=4)).isoformat()},
+            format='json',
+        )
+        self.assertEqual(booked.status_code, status.HTTP_201_CREATED)
+
+    def test_the_warning_uses_jesss_wording(self):
+        TemperamentGrade.objects.filter(temperament=Temperament.FEISTY).update(
+            max_per_day=1, label='Proper handful',
+        )
+        cache.delete(TemperamentGrade.CACHE_KEY)
+        for dog in (self.alice_dog, self.bob_dog):
+            dog.temperament = Temperament.FEISTY
+            dog.save()
+
+        start = (timezone.now() + timedelta(days=3)).replace(
+            hour=10, minute=0, second=0, microsecond=0,
+        )
+        Appointment.objects.create(
+            dog=self.alice_dog, start_at=start, status=AppointmentStatus.BOOKED,
+        )
+
+        response = self.staff_client.post(
+            '/api/appointments/check/',
+            {'dog': self.bob_dog.pk, 'start_at': (start + timedelta(hours=4)).isoformat()},
+            format='json',
+        )
+        warning = next(w for w in response.data['warnings'] if w['code'] == 'temperament_limit')
+        self.assertIn('proper handful', warning['message'])
+
+    def test_a_client_still_cannot_see_a_temperament(self):
+        # The scale getting wider must not widen who can see it.
+        response = self.alice_client.get(f'/api/dogs/{self.alice_dog.pk}/')
+        self.assertNotIn('temperament', response.data)
+        self.assertNotIn('temperament_display', response.data)
+
+    def test_a_client_cannot_read_the_grades(self):
+        self.assertEqual(
+            self.alice_client.get('/api/temperament-grades/').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+
+class NeuterUnknownTests(BaseAPITestCase):
+    """"Nobody asked" is not "intact".
+
+    ``is_neutered`` was ``BooleanField(default=False)``, so a dog whose owner
+    was never asked was stored identically to one confirmed entire — and the
+    tag on the dog profile would have called every one of them "Intact". Same
+    rule as ``photo_consent`` and ``bathed_well_behaved``: null is not false,
+    on both sides of the wire.
+    """
+
+    def test_a_dog_created_without_an_answer_is_unknown(self):
+        response = self.staff_client.post(
+            '/api/dogs/',
+            {'client': self.alice.pk, 'name': 'Pip'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIsNone(response.data['is_neutered'])
+
+    def test_null_round_trips_and_does_not_come_back_as_false(self):
+        self.staff_client.patch(
+            f'/api/dogs/{self.alice_dog.pk}/', {'is_neutered': True}, format='json',
+        )
+        response = self.staff_client.patch(
+            f'/api/dogs/{self.alice_dog.pk}/', {'is_neutered': None}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsNone(response.data['is_neutered'])
+
+    def test_all_three_answers_are_distinguishable(self):
+        for sent in (True, False, None):
+            response = self.staff_client.patch(
+                f'/api/dogs/{self.alice_dog.pk}/', {'is_neutered': sent}, format='json',
+            )
+            self.assertIs(response.data['is_neutered'], sent)
+
+    def test_an_intake_form_that_skips_the_question_approves_to_unknown(self):
+        invite = IntakeInvite.objects.create(email='new@example.com', created_by=self.staff)
+        submission = IntakeSubmission.objects.create(
+            invite=invite,
+            first_name='Nina', last_name='Novak', email='new@example.com',
+            dogs=[{'name': 'Sooty'}],
+            consents={kind: True for kind in REQUIRED_CONSENTS},
+        )
+
+        response = self.staff_client.post(
+            f'/api/intake-submissions/{submission.pk}/approve/',
+            {'client_uid': 'MOJO-901'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        dog = Dog.objects.get(name='Sooty')
+        self.assertIsNone(
+            dog.is_neutered,
+            'the old bool() coercion turned "did not say" straight back into '
+            '"intact" on the way in',
+        )
+
+    def test_an_intake_form_answering_no_approves_to_no(self):
+        invite = IntakeInvite.objects.create(email='new2@example.com', created_by=self.staff)
+        submission = IntakeSubmission.objects.create(
+            invite=invite,
+            first_name='Omar', last_name='Osei', email='new2@example.com',
+            dogs=[{'name': 'Rex', 'is_neutered': False}],
+            consents={kind: True for kind in REQUIRED_CONSENTS},
+        )
+
+        self.staff_client.post(
+            f'/api/intake-submissions/{submission.pk}/approve/',
+            {'client_uid': 'MOJO-902'},
+            format='json',
+        )
+        self.assertIs(Dog.objects.get(name='Rex').is_neutered, False)
+
+    def test_an_intake_form_answering_yes_approves_to_yes(self):
+        invite = IntakeInvite.objects.create(email='new3@example.com', created_by=self.staff)
+        submission = IntakeSubmission.objects.create(
+            invite=invite,
+            first_name='Pat', last_name='Price', email='new3@example.com',
+            dogs=[{'name': 'Bramble', 'is_neutered': True}],
+            consents={kind: True for kind in REQUIRED_CONSENTS},
+        )
+
+        self.staff_client.post(
+            f'/api/intake-submissions/{submission.pk}/approve/',
+            {'client_uid': 'MOJO-903'},
+            format='json',
+        )
+        self.assertIs(Dog.objects.get(name='Bramble').is_neutered, True)
+
+
+class InvoiceDeletionTests(BaseAPITestCase):
+    """Deleting an invoice is staff-only, and only ever a draft.
+
+    ``InvoiceViewSet`` gated create and update but not destroy, so the moment
+    ``invoicing_visible_to_clients`` was switched on a client could DELETE
+    their own invoice — the scoped queryset put it within reach, and
+    ``Payment.invoice`` cascades, so the payment record went with it.
+
+    Past draft, a number has been quoted to somebody and ``Invoice.number`` is
+    unique, so deleting frees it for a later invoice with a different total.
+    Those get voided instead.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.invoice = Invoice.objects.create(client=self.alice, number='INV-001')
+        settings_row = AppSettings.get()
+        settings_row.invoicing_visible_to_clients = True
+        settings_row.save()
+
+    def test_client_cannot_delete_their_own_invoice(self):
+        response = self.alice_client.delete(f'/api/invoices/{self.invoice.pk}/')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(Invoice.objects.filter(pk=self.invoice.pk).exists())
+
+    def test_staff_can_delete_a_draft(self):
+        response = self.staff_client.delete(f'/api/invoices/{self.invoice.pk}/')
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Invoice.objects.filter(pk=self.invoice.pk).exists())
+
+    def test_a_sent_invoice_cannot_be_deleted(self):
+        self.invoice.status = Invoice.Status.SENT
+        self.invoice.save()
+
+        response = self.staff_client.delete(f'/api/invoices/{self.invoice.pk}/')
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertTrue(Invoice.objects.filter(pk=self.invoice.pk).exists())
+
+    def test_a_draft_with_a_payment_cannot_be_deleted(self):
+        Payment.objects.create(
+            invoice=self.invoice, amount=Decimal('20.00'), paid_at=date.today(),
+        )
+
+        response = self.staff_client.delete(f'/api/invoices/{self.invoice.pk}/')
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertTrue(Payment.objects.filter(invoice=self.invoice).exists())
 
 
 class DogumentsSearchTests(BaseAPITestCase):

@@ -47,7 +47,8 @@ from .models import (
     ProblemArea,
     REQUIRED_CONSENTS,
     ServiceType,
-    TemperamentLimit,
+    TemperamentGrade,
+    temperament_label,
     TodoItem,
     UserProfile,
 )
@@ -336,12 +337,20 @@ class BreedSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'coat_type', 'avg_groom_minutes', 'avg_price', 'avg_schedule_weeks', 'notes']
 
 
-class TemperamentLimitSerializer(serializers.ModelSerializer):
-    temperament_display = serializers.CharField(source='get_temperament_display', read_only=True)
-
+class TemperamentGradeSerializer(serializers.ModelSerializer):
     class Meta:
-        model = TemperamentLimit
-        fields = ['id', 'temperament', 'temperament_display', 'max_per_day']
+        model = TemperamentGrade
+        fields = ['id', 'temperament', 'label', 'max_per_day', 'sort_order']
+        # The code identifies the row and every dog in the database points at
+        # it. Jess edits the label and the cap; she does not get to repoint a
+        # grade at a different code from the settings screen.
+        read_only_fields = ['temperament']
+
+    def validate_label(self, value):
+        label = value.strip()
+        if not label:
+            raise serializers.ValidationError('Give the grade a name.')
+        return label
 
 
 class OpeningHoursSerializer(serializers.ModelSerializer):
@@ -478,7 +487,9 @@ class DogListSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
     client_full_name = serializers.CharField(source='client.full_name', read_only=True)
     client_phone = serializers.CharField(source='client.phone', read_only=True)
     breed_label = serializers.CharField(read_only=True)
-    temperament_display = serializers.CharField(source='get_temperament_display', read_only=True)
+    # Jess's own wording for the grade, not the frozen enum label — she
+    # renames these in Settings. See models.temperament_label.
+    temperament_display = serializers.SerializerMethodField()
     groom_minutes_effective = serializers.IntegerField(source='effective_groom_minutes', read_only=True)
     price_effective = serializers.DecimalField(
         source='effective_price', max_digits=7, decimal_places=2, read_only=True,
@@ -495,13 +506,18 @@ class DogListSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
             'groom_minutes_effective', 'price_effective', 'schedule_weeks_effective',
         ]
 
+    def get_temperament_display(self, obj):
+        return temperament_label(obj.temperament)
+
 
 class DogSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
     staff_only_fields = ('temperament', 'temperament_display', 'temperament_notes', 'problem_areas')
 
     client_detail = ClientSerializer(source='client', read_only=True)
     breed_label = serializers.CharField(read_only=True)
-    temperament_display = serializers.CharField(source='get_temperament_display', read_only=True)
+    # Jess's own wording for the grade, not the frozen enum label — she
+    # renames these in Settings. See models.temperament_label.
+    temperament_display = serializers.SerializerMethodField()
     problem_areas = ProblemAreaSerializer(many=True, read_only=True)
     groom_minutes_effective = serializers.IntegerField(source='effective_groom_minutes', read_only=True)
     price_effective = serializers.DecimalField(
@@ -525,16 +541,22 @@ class DogSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
 
+    def get_temperament_display(self, obj):
+        return temperament_label(obj.temperament)
+
 
 # ── Scheduling ─────────────────────────────────────────────────────────
 
 class AppointmentSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
     # A client seeing their own booking has no business seeing the handling
     # notes Jess keeps about their dog.
-    staff_only_fields = ('dog_temperament',)
+    staff_only_fields = ('dog_temperament', 'dog_temperament_display')
 
     dog_name = serializers.CharField(source='dog.name', read_only=True)
     dog_temperament = serializers.CharField(source='dog.temperament', read_only=True)
+    # The code alone left the diary's badges showing the seed wording after
+    # Jess renamed a grade — the calendar had nothing else to draw with.
+    dog_temperament_display = serializers.SerializerMethodField()
     client_id = serializers.IntegerField(source='dog.client_id', read_only=True)
     client_name = serializers.CharField(source='dog.client.full_name', read_only=True)
     client_phone = serializers.CharField(source='dog.client.phone', read_only=True)
@@ -543,13 +565,17 @@ class AppointmentSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
     class Meta:
         model = Appointment
         fields = [
-            'id', 'dog', 'dog_name', 'dog_temperament', 'client_id', 'client_name', 'client_phone',
+            'id', 'dog', 'dog_name', 'dog_temperament', 'dog_temperament_display',
+            'client_id', 'client_name', 'client_phone',
             'start_at', 'end_at', 'duration_minutes', 'booking_type', 'service_type', 'status',
             'price_quoted', 'notes', 'series', 'created_at', 'updated_at',
         ]
         # end_at is optional on input — the model fills it from the dog's groom
         # time when omitted.
         extra_kwargs = {'end_at': {'required': False}}
+
+    def get_dog_temperament_display(self, obj):
+        return temperament_label(obj.dog.temperament)
         read_only_fields = ['id', 'created_at', 'updated_at']
 
     def validate(self, data):

@@ -7,15 +7,41 @@ import '../../services/service_locator.dart';
 import '../../widgets/common.dart';
 import '../../widgets/dog_silhouette.dart';
 
+/// One marked area, before it has a dog to belong to.
+///
+/// The add-a-dog form can't save these as it goes — the dog has no id until
+/// it's created — so they're held here and posted once it does.
+typedef ProblemAreaDraft = ({List<String> cells, String reason});
+
 /// Mark an area of the dog and say why.
 ///
 /// Multiple areas can be recorded per dog — each is a separate entry with its
 /// own reason, so "sore left hip" and "matted tail" don't get merged into one
 /// note. Staff-only on the profile, but the same widget backs the intake form.
+///
+/// Two modes, because the two callers differ in whether the dog exists yet:
+///
+/// * [ProblemAreaEditor.forDog] saves straight away and pops `true`. This is
+///   the dog profile's ADD button.
+/// * [ProblemAreaEditor.draft] saves nothing and pops a [ProblemAreaDraft].
+///   This is the add-a-dog form, where Jess is recording what she was told at
+///   the door and there is no dog id to hang it off yet.
 class ProblemAreaEditor extends StatefulWidget {
-  const ProblemAreaEditor({super.key, required this.dog});
+  const ProblemAreaEditor.forDog({super.key, required Dog dog})
+      : _dog = dog,
+        _draftName = null;
 
-  final Dog dog;
+  const ProblemAreaEditor.draft({super.key, required String dogName})
+      : _dog = null,
+        _draftName = dogName;
+
+  final Dog? _dog;
+  final String? _draftName;
+
+  String get _name {
+    final name = _dog?.name ?? _draftName ?? '';
+    return name.isEmpty ? 'this dog' : name;
+  }
 
   @override
   State<ProblemAreaEditor> createState() => _ProblemAreaEditorState();
@@ -43,12 +69,25 @@ class _ProblemAreaEditorState extends State<ProblemAreaEditor> {
       showSnack(context, 'Say why this area is marked.', isError: true);
       return;
     }
+    final draft = (
+      cells: _cells.toList()..sort(),
+      reason: _reason.text.trim(),
+    );
+
+    final dog = widget._dog;
+    if (dog == null) {
+      // Nothing to save it against yet — hand it back to the add-a-dog form,
+      // which posts it once the dog has an id.
+      Navigator.of(context).pop(draft);
+      return;
+    }
+
     setState(() => _busy = true);
     try {
       await _data.createProblemArea(
-        dogId: widget.dog.id,
-        gridCells: _cells.toList()..sort(),
-        reason: _reason.text.trim(),
+        dogId: dog.id,
+        gridCells: draft.cells,
+        reason: draft.reason,
       );
       if (mounted) Navigator.of(context).pop(true);
     } catch (error) {
@@ -62,7 +101,7 @@ class _ProblemAreaEditorState extends State<ProblemAreaEditor> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('Problem area — ${widget.dog.name}'),
+        title: Text('Problem area — ${widget._name}'),
         actions: [
           if (_cells.isNotEmpty)
             TextButton(

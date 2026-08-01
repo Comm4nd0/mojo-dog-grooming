@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'constants/app_colors.dart';
 import 'screens/client/client_shell.dart';
@@ -7,6 +8,15 @@ import 'screens/login_screen.dart';
 import 'screens/staff/staff_shell.dart';
 import 'services/auth_service.dart';
 import 'services/service_locator.dart';
+
+/// The locales the app claims to support.
+///
+/// Exactly one, and it is not cosmetic. Every Material picker reads its week
+/// start and its clock format from `MaterialLocalizations`, and Flutter falls
+/// back to en_US when an app declares nothing — which is why the booking
+/// screen's date picker opened on a Sunday while the calendar beside it,
+/// whose Monday start is set directly on `TableCalendar`, did not.
+const List<Locale> kSupportedLocales = [Locale('en', 'GB')];
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -48,6 +58,8 @@ class _MojoAppState extends State<MojoApp> {
       debugShowCheckedModeBanner: false,
       theme: AppColors.lightTheme(),
       darkTheme: AppColors.darkTheme(),
+      localizationsDelegates: GlobalMaterialLocalizations.delegates,
+      supportedLocales: kSupportedLocales,
       home: _home(),
     );
   }

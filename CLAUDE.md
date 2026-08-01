@@ -38,9 +38,11 @@ mobile/lib/
   services/           api_client, auth_service, biometric_service, data_service, service_locator
   screens/            login_screen, lock_screen, account_switcher
   screens/staff/      doguments, dog/client profiles, calendar, timers, visit records,
-                      invoices, equipment, logins
+                      invoices, equipment, to-dos, logins
   screens/client/     my dogs, my bookings, my profile, claim profile
-  widgets/            common.dart, dog_silhouette.dart, biometric_toggle.dart
+  widgets/            common.dart, dog_silhouette.dart, biometric_toggle.dart,
+                      searchable_picker.dart, duration_picker.dart,
+                      contact_actions.dart, temperament_picker.dart
 ```
 
 ## Commands
@@ -48,7 +50,7 @@ mobile/lib/
 Backend:
 ```bash
 python manage.py migrate && python manage.py seed_breeds
-python manage.py test api        # 175 tests
+python manage.py test api        # 197 tests
 python manage.py runserver 0.0.0.0:8000
 python manage.py accounts        # who can sign in — usernames live only in the DB
 python manage.py reset_link jess # a way back in when the superuser is locked out
@@ -57,7 +59,7 @@ python manage.py reset_link jess # a way back in when the superuser is locked ou
 Mobile:
 ```bash
 cd mobile && flutter pub get
-flutter analyze && flutter test  # 83 tests
+flutter analyze && flutter test  # 106 tests
 flutter run --dart-define=MOJO_API_BASE=http://192.168.1.20:8000/api
 ```
 
@@ -90,6 +92,59 @@ not "unset". Never render one without a null check, and never coerce a missing k
 `ClientScopedMixin` in `api/views.py` narrows every list and detail lookup to the requesting
 user's own client record, so a client cannot address another client's row at all. Field gating
 alone is not enough. Both layers must stay.
+
+## Temperament: five grades, frozen codes, wording Jess owns
+
+Jess asked for five handling grades rather than three — *"can all five different
+temperament's be shown (may up bitey not hard etc.)"* — because the old middle grade,
+"Fidgety / bitey", was doing two jobs. `WRIGGLY` and `BITEY` were added in `0007`;
+`FIDGETY` kept its code and lost "/ bitey" from its wording.
+
+**The five names we shipped are our reading of that one line, so they are not in the code.**
+`TemperamentGrade` (was `TemperamentLimit`) carries `label`, `max_per_day` and `sort_order`,
+and Jess renames grades in Settings → How dogs handle. Two consequences that are easy to get
+wrong:
+
+- **Never call `get_temperament_display()`.** It returns the frozen labels on the
+  `Temperament` enum, which are seed defaults only, and will silently contradict whatever Jess
+  has on screen. Use `temperament_label(code)`, or the serializers' `temperament_display`.
+  Same on the Flutter side: `TemperamentGrade.label` or the server's `temperament_display`,
+  never a hardcoded string.
+- **The codes are permanent.** Every `Dog.temperament` and `GroomSession.temperament_observed`
+  stores one, so a label is a word but a code is history. `TemperamentGradeSerializer` makes
+  `temperament` read-only and the viewset refuses DELETE for exactly this reason — a deleted
+  grade leaves every dog carrying its code with nothing to render.
+
+Labels are cached (`TemperamentGrade.labels()`, 5 minutes) because a list of dogs renders one
+per row. `save()`/`delete()` invalidate it; a queryset-level `.update()` would not, which is
+what the short TTL is for.
+
+The two new grades seeded with **no cap**. Interpolating between the old 2 and 1 would invent
+a rule Jess never set, and an invented limit is indistinguishable from a real one once it is
+in the table — the same reasoning as `nail_visit_price` and migration `0006`.
+
+`0007` also makes `Dog.is_neutered` nullable, so the profile's intact/done tag can stay
+silent. See the rule below.
+
+## Null is not false
+
+Several fields have three states, and coercing the third to `false` has caused a real bug
+every time it has been done. `Dog.is_neutered` was the latest: it defaulted to `False`, so a
+dog nobody had asked about was stored identically to one confirmed entire, and Jess's
+"intact / done" tag would have labelled every one of them **Intact**.
+
+The complete list, all nullable, all meaning "never asked" when null:
+`Client.photo_consent`, `GroomSession.bathed_well_behaved`, `Dog.is_neutered`, and every
+staff-only field withheld from a client.
+
+On both sides of the wire:
+- Django — nullable, and nothing coerces on the way in. `IntakeSubmissionViewSet.approve`
+  reads through `_tristate()`; it used to do `bool(entry.get('is_neutered', False))`, which
+  put "didn't say" straight back to "intact".
+- `templates/intake/form.html` — a checkbox cannot express three states, so it is three
+  radios, **none pre-selected**. A pre-ticked "Not sure" is as invented as a pre-ticked "No".
+- Dart — `bool?`, never `json['x'] == true`. The form control is a three-way
+  `SegmentedButton`, not a switch.
 
 ## Warnings never block
 
@@ -160,6 +215,14 @@ it lands on is a **role**, not a constant, and lives on `MojoPalette` — a `The
 Do not reach for `AppColors.inkSecondary`, `surfaceTint`, `hairline`, or bare `primary` as a
 foreground in a widget — those are the light values, and using them directly is what made the
 app unreadable in dark mode. The deep green in particular is about 2:1 on `#121212`.
+
+**The five temperament colours are a role too**, for the same reason: the badge draws the
+grade's name *as text* in its colour on a 12%-alpha wash of itself, and the original three
+were only ever checked on white — on the dark scaffold they came out between 3.1:1 and 3.9:1.
+Read them through `context.temperamentColour(code)`, never `AppColors.temperamentColor`
+directly, which defaults to the light set. An unknown code returns **grey, not the easy
+green**: a phone on an older build talking to a newer server would otherwise paint a bitey
+dog reassuringly green, and that is how somebody gets bitten.
 
 `AppColors.display()` deliberately leaves its colour **null** so `Text` inherits `onSurface`
 from the theme. It used to default to `ink`, which is why the login wordmark and every screen

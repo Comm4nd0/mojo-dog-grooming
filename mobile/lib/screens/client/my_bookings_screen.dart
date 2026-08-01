@@ -131,8 +131,11 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
                   Expanded(
                     child: InkWell(
                       onTap: () async {
-                        final picked =
-                            await showTimePicker(context: context, initialTime: time);
+                        final picked = await showTimePicker(
+                          context: context,
+                          initialTime: time,
+                          initialEntryMode: TimePickerEntryMode.input,
+                        );
                         if (picked != null) setSheetState(() => time = picked);
                       },
                       child: InputDecorator(

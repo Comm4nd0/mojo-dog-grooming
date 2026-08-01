@@ -9,8 +9,10 @@ import '../../widgets/common.dart';
 import 'booking_form_screen.dart';
 import 'dog_profile_screen.dart';
 
-/// The diary. Month and day views over the same data, with the to-do list
-/// docked at the bottom as a collapsible sheet.
+/// The diary. Month and day views over the same data.
+///
+/// The to-do list used to be docked at the bottom of this screen; it lives
+/// under More now — see [TodosScreen] for why.
 class CalendarScreen extends StatefulWidget {
   const CalendarScreen({super.key});
 
@@ -26,10 +28,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
   DateTime _selectedDay = DateTime.now();
 
   Map<DateTime, List<Appointment>> _byDay = {};
-  List<TodoItem> _todos = const [];
   bool _loading = true;
   Object? _error;
-  bool _todosExpanded = false;
 
   @override
   void initState() {
@@ -48,7 +48,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
       final from = DateTime(_focusedDay.year, _focusedDay.month - 1, 1);
       final to = DateTime(_focusedDay.year, _focusedDay.month + 2, 0);
       final appointments = await _data.getAppointments(from: from, to: to);
-      final todos = await _data.getTodos();
       if (!mounted) return;
 
       final grouped = <DateTime, List<Appointment>>{};
@@ -58,7 +57,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
       }
       setState(() {
         _byDay = grouped;
-        _todos = todos;
         _loading = false;
       });
     } catch (error) {
@@ -100,8 +98,12 @@ class _CalendarScreenState extends State<CalendarScreen> {
         ],
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: _quickActions,
-        tooltip: 'Add',
+        // Straight to a new booking. It used to open a sheet offering
+        // "booking" or "to-do", because the FAB sat on top of the to-do
+        // dock's own add button — with the to-dos gone the + means one thing
+        // again.
+        onPressed: () => _openBooking(at: _selectedDay),
+        tooltip: 'New booking',
         child: const Icon(Icons.add),
       ),
       body: _error != null && _byDay.isEmpty
@@ -147,21 +149,32 @@ class _CalendarScreenState extends State<CalendarScreen> {
                     todayTextStyle: TextStyle(
                       color: context.mojo.onTint, fontWeight: FontWeight.w700,
                     ),
-                    selectedDecoration: BoxDecoration(
-                      color: AppColors.primary,
+                    // A filled block, so it takes the website's bright green
+                    // — the deep green is for text and icons. Black label,
+                    // never white: white on this green fails contrast badly.
+                    selectedDecoration: const BoxDecoration(
+                      color: AppColors.primaryBright,
                       shape: BoxShape.rectangle,
+                    ),
+                    selectedTextStyle: const TextStyle(
+                      color: Colors.black,
+                      fontWeight: FontWeight.w700,
                     ),
                     markerDecoration: BoxDecoration(
                       color: AppColors.primaryBright,
                       shape: BoxShape.rectangle,
                     ),
                     markersMaxCount: 4,
-                    outsideDaysVisible: false,
+                    // Show the tail of last month and the head of next, so a
+                    // month that doesn't begin on a Monday still shows the
+                    // 30th and 31st in the row above the 1st. They stay
+                    // tappable — onDaySelected gets the real date.
+                    outsideDaysVisible: true,
+                    outsideTextStyle: TextStyle(color: context.mojo.muted),
                   ),
                 ),
                 const Divider(height: 1),
                 Expanded(child: _dayList()),
-                _todoSheet(),
               ],
             ),
     );
@@ -219,7 +232,11 @@ class _CalendarScreenState extends State<CalendarScreen> {
                 ),
               ),
               const SizedBox(width: 8),
-              TemperamentChip(temperament: appointment.dogTemperament, compact: true),
+              TemperamentChip(
+                temperament: appointment.dogTemperament,
+                label: appointment.dogTemperamentDisplay,
+                compact: true,
+              ),
             ],
           ),
           subtitle: Text(
@@ -238,139 +255,4 @@ class _CalendarScreenState extends State<CalendarScreen> {
     );
   }
 
-  Widget _todoSheet() {
-    final outstanding = _todos.where((todo) => !todo.isDone).length;
-    return Material(
-      elevation: 8,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          InkWell(
-            onTap: () => setState(() => _todosExpanded = !_todosExpanded),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              child: Row(
-                children: [
-                  Icon(Icons.checklist, size: 20, color: context.mojo.accent),
-                  const SizedBox(width: 10),
-                  Text('To-do', style: Theme.of(context).textTheme.titleMedium),
-                  const SizedBox(width: 8),
-                  if (outstanding > 0)
-                    InfoTag(label: '$outstanding outstanding'),
-                  const Spacer(),
-                  // No add button here: the FAB sits directly over this corner
-                  // of the sheet, so one here can't be tapped. Adding a to-do
-                  // is in the FAB's quick actions instead.
-                  Icon(_todosExpanded ? Icons.expand_more : Icons.expand_less),
-                ],
-              ),
-            ),
-          ),
-          if (_todosExpanded)
-            ConstrainedBox(
-              constraints: const BoxConstraints(maxHeight: 240),
-              child: _todos.isEmpty
-                  ? Padding(
-                      padding: EdgeInsets.fromLTRB(16, 0, 16, 16),
-                      child: Text(
-                        'Nothing on the list.',
-                        style: TextStyle(color: context.mojo.muted, fontSize: 13),
-                      ),
-                    )
-                  : ListView(
-                      shrinkWrap: true,
-                      children: [
-                        for (final todo in _todos)
-                          Dismissible(
-                            key: ValueKey(todo.id),
-                            direction: DismissDirection.endToStart,
-                            background: Container(
-                              color: AppColors.error,
-                              alignment: Alignment.centerRight,
-                              padding: const EdgeInsets.only(right: 16),
-                              child: const Icon(Icons.delete, color: Colors.white),
-                            ),
-                            onDismissed: (_) async {
-                              await _data.deleteTodo(todo.id);
-                              _load();
-                            },
-                            child: CheckboxListTile(
-                              dense: true,
-                              value: todo.isDone,
-                              onChanged: (value) async {
-                                await _data.updateTodo(todo.id, {'is_done': value});
-                                _load();
-                              },
-                              title: Text(
-                                todo.text,
-                                style: TextStyle(
-                                  decoration: todo.isDone ? TextDecoration.lineThrough : null,
-                                  color: todo.isDone ? context.mojo.muted : null,
-                                ),
-                              ),
-                              subtitle: todo.dueDate == null
-                                  ? null
-                                  : Text('Due ${formatDate(todo.dueDate!)}'),
-                              controlAffinity: ListTileControlAffinity.leading,
-                            ),
-                          ),
-                      ],
-                    ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _addTodo() async {
-    final text = await promptForText(
-      context,
-      title: 'Add to the list',
-      hintText: 'e.g. Order more shampoo',
-      confirmLabel: 'ADD',
-    );
-    if (text == null || text.isEmpty) return;
-    try {
-      await _data.createTodo(text);
-    } catch (error) {
-      // Without this the failure surfaced as an unhandled exception with
-      // nothing on screen to say what went wrong.
-      if (mounted) showSnack(context, error.toString(), isError: true);
-      return;
-    }
-    if (!mounted) return;
-    setState(() => _todosExpanded = true);
-    _load();
-  }
-
-  /// The FAB used to be "new booking" alone, sitting directly on top of the
-  /// to-do list's own add button. Both actions live in here now, so nothing is
-  /// covered and the + means one thing: something new.
-  Future<void> _quickActions() async {
-    final action = await showModalBottomSheet<String>(
-      context: context,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: Icon(Icons.event_outlined, color: context.mojo.accent),
-              title: const Text('New booking'),
-              subtitle: Text(formatDate(_selectedDay)),
-              onTap: () => Navigator.pop(context, 'booking'),
-            ),
-            ListTile(
-              leading: Icon(Icons.checklist, color: context.mojo.accent),
-              title: const Text('New to-do'),
-              subtitle: const Text('Added to the list at the bottom'),
-              onTap: () => Navigator.pop(context, 'todo'),
-            ),
-            const SizedBox(height: 8),
-          ],
-        ),
-      ),
-    );
-    if (action == 'booking') await _openBooking(at: _selectedDay);
-    if (action == 'todo') await _addTodo();
-  }
 }

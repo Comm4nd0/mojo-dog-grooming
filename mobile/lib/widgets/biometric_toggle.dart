@@ -68,7 +68,7 @@ class _BiometricToggleState extends State<BiometricToggle> {
     return SwitchListTile(
       value: enabled,
       onChanged: _busy ? null : _set,
-      secondary: const Icon(Icons.fingerprint, color: AppColors.primary),
+      secondary: Icon(Icons.fingerprint, color: context.mojo.accent),
       title: Text('Unlock with ${_capability.label}'),
       subtitle: Text(
         enabled

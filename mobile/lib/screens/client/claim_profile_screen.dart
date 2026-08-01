@@ -141,7 +141,7 @@ class _ClaimProfileScreenState extends State<ClaimProfileScreen> {
             style: TextStyle(fontSize: 14, height: 1.5),
           ),
           const SizedBox(height: 28),
-          TextFormField(
+          MojoTextField(
             controller: _name,
             decoration: const InputDecoration(labelText: 'Your full name *'),
             textCapitalization: TextCapitalization.words,
@@ -149,7 +149,7 @@ class _ClaimProfileScreenState extends State<ClaimProfileScreen> {
                 (value == null || value.trim().isEmpty) ? 'Enter your name' : null,
           ),
           const SizedBox(height: 14),
-          TextFormField(
+          MojoTextField(
             controller: _email,
             decoration: const InputDecoration(labelText: 'Email *'),
             keyboardType: TextInputType.emailAddress,
@@ -157,7 +157,7 @@ class _ClaimProfileScreenState extends State<ClaimProfileScreen> {
                 (value == null || !value.contains('@')) ? 'Enter a valid email' : null,
           ),
           const SizedBox(height: 14),
-          TextFormField(
+          MojoTextField(
             controller: _postcode,
             decoration: const InputDecoration(labelText: 'Postcode *'),
             textCapitalization: TextCapitalization.characters,

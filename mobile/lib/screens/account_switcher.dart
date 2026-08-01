@@ -75,7 +75,9 @@ class _AccountSwitcherSheetState extends State<_AccountSwitcherSheet> {
                   Text(account.isStaff ? 'Staff' : 'Client'),
                   if (account.biometricsEnabled) ...[
                     const SizedBox(width: 6),
-                    const Icon(Icons.fingerprint, size: 14, color: AppColors.primary),
+                    // context.mojo.accent, not AppColors.primary: the deep
+                    // green is about 2:1 on the dark scaffold.
+                    Icon(Icons.fingerprint, size: 14, color: context.mojo.accent),
                   ],
                 ],
               ),

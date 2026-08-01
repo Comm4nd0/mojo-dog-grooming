@@ -5,6 +5,8 @@ import '../../models/models.dart';
 import '../../services/data_service.dart';
 import '../../services/service_locator.dart';
 import '../../widgets/common.dart';
+import '../../widgets/duration_picker.dart';
+import '../../widgets/searchable_picker.dart';
 
 /// Create or edit a booking.
 ///
@@ -12,10 +14,19 @@ import '../../widgets/common.dart';
 /// opening hours, overlaps — and shows them in a confirm dialog. They never
 /// block: Jess decides, the app only makes sure she knows.
 class BookingFormScreen extends StatefulWidget {
-  const BookingFormScreen({super.key, this.appointment, required this.initialDate});
+  const BookingFormScreen({
+    super.key,
+    this.appointment,
+    required this.initialDate,
+    this.initialDogId,
+  });
 
   final Appointment? appointment;
   final DateTime initialDate;
+
+  /// Pre-selects a dog on a new booking — set when arriving from that dog's
+  /// profile. Ignored when editing, where the appointment supplies it.
+  final int? initialDogId;
 
   @override
   State<BookingFormScreen> createState() => _BookingFormScreenState();
@@ -45,6 +56,11 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
 
   bool get _isEditing => widget.appointment != null;
 
+  /// How long a nail trim runs. Falls back to 20 only so the picker lands
+  /// somewhere sensible when Jess hasn't set a length in Settings — the
+  /// server's check still warns that the figure isn't hers.
+  int get _nailVisitMinutes => _settings?.nailVisitMinutes ?? 20;
+
   @override
   void initState() {
     super.initState();
@@ -60,6 +76,7 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
       _notes.text = appointment.notes;
     } else {
       _date = widget.initialDate;
+      _dogId = widget.initialDogId;
     }
     _loadDogs();
   }
@@ -84,10 +101,13 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
         _dogs = dogs;
         _settings = settings;
         _loading = false;
-        // A new booking defaults to the selected dog's own groom time.
-        if (!_isEditing && dogs.isNotEmpty && _dogId == null) {
-          _dogId = dogs.first.id;
-          _durationMinutes = dogs.first.groomMinutes;
+        // Size the slot to a dog we were handed — arriving from a dog's
+        // profile, say. The field is otherwise left empty on purpose: it used
+        // to default to whichever dog sorted first, which was harmless as a
+        // dropdown you had to open anyway, but reads as a real choice in a
+        // search field and is one mis-tap from booking the wrong dog.
+        if (!_isEditing && _dogId != null) {
+          _durationMinutes = _selectedDog?.groomMinutes ?? _durationMinutes;
         }
       });
     } catch (error) {
@@ -214,23 +234,22 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
         children: [
-          DropdownButtonFormField<int>(
-            initialValue: _dogId,
-            decoration: const InputDecoration(labelText: 'Dog *'),
-            isExpanded: true,
-            items: [
-              for (final d in _dogs)
-                DropdownMenuItem(
-                  value: d.id,
-                  child: Text('${d.name} — ${d.clientFullName}', overflow: TextOverflow.ellipsis),
-                ),
-            ],
-            onChanged: (value) {
+          SearchablePicker<DogSummary>(
+            items: _dogs,
+            selected: _selectedDog,
+            decoration: const InputDecoration(
+              labelText: 'Dog *',
+              hintText: 'Dog, owner or phone number',
+            ),
+            labelOf: (dog) => dog.name,
+            subtitleOf: (dog) => dog.clientFullName,
+            matches: (dog, query) => dog.matchesSearch(query),
+            emptyLabel: 'No dog matches that',
+            onSelected: (dog) {
               setState(() {
-                _dogId = value;
+                _dogId = dog?.id;
                 // Re-size the slot to the newly chosen dog's groom time.
-                final chosen = _selectedDog;
-                if (chosen != null && !_isEditing) _durationMinutes = chosen.groomMinutes;
+                if (dog != null && !_isEditing) _durationMinutes = dog.groomMinutes;
               });
             },
           ),
@@ -277,7 +296,13 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
               Expanded(
                 child: InkWell(
                   onTap: () async {
-                    final picked = await showTimePicker(context: context, initialTime: _time);
+                    final picked = await showTimePicker(
+                      context: context,
+                      initialTime: _time,
+                      // Keypad first. `input`, not `inputOnly` — Jess asked to
+                      // keep the clock face, so the toggle has to stay.
+                      initialEntryMode: TimePickerEntryMode.input,
+                    );
                     if (picked != null) setState(() => _time = picked);
                   },
                   child: InputDecorator(
@@ -288,20 +313,45 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
               ),
             ],
           ),
-          const SizedBox(height: 16),
-          Text('Duration: ${formatDuration(_durationMinutes)}',
-              style: Theme.of(context).textTheme.titleMedium),
-          Slider(
-            value: _durationMinutes.toDouble().clamp(15, 300),
-            min: 15,
-            max: 300,
-            divisions: 19,
-            label: formatDuration(_durationMinutes),
-            onChanged: (value) => setState(() => _durationMinutes = value.round()),
+          const SizedBox(height: 12),
+          InkWell(
+            onTap: () async {
+              final picked = await showDurationPicker(
+                context,
+                initialMinutes: _durationMinutes,
+                title: 'How long for ${dog?.name ?? 'this groom'}?',
+              );
+              if (picked != null) setState(() => _durationMinutes = picked);
+            },
+            child: InputDecorator(
+              decoration: InputDecoration(
+                labelText: 'Duration',
+                helperText: 'Ends at ${formatTime(_endAt)}',
+              ),
+              child: Text(formatDuration(_durationMinutes)),
+            ),
           ),
-          Text(
-            'Ends at ${formatTime(_endAt)}',
-            style: TextStyle(fontSize: 12, color: context.mojo.muted),
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                if (dog != null)
+                  DurationPreset(
+                    label: 'Usual (${formatDuration(dog.groomMinutes)})',
+                    minutes: dog.groomMinutes,
+                    selected: _durationMinutes == dog.groomMinutes,
+                    onPick: (value) => setState(() => _durationMinutes = value),
+                  ),
+                DurationPreset(
+                  label: 'Nails (${formatDuration(_nailVisitMinutes)})',
+                  minutes: _nailVisitMinutes,
+                  selected: _durationMinutes == _nailVisitMinutes,
+                  onPick: (value) => setState(() => _durationMinutes = value),
+                ),
+              ],
+            ),
           ),
 
           const SectionHeader(title: 'Service'),
@@ -316,9 +366,7 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
               // A nail trim is minutes, not hours. Leaving the slider on the
               // dog's groom time would block out most of a morning for it.
               if (_serviceType == ServiceType.nailsFleasTicks) {
-                _durationMinutes = _settings?.nailVisitMinutes ?? 20;
-                // 20 only so the slider lands somewhere sensible when she
-                // hasn't set a length; the check warns that it isn't hers.
+                _durationMinutes = _nailVisitMinutes;
                 _repeat = false;
               } else {
                 _durationMinutes = _selectedDog?.groomMinutes ?? _durationMinutes;

@@ -18,7 +18,8 @@ from .models import (
     FALLBACK_NAIL_VISIT_MINUTES,
     OpeningHours,
     ServiceType,
-    TemperamentLimit,
+    TemperamentGrade,
+    temperament_label,
 )
 
 
@@ -28,7 +29,7 @@ def _local_date(dt):
 
 def temperament_warning(dog, start_at, exclude_appointment=None):
     """Warn when this booking takes the day over the limit for its temperament."""
-    limit = TemperamentLimit.objects.filter(temperament=dog.temperament).first()
+    limit = TemperamentGrade.objects.filter(temperament=dog.temperament).first()
     if limit is None or limit.max_per_day is None:
         return None
 
@@ -43,7 +44,8 @@ def temperament_warning(dog, start_at, exclude_appointment=None):
 
     existing = same_day.count()
     if existing + 1 > limit.max_per_day:
-        label = dog.get_temperament_display().lower()
+        # Jess's own wording for the grade, not the frozen enum label.
+        label = temperament_label(dog.temperament).lower()
         return {
             'code': 'temperament_limit',
             'message': (

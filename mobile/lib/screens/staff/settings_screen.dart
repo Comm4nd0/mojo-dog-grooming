@@ -20,7 +20,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _api = getIt<ApiClient>();
 
   AppSettings? _settings;
-  List<Map<String, dynamic>> _limits = const [];
+  List<TemperamentGrade> _grades = const [];
   List<Map<String, dynamic>> _hours = const [];
   bool _loading = true;
   Object? _error;
@@ -35,12 +35,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() => _loading = true);
     try {
       final settings = await _data.getSettings();
-      final limits = ApiClient.resultsOf(await _api.get('/temperament-limits/'));
+      final grades = await _data.getTemperamentGrades();
       final hours = ApiClient.resultsOf(await _api.get('/opening-hours/'));
       if (!mounted) return;
       setState(() {
         _settings = settings;
-        _limits = limits;
+        _grades = grades;
         _hours = hours;
         _loading = false;
         _error = null;
@@ -78,28 +78,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                     ),
 
-                    const SectionHeader(title: 'Temperament limits'),
+                    const SectionHeader(title: 'How dogs handle'),
                     Padding(
                       padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
                       child: Text(
-                        'How many of each type you will take in a day. Going over only '
-                        'warns you — it never stops the booking.',
+                        'Five grades, easiest first. Call them whatever you '
+                        'like — tap one to rename it or set how many of that '
+                        'kind you will take in a day. Going over the number '
+                        'only warns you; it never stops the booking.',
                         style: TextStyle(fontSize: 12.5, color: context.mojo.muted),
                       ),
                     ),
-                    for (final limit in _limits)
+                    for (final grade in _grades)
                       ListTile(
                         leading: TemperamentChip(
-                          temperament: limit['temperament']?.toString(),
-                          label: limit['temperament_display']?.toString(),
+                          temperament: grade.code,
+                          label: grade.label,
                         ),
-                        title: Text(
-                          limit['max_per_day'] == null
-                              ? 'No limit'
-                              : 'Max ${limit['max_per_day']} per day',
-                        ),
+                        title: Text(grade.capLabel),
                         trailing: const Icon(Icons.edit_outlined, size: 18),
-                        onTap: () => _editLimit(limit),
+                        onTap: () => _editGrade(grade),
                       ),
 
                     const SectionHeader(title: 'Nails, fleas and ticks'),
@@ -243,6 +241,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             final picked = await showTimePicker(
               context: context,
               initialTime: opening ? open : close,
+              // Typing 09:00 beats dialling it. The clock face is still one
+              // tap away, same as on the booking form.
+              initialEntryMode: TimePickerEntryMode.input,
             );
             if (picked == null) return;
             setDialogState(() {
@@ -354,21 +355,69 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _load();
   }
 
-  Future<void> _editLimit(Map<String, dynamic> limit) async {
-    final result = await promptForText(
-      context,
-      title: limit['temperament_display']?.toString() ?? 'Limit',
-      initialValue: limit['max_per_day']?.toString() ?? '',
-      labelText: 'Maximum per day',
-      helperText: 'Leave blank for no limit',
-      keyboardType: TextInputType.number,
-    );
-    if (result == null) return;
+  /// Rename a grade, or change how many of them Jess will take in a day.
+  ///
+  /// The five names shipped are our reading of a one-line note from her, so
+  /// renaming has to be hers to do. Only the label and the cap are editable —
+  /// the code underneath is what every dog stores, and repointing it would
+  /// silently regrade a dog.
+  Future<void> _editGrade(TemperamentGrade grade) async {
+    final label = TextEditingController(text: grade.label);
+    final cap = TextEditingController(text: grade.maxPerDay?.toString() ?? '');
 
-    await _api.patch('/temperament-limits/${limit['id']}/', {
-      'max_per_day': result.isEmpty ? null : int.tryParse(result),
-    });
-    _load();
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(grade.label),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            MojoTextField(
+              controller: label,
+              decoration: const InputDecoration(
+                labelText: 'What you call it',
+                helperText: 'Shown on every dog and booking',
+              ),
+              textCapitalization: TextCapitalization.sentences,
+            ),
+            const SizedBox(height: 16),
+            MojoTextField(
+              controller: cap,
+              decoration: const InputDecoration(
+                labelText: 'Maximum per day',
+                helperText: 'Leave blank for no limit',
+              ),
+              keyboardType: TextInputType.number,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('CANCEL'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('SAVE'),
+          ),
+        ],
+      ),
+    );
+
+    if (saved == true) {
+      final trimmedCap = cap.text.trim();
+      try {
+        await _data.updateTemperamentGrade(grade.id, {
+          'label': label.text.trim(),
+          'max_per_day': trimmedCap.isEmpty ? null : int.tryParse(trimmedCap),
+        });
+      } catch (error) {
+        if (mounted) showSnack(context, error.toString(), isError: true);
+      }
+      _load();
+    }
+    label.dispose();
+    cap.dispose();
   }
 }
 
@@ -460,19 +509,19 @@ class _BreedListScreenState extends State<_BreedListScreen> {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(
+            MojoTextField(
               controller: minutes,
               decoration: const InputDecoration(labelText: 'Groom time (minutes)'),
               keyboardType: TextInputType.number,
             ),
             const SizedBox(height: 12),
-            TextField(
+            MojoTextField(
               controller: price,
               decoration: const InputDecoration(labelText: 'Price (£)'),
               keyboardType: const TextInputType.numberWithOptions(decimal: true),
             ),
             const SizedBox(height: 12),
-            TextField(
+            MojoTextField(
               controller: weeks,
               decoration: const InputDecoration(labelText: 'Groom every (weeks)'),
               keyboardType: TextInputType.number,

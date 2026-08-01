@@ -207,13 +207,13 @@ class _EquipmentFormState extends State<_EquipmentForm> {
               style: Theme.of(context).textTheme.headlineSmall,
             ),
             const SizedBox(height: 16),
-            TextField(
+            MojoTextField(
               controller: _name,
               decoration: const InputDecoration(labelText: 'Name *'),
               textCapitalization: TextCapitalization.words,
             ),
             const SizedBox(height: 14),
-            TextField(
+            MojoTextField(
               controller: _uid,
               decoration: const InputDecoration(
                 labelText: 'UID *',
@@ -241,7 +241,7 @@ class _EquipmentFormState extends State<_EquipmentForm> {
                 onPick: (value) => setState(() => _patTestedDate = value),
               ),
             const SizedBox(height: 14),
-            TextField(
+            MojoTextField(
               controller: _notes,
               decoration: const InputDecoration(labelText: 'Notes'),
               maxLines: 3,

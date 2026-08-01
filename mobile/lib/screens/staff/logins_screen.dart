@@ -208,7 +208,7 @@ class _LoginsScreenState extends State<LoginsScreen> {
                       return ListTile(
                         leading: Icon(
                           account.isStaff ? Icons.content_cut : Icons.person_outline,
-                          color: account.isActive ? AppColors.primary : AppColors.inkSecondary,
+                          color: account.isActive ? context.mojo.accent : context.mojo.muted,
                         ),
                         title: Text(account.username),
                         subtitle: Text(

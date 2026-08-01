@@ -6,6 +6,7 @@ import '../../services/auth_service.dart';
 import '../../services/data_service.dart';
 import '../../services/service_locator.dart';
 import '../../widgets/common.dart';
+import '../../widgets/contact_actions.dart';
 import '../account_switcher.dart';
 import '../staff/staff_shell.dart';
 
@@ -88,26 +89,26 @@ class _MyProfileScreenState extends State<MyProfileScreen> {
             children: [
               Text('My details', style: Theme.of(context).textTheme.headlineSmall),
               const SizedBox(height: 16),
-              TextField(
+              MojoTextField(
                 controller: phone,
                 decoration: const InputDecoration(labelText: 'Phone'),
                 keyboardType: TextInputType.phone,
               ),
               const SizedBox(height: 14),
-              TextField(
+              MojoTextField(
                 controller: email,
                 decoration: const InputDecoration(labelText: 'Email'),
                 keyboardType: TextInputType.emailAddress,
               ),
               const SizedBox(height: 14),
-              TextField(
+              MojoTextField(
                 controller: address,
                 decoration: const InputDecoration(labelText: 'Address'),
                 maxLines: 3,
                 textCapitalization: TextCapitalization.sentences,
               ),
               const SizedBox(height: 14),
-              TextField(
+              MojoTextField(
                 controller: postcode,
                 decoration: const InputDecoration(labelText: 'Postcode'),
                 textCapitalization: TextCapitalization.characters,
@@ -223,11 +224,29 @@ class _MyProfileScreenState extends State<MyProfileScreen> {
                             style: AppColors.display(18),
                           ),
                           const SizedBox(height: 4),
+                          // Tappable: this is the number a client reaches for
+                          // when they want to ring the salon, so make it ring
+                          // rather than making them copy it out.
                           if ((_settings?.contactPhone ?? '').isNotEmpty)
-                            Text(
-                              _settings!.contactPhone,
-                              style: TextStyle(
-                                fontSize: 13, color: context.mojo.muted,
+                            TextButton.icon(
+                              onPressed: () =>
+                                  callNumber(context, _settings!.contactPhone),
+                              icon: const Icon(Icons.call_outlined, size: 16),
+                              label: Text(_settings!.contactPhone),
+                              style: TextButton.styleFrom(
+                                foregroundColor: context.mojo.accent,
+                                textStyle: const TextStyle(fontSize: 13),
+                              ),
+                            ),
+                          if ((_settings?.contactEmail ?? '').isNotEmpty)
+                            TextButton.icon(
+                              onPressed: () =>
+                                  emailAddress(context, _settings!.contactEmail),
+                              icon: const Icon(Icons.mail_outlined, size: 16),
+                              label: Text(_settings!.contactEmail),
+                              style: TextButton.styleFrom(
+                                foregroundColor: context.mojo.accent,
+                                textStyle: const TextStyle(fontSize: 13),
                               ),
                             ),
                         ],

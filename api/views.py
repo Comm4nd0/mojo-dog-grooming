@@ -27,6 +27,7 @@ from djoser.views import TokenCreateView
 from rest_framework import status, viewsets
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import action, api_view, permission_classes, throttle_classes
+from rest_framework.exceptions import APIException
 from rest_framework.permissions import AllowAny, BasePermission, IsAdminUser, IsAuthenticated
 from rest_framework.renderers import TemplateHTMLRenderer
 from rest_framework.response import Response
@@ -81,7 +82,7 @@ from .models import (
     REQUIRED_CONSENTS,
     ReviewStatus,
     ServiceType,
-    TemperamentLimit,
+    TemperamentGrade,
     TodoItem,
     UserProfile,
 )
@@ -113,7 +114,7 @@ from .serializers import (
     PublicIntakeSubmissionSerializer,
     PublicPasswordResetRequestSerializer,
     SetPasswordSerializer,
-    TemperamentLimitSerializer,
+    TemperamentGradeSerializer,
     TodoItemSerializer,
     UserProfileSerializer,
 )
@@ -160,6 +161,32 @@ class IsSuperUser(BasePermission):
         return bool(request.user and request.user.is_authenticated and request.user.is_superuser)
 
 
+def _tristate(value):
+    """Read a yes/no/didn't-say off an intake submission's JSON.
+
+    Anything absent, null or empty stays ``None``. The intake page posts a
+    real ``true``/``false``/``null`` for the neutered question, but the JSON
+    is written by a browser we don't control, so strings are accepted too.
+    """
+    if value is None or value == '':
+        return None
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ('true', 'yes', '1', 'on')
+
+
+class Conflict(APIException):
+    """409, raisable from ``perform_*`` hooks.
+
+    The ``@action`` methods here return ``Response(..., status=409)`` directly,
+    but ``perform_destroy`` has no return value — refusing a delete means
+    raising. DRF ships no 409 exception, so this is it.
+    """
+
+    status_code = status.HTTP_409_CONFLICT
+    default_detail = 'That conflicts with the current state of the record.'
+
+
 class ClientScopedMixin:
     """Narrow the queryset to the requesting user's own client record.
 
@@ -194,10 +221,19 @@ class BreedViewSet(viewsets.ModelViewSet):
         return queryset
 
 
-class TemperamentLimitViewSet(viewsets.ModelViewSet):
-    queryset = TemperamentLimit.objects.all()
-    serializer_class = TemperamentLimitSerializer
+class TemperamentGradeViewSet(viewsets.ModelViewSet):
+    """The five handling grades — their names and their daily caps.
+
+    Read-mostly: the five rows are seeded and Jess edits them. Creating or
+    deleting one is not offered in the app, because a grade with no dogs is
+    harmless but a *deleted* grade leaves every dog carrying its code with
+    nothing to render.
+    """
+
+    queryset = TemperamentGrade.objects.all()
+    serializer_class = TemperamentGradeSerializer
     permission_classes = [IsAdminUser]
+    http_method_names = ['get', 'patch', 'put', 'head', 'options']
 
 
 class OpeningHoursViewSet(viewsets.ModelViewSet):
@@ -1028,6 +1064,37 @@ class InvoiceViewSet(ClientScopedMixin, viewsets.ModelViewSet):
             raise PermissionDenied('Only staff can edit invoices.')
         serializer.save()
 
+    def perform_destroy(self, instance):
+        """Only staff, only drafts, and never one that has been paid against.
+
+        Without this hook a client could delete their own invoice the moment
+        ``invoicing_visible_to_clients`` was turned on — ``ClientScopedMixin``
+        puts it in their queryset, and ``Payment.invoice`` is ``CASCADE``, so
+        the payment record went with it.
+
+        Beyond that, a draft is not a record of anything yet, so deleting one
+        raised by mistake is honest. Once an invoice has been sent or paid its
+        number has been quoted to somebody, and ``Invoice.number`` is unique —
+        deleting it frees the number for a later invoice with a different
+        total. Those get voided, following the same nothing-is-deleted
+        convention as :class:`~api.models.Consent`.
+        """
+        if not self.request.user.is_staff:
+            from rest_framework.exceptions import PermissionDenied
+
+            raise PermissionDenied('Only staff can delete invoices.')
+        if instance.status != Invoice.Status.DRAFT:
+            raise Conflict(
+                'Only a draft invoice can be deleted. Void this one instead, '
+                'so its number stays used up.'
+            )
+        if instance.payments.exists():
+            raise Conflict(
+                'This invoice has a payment recorded against it. Void it '
+                'instead — deleting it would take the payment with it.'
+            )
+        instance.delete()
+
 
 class PaymentViewSet(viewsets.ModelViewSet):
     queryset = Payment.objects.select_related('invoice')
@@ -1274,7 +1341,11 @@ class IntakeSubmissionViewSet(viewsets.ReadOnlyModelViewSet):
                     breed_other='' if breed else breed_name,
                     date_of_birth=entry.get('date_of_birth') or None,
                     sex=entry.get('sex', ''),
-                    is_neutered=bool(entry.get('is_neutered', False)),
+                    # Tri-state: an owner who skipped the question leaves it
+                    # null. `bool(entry.get(..., False))` used to turn "didn't
+                    # say" into "intact" on the way in, which is the exact
+                    # thing making the field nullable was meant to stop.
+                    is_neutered=_tristate(entry.get('is_neutered')),
                     colour=entry.get('colour', ''),
                     microchip_number=entry.get('microchip_number', ''),
                     pref_body=entry.get('pref_body', ''),

@@ -39,6 +39,7 @@
   .policies-box summary { font-weight: 600; cursor: pointer; }
   ul.policies { margin: 12px 0 0; padding-left: 20px; }
   ul.policies li { font-size: 13.5px; margin-bottom: 8px; line-height: 1.5; }
+  .radio-row { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 6px; }
   label.check.consent { display: flex; gap: 10px; align-items: flex-start; padding: 10px 0; border-bottom: 1px solid var(--hairline); }
   label.check.consent:last-child { border-bottom: 0; }
   label.check.consent input { margin-top: 3px; flex: 0 0 auto; }
@@ -203,8 +204,20 @@
       </div>
     </div>
 
+    <!--
+      Three options, none of them pre-selected. A checkbox can only say yes or
+      no, and an unticked box for a question nobody read is indistinguishable
+      from a deliberate "no" — which is how "never asked" used to end up
+      recorded as "intact". A pre-ticked "Not sure" would be just as invented,
+      so nothing is chosen for them.
+    -->
     <div class="field">
-      <label class="check"><input type="checkbox" data-f="is_neutered"> Neutered or spayed</label>
+      <label>Neutered or spayed?</label>
+      <div class="radio-row">
+        <label class="check"><input type="radio" class="neutered" data-f="is_neutered" value="true"> Yes</label>
+        <label class="check"><input type="radio" class="neutered" data-f="is_neutered" value="false"> No</label>
+        <label class="check"><input type="radio" class="neutered" data-f="is_neutered" value=""> Not sure</label>
+      </div>
     </div>
 
     <fieldset>
@@ -419,6 +432,13 @@
     block.querySelector('.dog-n').textContent = dogCount;
     block._areas = [];
 
+    // Radio groups are scoped by `name`, and the template clones the same
+    // markup for every dog — without a per-block name, answering for the
+    // second dog would silently clear the answer for the first.
+    Array.prototype.forEach.call(block.querySelectorAll('input.neutered'), function (el) {
+      el.name = 'neutered-' + dogCount;
+    });
+
     var grid = buildPicker(block.querySelector('.dog-picker'));
     var countEl = block.querySelector('.count');
 
@@ -518,8 +538,17 @@
       Array.prototype.forEach.call(b.querySelectorAll('[data-f]'), function (el) {
         var f = el.dataset.f;
         if (f === 'area_reason') return;
+        if (el.type === 'radio') {
+          // Three radios share one data-f, so only the ticked one speaks. None
+          // ticked, or "Not sure" ticked, leaves the key null — "we didn't
+          // ask" is a real answer here and must not arrive as false.
+          if (!el.checked) return;
+          dog[f] = el.value === '' ? null : el.value === 'true';
+          return;
+        }
         dog[f] = el.type === 'checkbox' ? el.checked : el.value.trim();
       });
+      if (!('is_neutered' in dog)) dog.is_neutered = null;
       // An empty date must be omitted, not sent as "", which Django rejects.
       if (!dog.date_of_birth) delete dog.date_of_birth;
       payload.dogs.push(dog);

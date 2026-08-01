@@ -24,7 +24,7 @@ router.register('equipment', views.EquipmentViewSet, basename='equipment')
 router.register('todos', views.TodoItemViewSet, basename='todo')
 router.register('opening-hours', views.OpeningHoursViewSet, basename='opening-hours')
 router.register('closures', views.ClosureDayViewSet, basename='closure')
-router.register('temperament-limits', views.TemperamentLimitViewSet, basename='temperament-limit')
+router.register('temperament-grades', views.TemperamentGradeViewSet, basename='temperament-grade')
 router.register('intake-invites', views.IntakeInviteViewSet, basename='intake-invite')
 router.register('intake-submissions', views.IntakeSubmissionViewSet, basename='intake-submission')
 

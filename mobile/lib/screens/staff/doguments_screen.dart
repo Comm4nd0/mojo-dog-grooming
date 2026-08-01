@@ -228,34 +228,25 @@ class _DogRow extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        // The dog's name is what you scan this list for, so it
-                        // leads: a clear step up from the breed line under it
-                        // rather than a near-match in the same weight.
-                        child: Text(dog.name, style: AppColors.display(23, weight: FontWeight.w600)),
-                      ),
-                      // Null for a client login; the chip renders nothing.
-                      TemperamentChip(
-                        temperament: dog.temperament,
-                        label: dog.temperamentDisplay,
-                        compact: true,
-                      ),
-                    ],
-                  ),
+                  // The dog's name is what you scan this list for, so it
+                  // leads: a clear step up from the breed line under it
+                  // rather than a near-match in the same weight.
+                  Text(dog.name, style: AppColors.display(23, weight: FontWeight.w600)),
                   const SizedBox(height: 2),
                   Text(dog.breedLabel, style: Theme.of(context).textTheme.bodySmall),
                   const SizedBox(height: 8),
+                  // Four facts, not six. Jess found this row too busy to scan:
+                  // the temperament chip and the UID have gone (both are on the
+                  // profile, and neither is what she's looking for here), and
+                  // the interval and groom time she asked for are what's left
+                  // alongside the owner.
                   Wrap(
                     spacing: 6,
                     runSpacing: 6,
                     children: [
                       _Fact(icon: Icons.person_outline, text: dog.clientFirstName),
-                      _Fact(icon: Icons.tag, text: dog.clientUid),
-                      _Fact(icon: Icons.schedule, text: formatDuration(dog.groomMinutes)),
-                      _Fact(icon: Icons.payments_outlined, text: formatMoney(dog.price)),
                       _Fact(icon: Icons.repeat, text: 'every ${dog.scheduleWeeks}w'),
+                      _Fact(icon: Icons.schedule, text: formatDuration(dog.groomMinutes)),
                     ],
                   ),
                 ],

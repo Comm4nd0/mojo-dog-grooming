@@ -127,6 +127,70 @@ void main() {
       });
     }
 
+    // The scale went from three grades to five, so two new colours had to be
+    // found between amber and red. A temperament badge is the one thing on a
+    // dog's row that decides whether Jess braces before picking it up, and it
+    // is drawn as text in the grade colour on a 12% wash of the same colour.
+    // Both middles are darker than an obvious yellow for exactly this reason.
+    const grades = ['EASY', 'WRIGGLY', 'FIDGETY', 'BITEY', 'FEISTY'];
+
+    for (final (label, brightness, backgrounds) in [
+      ('light', Brightness.light, [AppColors.background, AppColors.surface]),
+      ('dark', Brightness.dark, [AppColors.darkBackground, AppColors.darkSurface]),
+    ]) {
+      for (final grade in grades) {
+        test('$label: the $grade badge reads on its own wash', () {
+          final colour = AppColors.temperamentColor(grade, brightness: brightness);
+          // Checked against both the scaffold and a card, because a badge
+          // appears on each and whichever gives the lower ratio is the one
+          // that matters.
+          for (final background in backgrounds) {
+            final chip = Color.alphaBlend(colour.withValues(alpha: 0.12), background);
+            expect(
+              contrastRatio(colour, chip),
+              greaterThanOrEqualTo(body),
+              reason: '$grade on $background',
+            );
+          }
+        });
+      }
+
+      test('$label: every grade has a colour of its own', () {
+        final colours = {
+          for (final g in grades) AppColors.temperamentColor(g, brightness: brightness),
+        };
+        expect(
+          colours.length, grades.length,
+          reason: 'two grades sharing a colour makes the badge useless',
+        );
+      });
+
+      test('$label: an unrecognised grade is not painted as easy', () {
+        // An older build against a newer server is exactly what happens
+        // between an API deploy and an App Store release. Falling through to
+        // the easy green there would tell Jess a bitey dog is fine to grab.
+        final easy = AppColors.temperamentColor('EASY', brightness: brightness);
+        expect(
+          AppColors.temperamentColor('SOMETHING_NEW', brightness: brightness),
+          isNot(easy),
+        );
+        expect(AppColors.temperamentColor(null, brightness: brightness), isNot(easy));
+      });
+    }
+
+    test('the badge colours are not the same in both themes', () {
+      // The whole reason these became a role: the light set sits between
+      // 3.1:1 and 3.9:1 on the dark scaffold, which is the same class of bug
+      // the deep green had.
+      for (final grade in grades) {
+        expect(
+          AppColors.temperamentColor(grade, brightness: Brightness.dark),
+          isNot(AppColors.temperamentColor(grade, brightness: Brightness.light)),
+          reason: grade,
+        );
+      }
+    });
+
     test('the two palettes are actually different', () {
       // A copy-paste that left dark pointing at the light constants would pass
       // every contrast check above and still ship the bug.
