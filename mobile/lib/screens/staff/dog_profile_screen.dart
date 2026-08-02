@@ -172,25 +172,32 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
           color: Theme.of(context).colorScheme.surface,
         ),
         padding: const EdgeInsets.fromLTRB(16, 8, 180, 8),
-        child: Align(
-          alignment: Alignment.centerLeft,
-          child: OutlinedButton.icon(
-            icon: const Icon(Icons.event_available_outlined, size: 18),
-            label: const Text('BOOK A GROOM'),
-            onPressed: () async {
-              final saved = await Navigator.of(context).push<bool>(
-                MaterialPageRoute(
-                  builder: (_) => BookingFormScreen(
-                    initialDate: DateTime.now(),
-                    initialDogId: dog.id,
+        // A Row, not an Align. `Align` without a heightFactor expands to its
+        // incoming constraints, and Scaffold measures bottomNavigationBar with
+        // the whole screen height available — so the bar grew to fill the
+        // screen and left the profile itself zero pixels tall. The dog's
+        // details vanished, silently: no exception, no overflow stripe, just
+        // this button and an empty page. A Row takes its height from its child.
+        child: Row(
+          children: [
+            OutlinedButton.icon(
+              icon: const Icon(Icons.event_available_outlined, size: 18),
+              label: const Text('BOOK A GROOM'),
+              onPressed: () async {
+                final saved = await Navigator.of(context).push<bool>(
+                  MaterialPageRoute(
+                    builder: (_) => BookingFormScreen(
+                      initialDate: DateTime.now(),
+                      initialDogId: dog.id,
+                    ),
                   ),
-                ),
-              );
-              if (saved == true && mounted) {
-                showSnack(context, 'Booked in.');
-              }
-            },
-          ),
+                );
+                if (saved == true && mounted) {
+                  showSnack(context, 'Booked in.');
+                }
+              },
+            ),
+          ],
         ),
       ),
     );
