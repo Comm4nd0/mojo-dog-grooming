@@ -40,8 +40,10 @@
       <div class="field">
         <label for="password">New password <span class="req">*</span></label>
         <div class="pw-wrap">
-          {# autocomplete=new-password is what tells a password manager to offer
-             to generate and save one, rather than filling the old one back in. #}
+          {% comment %}
+            autocomplete=new-password is what tells a password manager to offer
+            to generate and save one, rather than filling the old one back in.
+          {% endcomment %}
           <input type="password" id="password" name="password" autocomplete="new-password"
                  autocapitalize="off" autocorrect="off" spellcheck="false" required>
           <button type="button" class="reveal" id="reveal" aria-label="Show password">SHOW</button>

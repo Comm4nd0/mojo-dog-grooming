@@ -7,8 +7,10 @@ tests behaviour the notes call out explicitly — warnings that don't block,
 single-use intake links, groom timings feeding back into the diary.
 """
 
+import re
 from datetime import date, time, timedelta
 from decimal import Decimal
+from pathlib import Path
 
 from django.conf import settings
 from django.contrib.auth.models import User
@@ -3354,8 +3356,56 @@ class AdminSkinTests(BaseAPITestCase):
         self.assertIn('DOG GROOMING', html)
         self.assertIn('mojo/admin.css', html)
 
+    def test_no_template_comment_leaks_onto_the_page(self):
+        # Django's {# #} comment form is single-line only: a newline between
+        # the delimiters and the engine renders the lot as visible text. This
+        # shipped once, putting a note to the next developer across the top of
+        # the admin, and nothing failed — every other assertion here checks
+        # that something is *present*.
+        # The login page needs the anonymous client: signed in, /admin/login/
+        # just 302s and the body is empty, so the check would pass vacuously.
+        pages = [
+            (self.web, '/admin/'),
+            (self.web, f'/admin/api/client/{self.alice.pk}/change/'),
+            (APIClient(), '/admin/login/'),
+        ]
+        for client, url in pages:
+            with self.subTest(url=url):
+                response = client.get(url)
+                self.assertEqual(response.status_code, status.HTTP_200_OK)
+                html = response.content.decode()
+                self.assertNotIn('{#', html)
+                self.assertNotIn('#}', html)
+
     def test_the_stylesheet_is_where_collectstatic_will_look(self):
         # The template links it through {% static %}; if the file is not on a
         # staticfiles path the link still renders and 404s in production, where
         # manifest storage is on and there is no runserver fallback.
         self.assertIsNotNone(finders.find('mojo/admin.css'))
+
+
+class TemplateCommentSyntaxTests(TestCase):
+    """Django's {# #} comment form is single-line only. Put a newline between
+    the delimiters and the engine stops treating it as a comment and renders
+    the whole thing as page text — no error, no warning, just a note to the
+    next developer sitting across the top of the page.
+
+    This is a source scan rather than a rendered-page check on purpose: a
+    render test only covers the pages somebody remembered to render, and the
+    two that shipped this defect were the admin header and the password reset
+    form, which are reached from opposite ends of the app."""
+
+    MULTILINE_HASH_COMMENT = re.compile(r'\{#(?:(?!#\}).)*?\n(?:(?!#\}).)*?#\}', re.S)
+
+    def test_no_template_uses_a_multiline_hash_comment(self):
+        offenders = []
+        for path in sorted(Path(settings.BASE_DIR, 'templates').rglob('*.html')):
+            text = path.read_text(encoding='utf-8')
+            for match in self.MULTILINE_HASH_COMMENT.finditer(text):
+                line = text[:match.start()].count('\n') + 1
+                offenders.append(f'{path.name}:{line}')
+        self.assertEqual(
+            offenders, [],
+            'Multi-line {# #} renders as visible text; use {% comment %} instead. '
+            f'Found at: {", ".join(offenders)}',
+        )
