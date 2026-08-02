@@ -174,12 +174,23 @@ REST_FRAMEWORK = {
         'rest_framework.permissions.IsAuthenticated',
     ),
     # Damp brute-force attempts on anonymous endpoints (login, registration,
-    # the public intake form). Authenticated app traffic is never anon-throttled.
+    # the public intake form), and put a ceiling on a signed-in account too.
     'DEFAULT_THROTTLE_CLASSES': (
         'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
     ),
     'DEFAULT_THROTTLE_RATES': {
         'anon': '60/min',
+        # Every scoped rate below is anonymous-only, so before this existed a
+        # signed-in client was unlimited — free to flood claim-requests,
+        # client-change-requests and appointment requests, each of which puts a
+        # row in front of Jess. Same reasoning as password_reset_request: this
+        # is a nuisance vector as much as a security one.
+        #
+        # Set high on purpose. It is an abuse ceiling, not a quota: the diary
+        # alone fires several calls per screen and Jess pulls to refresh, so a
+        # rate she can reach by working quickly would be a bug, not a defence.
+        'user': '600/min',
         # Submitting an intake form is the abuse vector, so it stays tight.
         'intake': '20/hour',
         # Loading the form page is not: a client may reload it, come back to
@@ -259,6 +270,82 @@ else:
 # can say "copy this link and send it yourself" instead of claiming an email
 # is on its way that nobody will ever receive.
 EMAIL_ENABLED = bool(EMAIL_HOST)
+
+# ── Logging and error reporting ────────────────────────────────────────
+# A push to main deploys unattended, so until this existed a 500 in production
+# went to gunicorn's stdout, sat in `docker logs`, and was discovered when Jess
+# phoned. Nothing was watching.
+LOG_LEVEL = os.getenv('DJANGO_LOG_LEVEL', 'INFO').upper()
+
+LOGGING = {
+    'version': 1,
+    # Django's own default config stays in place underneath this — notably the
+    # mail_admins handler, which does nothing here because there are no ADMINS
+    # and no SMTP, and the debug-only console handler.
+    'disable_existing_loggers': False,
+    'formatters': {
+        'standard': {
+            'format': '{asctime} {levelname} {name} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        # stdout, because that is what Docker collects. See the `logging:`
+        # block in docker-compose.prod.yml for why it is capped there.
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'standard',
+        },
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': LOG_LEVEL,
+    },
+    'loggers': {
+        'django.request': {
+            'handlers': ['console'],
+            'level': 'ERROR',
+            'propagate': False,
+        },
+        # api.passwords logs reset-link delivery failures, which are otherwise
+        # silent by design — send_reset_email returns (sent, error) rather than
+        # raising, so the link can still be handed over by other means.
+        'api': {
+            'handlers': ['console'],
+            'level': LOG_LEVEL,
+            'propagate': False,
+        },
+    },
+}
+
+# Optional, and a no-op with no DSN — dev and CI never import it. Set SENTRY_DSN
+# in .env on the host to turn it on; no code change is needed to enable it.
+SENTRY_DSN = os.getenv('SENTRY_DSN', '')
+if SENTRY_DSN:
+    try:
+        import sentry_sdk
+
+        sentry_sdk.init(
+            dsn=SENTRY_DSN,
+            environment=os.getenv('SENTRY_ENVIRONMENT', 'production'),
+            # **Off, and it must stay off.** This app is almost entirely
+            # personal data: client names, addresses, postcodes, phone numbers,
+            # emergency contacts, vets. send_default_pii would attach the
+            # request body, cookies and user details to every event, which
+            # would quietly copy Jess's client list into a third party — the
+            # same disclosure PRIVATE_MEDIA_ROOT and the gated download view
+            # exist to prevent, by a different route.
+            send_default_pii=False,
+            # Errors are the point. Performance tracing on a 2-worker box
+            # sharing 4 GB with ten other projects is not worth the overhead.
+            traces_sample_rate=0.0,
+        )
+    except ImportError:
+        # sentry-sdk lives in requirements-prod.txt, so a dev checkout with a
+        # DSN set should say so plainly rather than fail to boot.
+        import warnings
+
+        warnings.warn('SENTRY_DSN is set but sentry-sdk is not installed — no error reporting.')
 
 # ── Business defaults ──────────────────────────────────────────────────
 # How many appointments a BookingSeries materialises ahead of today.

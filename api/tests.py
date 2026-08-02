@@ -21,7 +21,10 @@ from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.test import APIClient, APITestCase
+from rest_framework.request import Request
+from rest_framework.test import APIClient, APIRequestFactory, APITestCase
+
+from .serializers import DogSerializer
 
 from .management.commands.seed_breeds import BREEDS
 from .models import (
@@ -37,6 +40,7 @@ from .models import (
     ConsentKind,
     Dog,
     DogDocument,
+    DogPhoto,
     Equipment,
     GroomPhase,
     GroomSession,
@@ -190,13 +194,32 @@ class StaffOnlyFieldTests(BaseAPITestCase):
         self.assertEqual(client_response.data['notes'], 'Always late.')
 
     def test_client_cannot_write_a_gated_field(self):
-        """A dropped field is ignored on input, so the value must not change."""
-        response = self.alice_client.patch(
-            f'/api/dogs/{self.alice_dog.pk}/',
-            {'temperament': Temperament.EASY, 'general_notes': 'Likes a biscuit'},
-            format='json',
+        """A dropped field is ignored on *input*, not merely on output.
+
+        Asserted against the serializer rather than through a PATCH, because
+        StaffWriteOnlyMixin now refuses a client's PATCH outright (see
+        PrivilegeEscalationTests) and this property has to keep being proven
+        independently of that. The two are separate layers on purpose: if the
+        viewset guard were ever relaxed, this is what would still stand between
+        a crafted request and Jess's handling notes.
+        """
+        factory = APIRequestFactory()
+        request = factory.patch('/api/dogs/')
+        request.user = self.alice_user
+
+        serializer = DogSerializer(
+            self.alice_dog,
+            data={'temperament': Temperament.EASY, 'general_notes': 'Likes a biscuit'},
+            partial=True,
+            context={'request': Request(request)},
         )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
+        # Dropped from the field set entirely, so it never reaches the model.
+        self.assertNotIn('temperament', serializer.validated_data)
+        self.assertEqual(serializer.validated_data['general_notes'], 'Likes a biscuit')
+
+        serializer.save()
         self.alice_dog.refresh_from_db()
         self.assertEqual(self.alice_dog.temperament, Temperament.FEISTY)
         self.assertEqual(self.alice_dog.general_notes, 'Likes a biscuit')
@@ -237,6 +260,89 @@ class PrivilegeEscalationTests(BaseAPITestCase):
             '/api/clients/', {'uid': 'MOJO-999', 'first_name': 'Mallory'}, format='json',
         )
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    # ── Editing and deleting their *own* rows ──────────────────────────
+    #
+    # These are the cases the class was missing, and the gap is exactly why the
+    # bug lived: creation was covered on both models, so the surface looked
+    # tested. ClientScopedMixin deliberately puts a client's own dog and own
+    # record in their queryset — that is how they read them — so get_object
+    # finds the row and an unguarded PATCH/DELETE went straight through.
+
+    def test_client_cannot_edit_their_own_dog(self):
+        response = self.alice_client.patch(
+            f'/api/dogs/{self.alice_dog.pk}/', {'price': '0.00'}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.alice_dog.refresh_from_db()
+        self.assertIsNone(self.alice_dog.price)
+
+    def test_client_cannot_reassign_their_dog_to_another_client(self):
+        response = self.alice_client.patch(
+            f'/api/dogs/{self.alice_dog.pk}/', {'client': self.bob.pk}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.alice_dog.refresh_from_db()
+        self.assertEqual(self.alice_dog.client_id, self.alice.pk)
+
+    def test_client_cannot_delete_their_own_dog(self):
+        # The cascade is the reason this one matters most: a dog takes its
+        # appointments, photos, documents, problem areas and groom sessions
+        # with it.
+        response = self.alice_client.delete(f'/api/dogs/{self.alice_dog.pk}/')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(Dog.objects.filter(pk=self.alice_dog.pk).exists())
+
+    def test_client_cannot_edit_their_own_client_record(self):
+        # Their details change through ClientChangeRequest, which exists so
+        # Jess confirms them. A direct PATCH would bypass that entirely.
+        response = self.alice_client.patch(
+            '/api/clients/%d/' % self.alice.pk, {'phone': '07999999999'}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.alice.refresh_from_db()
+        self.assertEqual(self.alice.phone, '07700900001')
+
+    def test_client_cannot_delete_their_own_client_record(self):
+        response = self.alice_client.delete('/api/clients/%d/' % self.alice.pk)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(Client.objects.filter(pk=self.alice.pk).exists())
+
+    def test_client_cannot_edit_or_delete_their_dogs_photos(self):
+        photo = DogPhoto.objects.create(dog=self.alice_dog, image='dog_photos/x.jpg')
+        patch = self.alice_client.patch(
+            f'/api/dog-photos/{photo.pk}/', {'caption': 'mine now'}, format='json',
+        )
+        self.assertEqual(patch.status_code, status.HTTP_403_FORBIDDEN)
+        delete = self.alice_client.delete(f'/api/dog-photos/{photo.pk}/')
+        self.assertEqual(delete.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(DogPhoto.objects.filter(pk=photo.pk).exists())
+
+    def test_staff_can_still_edit_and_delete_all_three(self):
+        # The guard is about who, not about what: none of the above may cost
+        # Jess the ability to do her job.
+        photo = DogPhoto.objects.create(dog=self.alice_dog, image='dog_photos/x.jpg')
+
+        self.assertEqual(
+            self.staff_client.patch(
+                f'/api/dogs/{self.alice_dog.pk}/', {'price': '60.00'}, format='json',
+            ).status_code,
+            status.HTTP_200_OK,
+        )
+        self.assertEqual(
+            self.staff_client.patch(
+                '/api/clients/%d/' % self.alice.pk, {'phone': '07711111111'}, format='json',
+            ).status_code,
+            status.HTTP_200_OK,
+        )
+        self.assertEqual(
+            self.staff_client.delete(f'/api/dog-photos/{photo.pk}/').status_code,
+            status.HTTP_204_NO_CONTENT,
+        )
+        self.assertEqual(
+            self.staff_client.delete(f'/api/dogs/{self.alice_dog.pk}/').status_code,
+            status.HTTP_204_NO_CONTENT,
+        )
 
     def test_client_cannot_edit_or_delete_a_booking(self):
         start = timezone.now() + timedelta(days=1)
@@ -853,7 +959,10 @@ class ClaimRequestTests(BaseAPITestCase):
             format='json',
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data['matched_client'], self.unclaimed.pk)
+        # Asserted on the row, not the response: the match is staff-only and is
+        # deliberately withheld from the claimant. See the enumeration test.
+        claim = ClientClaimRequest.objects.get(pk=response.data['id'])
+        self.assertEqual(claim.matched_client_id, self.unclaimed.pk)
 
         # Matching is a hint for staff, never an authorisation.
         self.unclaimed.refresh_from_db()
@@ -887,7 +996,8 @@ class ClaimRequestTests(BaseAPITestCase):
             format='json',
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data['matched_client'], spaced.pk)
+        claim = ClientClaimRequest.objects.get(pk=response.data['id'])
+        self.assertEqual(claim.matched_client_id, spaced.pk)
 
     def test_claim_matches_when_the_claimant_omits_the_space(self):
         spaced = Client.objects.create(
@@ -907,7 +1017,34 @@ class ClaimRequestTests(BaseAPITestCase):
             },
             format='json',
         )
-        self.assertEqual(response.data['matched_client'], spaced.pk)
+        claim = ClientClaimRequest.objects.get(pk=response.data['id'])
+        self.assertEqual(claim.matched_client_id, spaced.pk)
+
+    def test_a_claim_response_never_names_the_matched_client(self):
+        """Registration is open, so this endpoint must not answer "who is that?".
+
+        Anyone can make an account and POST an arbitrary email, or a surname
+        and postcode. Echoing the match back would turn that into a lookup for
+        whether someone is one of Jess's clients, and return their full name
+        with it. PasswordResetRequestViewSet already answers identically
+        whether or not the identifier matched; this is the same rule.
+        """
+        response = self.dana_client.post(
+            '/api/claim-requests/',
+            {'claimed_name': 'Dana Doe', 'claimed_email': 'dana@example.com', 'claimed_postcode': 'RG4 4DD'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertNotIn('matched_client', response.data)
+        self.assertNotIn('matched_client_name', response.data)
+
+        # Nor by reading it back afterwards.
+        listed = self.dana_client.get('/api/claim-requests/')
+        self.assertNotIn('matched_client_name', str(listed.data))
+
+        # ...but staff still get the hint, which is the whole point of it.
+        staff_view = self.staff_client.get('/api/claim-requests/')
+        self.assertIn('Dana Doe', str(staff_view.data))
 
     def test_staff_can_approve_against_a_client_they_pick_themselves(self):
         """No suggested match must not mean no way to approve.

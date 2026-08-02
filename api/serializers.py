@@ -457,7 +457,17 @@ class ClientSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
         return obj.user_id is not None
 
 
-class ClientClaimRequestSerializer(serializers.ModelSerializer):
+class ClientClaimRequestSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
+    # The suggested match is a *staff* hint and must not come back to the
+    # claimant. Registration is open, so echoing it would turn this endpoint
+    # into a lookup: submit any email or surname+postcode, read back whether
+    # that person is one of Jess's clients and what they are called.
+    #
+    # This is the same rule PasswordResetRequestViewSet already follows by
+    # answering identically whether or not the identifier matched. The claimant
+    # still sees `status`, which is what the app polls to know it was approved.
+    staff_only_fields = ('matched_client', 'matched_client_name')
+
     username = serializers.CharField(source='user.username', read_only=True)
     matched_client_name = serializers.CharField(source='matched_client.full_name', read_only=True, default=None)
 

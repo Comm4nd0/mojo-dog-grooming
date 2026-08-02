@@ -3,3 +3,10 @@
 # Production-only extras.
 gunicorn==22.0.0
 psycopg2-binary==2.9.9
+
+# Error reporting. Deliberately here rather than in requirements.txt: that file
+# is pinned to match p4td on the same host so both projects stay on one
+# known-good set, and adding to it obliges the other project too. Nothing in
+# dev or CI needs this, and settings.py treats it as optional either way — with
+# no SENTRY_DSN set it is never imported.
+sentry-sdk==2.19.2

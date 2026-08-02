@@ -1,0 +1,64 @@
+# What must never reach the build context.
+#
+# The Dockerfile ends in `COPY . .`, and on the Hetzner host the build context
+# is /root/mojo-dog-grooming — the same directory the compose file bind-mounts
+# ./private-media and ./media out of. Without this file every image layer
+# carries the scanned intake forms: client name, address, postcode, phone,
+# emergency contact, vet and signature.
+#
+# That is the exact disclosure PRIVATE_MEDIA_ROOT (a sibling of MEDIA_ROOT, so
+# Caddy's file_server can never reach it), the gated download view, and the
+# random upload_to token all exist to prevent. An image is copied, pushed and
+# cached far more casually than a directory on a server.
+
+# ── Client data. The reason this file exists. ──────────────────────────
+private-media/
+media/
+
+# ── Secrets ────────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Local state that must not become image state ───────────────────────
+# db.sqlite3 is the dev database; production is Postgres and baking a stale
+# SQLite in would be both a data leak and a confusing one to debug.
+db.sqlite3
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+# collectstatic regenerates this inside the image (Dockerfile), so a local
+# copy would only shadow it with whatever was last built here.
+staticfiles/
+
+# ── Version control and CI ─────────────────────────────────────────────
+.git/
+.gitignore
+.github/
+.claude/
+
+# ── Flutter build output ───────────────────────────────────────────────
+# NOT the whole of mobile/. api.views.load_silhouette_svg reads
+# mobile/assets/dog_silhouette.svg **at runtime**, off disk in the running
+# container, so the web intake form and the app can never drift onto
+# different-shaped dogs. Excluding mobile/ wholesale fails silently: the
+# loader catches OSError and returns '', so the intake page would render with
+# no dog on it and nothing in the log.
+#
+# Listed as individual subdirectories rather than `mobile/` plus a `!` negation
+# for that reason — there is no re-inclusion here to get subtly wrong.
+mobile/build/
+mobile/.dart_tool/
+mobile/ios/
+mobile/android/
+mobile/test/
+
+# ── Docs and editor noise ──────────────────────────────────────────────
+docs/
+*.md
+!README.md
+.vscode/
+.idea/
+.DS_Store

@@ -1,13 +1,36 @@
 #!/bin/bash
 # Deploy the Mojo and Co backend on the Hetzner host.
-# Usage: ./deploy.sh [--skip-pull] [--no-cache] [--yes]
+# Usage: ./deploy.sh [--skip-pull] [--no-cache] [--yes] [--ref <sha>]
 #
 # --yes answers the low-memory prompt for you. CI passes it; see
 # .github/workflows/deploy.yml.
+#
+# --ref deploys one specific commit instead of the tip of main. CI passes the
+# SHA the test suite actually went green on, because a plain `git pull` takes
+# whatever main is *now* — two pushes in quick succession and the first run
+# deploys the second, untested commit while reporting the first one's result.
+# Omitted (by hand, or on workflow_dispatch) it falls back to pulling main.
 
 set -e
 
 COMPOSE_FILE="docker-compose.prod.yml"
+
+# Parse --ref out of the arguments. Everything else is still matched with the
+# `$*` substring tests below, which is how this script has always read flags.
+DEPLOY_REF=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --ref)
+            DEPLOY_REF="${2:-}"
+            shift 2 || shift
+            ;;
+        *)
+            ARGS="${ARGS:-} $1"
+            shift
+            ;;
+    esac
+done
+set -- ${ARGS:-}
 
 echo "=================================================="
 echo "  Deploying Mojo and Co"
@@ -41,8 +64,19 @@ fi
 
 if [[ "$*" != *"--skip-pull"* ]]; then
     echo ""
-    echo ">>> Pulling latest code..."
-    git pull origin main
+    if [ -n "$DEPLOY_REF" ]; then
+        echo ">>> Fetching and checking out $DEPLOY_REF..."
+        git fetch origin main
+        # reset --hard, not checkout, for the same reason the rollback uses it:
+        # a detached HEAD would leave the clone off main, and the next deploy's
+        # `git pull origin main` would merge into the detachment instead of
+        # fast-forwarding. This keeps main checked out, pointed at the commit
+        # that was tested.
+        git reset --hard "$DEPLOY_REF"
+    else
+        echo ">>> Pulling latest code..."
+        git pull origin main
+    fi
 fi
 
 echo ""

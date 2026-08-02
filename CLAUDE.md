@@ -53,7 +53,7 @@ mobile/lib/
 Backend:
 ```bash
 python manage.py migrate && python manage.py seed_breeds
-python manage.py test api        # 283 tests
+python manage.py test api        # 297 tests
 python manage.py runserver 0.0.0.0:8000
 python manage.py accounts        # who can sign in — usernames live only in the DB
 python manage.py reset_link jess # a way back in when the superuser is locked out
@@ -62,7 +62,7 @@ python manage.py reset_link jess # a way back in when the superuser is locked ou
 Mobile:
 ```bash
 cd mobile && flutter pub get
-flutter analyze && flutter test  # 138 tests
+flutter analyze && flutter test  # 144 tests
 flutter run --dart-define=MOJO_API_BASE=http://192.168.1.20:8000/api
 ```
 
@@ -70,10 +70,11 @@ Deploy:
 ```bash
 git push origin main             # backend — this is the deploy, see below
 ./deploy.sh --yes                # the same thing by hand, on the host
+./tools/backup.sh                # db + private-media + media + .env, on the host
 ./tools/release.sh 1.0.0        # the app, to the App Store — see RELEASING.md
 ```
 
-## Two rules that matter
+## Three rules that matter
 
 **1. Staff-only fields must never reach a client.**
 `Dog.temperament`, `Dog.temperament_notes`, `ProblemArea`, `Client.chatty`,
@@ -95,6 +96,39 @@ not "unset". Never render one without a null check, and never coerce a missing k
 `ClientScopedMixin` in `api/views.py` narrows every list and detail lookup to the requesting
 user's own client record, so a client cannot address another client's row at all. Field gating
 alone is not enough. Both layers must stay.
+
+**3. Read scoping is not write permission.**
+`StaffWriteOnlyMixin` in `api/views.py` refuses `perform_update`/`perform_destroy` to non-staff
+on `DogViewSet`, `ClientViewSet` and `DogPhotoViewSet`. This is a *third* layer, not a restating
+of rule 2, and the reason is that rule 2 works against it: scoping deliberately puts a client's
+**own** rows in their queryset — that is how they read them — so `get_object` finds them and any
+unguarded `PATCH`/`DELETE` goes straight through.
+
+Every one of these viewsets guarded `perform_create` and stopped, which is why the gap was
+invisible: the surface looked covered. What it cost, until it was closed — a client could
+`PATCH` their own dog to set `price` to `0.00`, repoint `client` at somebody else's record, or
+`DELETE` the dog and cascade its appointments, photos, documents, problem areas and groom
+sessions. On `Client` it bypassed the whole `ClientChangeRequest` review flow, which exists
+precisely so those fields are *not* editable unreviewed.
+
+`perform_create` stays per-viewset: what counts as a legitimate create differs by model (a
+client may *request* an appointment but not add a dog). DRF routes PUT and PATCH both through
+`perform_update`, so the two hooks cover all three verbs.
+
+The tests are in `PrivilegeEscalationTests`, and the shape of the old gap is worth remembering:
+it tested dog *creation* and appointment edit/delete, never dog or client edit/delete. A test
+class that covers four of six verbs reads exactly like one that covers all six.
+
+Related: `ClientClaimRequestSerializer` gates `matched_client`/`matched_client_name` as
+staff-only. Registration is open, so echoing the suggested match back to the claimant would turn
+that endpoint into a lookup for whether a given email or surname+postcode belongs to one of
+Jess's clients — and hand back their full name. Same rule `PasswordResetRequestViewSet` already
+follows by answering identically whether or not the identifier matched.
+
+`UserRateThrottle` (`user: 600/min`) exists for the same family of reasons rather than for
+brute-forcing: `claim-requests`, `client-change-requests` and `appointments` each put a row in
+front of Jess, and every scoped rate before it was anonymous-only, so a signed-in account was
+unlimited. It is an abuse ceiling, not a quota — the diary alone fires several calls a screen.
 
 ## Temperament: five grades, frozen codes, wording Jess owns
 
@@ -492,8 +526,22 @@ Uploads are checked by **magic bytes, not the browser's content type**, SVG is r
 outright (scriptable, and inline rendering would be stored XSS on the API's own origin), and
 `upload_to` produces a random token so the filename cannot leak a client's name into a log.
 
-Two deployment facts: `docker-compose.prod.yml` mounts `./private-media` and Caddy must **not**;
-`deploy.sh`'s pre-deploy `pg_dump` covers the database only, so documents are not backed up.
+Three deployment facts:
+
+- `docker-compose.prod.yml` mounts `./private-media` and Caddy must **not**.
+- `.dockerignore` excludes it, and that is load-bearing. `Dockerfile` ends in `COPY . .`, and on
+  the host the build context *is* the directory the compose file bind-mounts out of — so without
+  it every image layer carries the scanned forms, which is the same disclosure the sibling
+  directory, the gated view and the random `upload_to` token all exist to prevent.
+- `tools/backup.sh` covers it. It used to be backed up by nothing at all: the pre-deploy dump was
+  database only. The same script covers `media/` and `.env` — a good SQL dump cannot bring the
+  app back without the secret key and database password.
+
+`.dockerignore` excludes `mobile/build|.dart_tool|ios|android|test` but **not `mobile/assets/`**,
+because `load_silhouette_svg` reads `dog_silhouette.svg` off disk **at runtime**. Excluding
+`mobile/` wholesale fails silently — the loader catches `OSError` and returns `''`, so the intake
+page renders with no dog and nothing in the log. Listed as individual subdirectories rather than
+`mobile/` plus a `!` re-inclusion for exactly that reason.
 
 One trap found by its own test: **DRF turns a missing boolean into `False` for multipart form
 data.** `visible_to_client` arrived `False` on every upload, so every document Jess filed would
@@ -585,8 +633,32 @@ Four things about it that are not obvious:
   recorded SHA and redeploys — `reset`, not `checkout`, so the clone stays *on* main and
   the next push fast-forwards instead of merging into a detached HEAD. `entrypoint.sh`
   runs `migrate --noinput` on every start, so a failed deploy can leave a new schema
-  under old code. A `pg_dump` is taken into `/root/backups/mojo-dog-grooming` before
-  every deploy (20 kept) and has to be restored by hand.
+  under old code. `tools/backup.sh` runs into `/root/backups/mojo-dog-grooming` before
+  every deploy (30 of each artefact kept) and has to be restored by hand.
+- **`docker compose exec -T` will eat the deploy script.** The remote half is piped into
+  `bash -se` over SSH, so stdin *is* the rest of the script — and `exec -T` hands the
+  container that same stream. Both call sites (`pg_dump` in `tools/backup.sh`, `migrate
+  --check` in the workflow) redirect `< /dev/null`. Without it the deploy half-runs, which
+  is the same trap `deploy.sh` already documents for `read`.
+- **The deploy is pinned to the tested commit.** `deploy.sh --ref <sha>` is passed
+  `workflow_run.head_sha`; a bare `git pull origin main` takes whatever main is *now*, so
+  two pushes in quick succession deploy the second, untested commit while reporting the
+  first one's test result. Without `--ref` (by hand, or `workflow_dispatch`) it still pulls.
+
+**Backups: two things that are still not true.** They live on the same disk as the live
+Postgres volume, so one disk failure takes the data and every backup together — off-site
+needs a destination and is deliberately not invented. And **no restore has ever been
+rehearsed**, which means this is an untested backup. The procedure is at the foot of
+`tools/backup.sh`. Backing up only on deploy also leaves a quiet fortnight a fortnight
+behind, which is what the nightly cron in that header is for.
+
+**Nothing was watching production before `SENTRY_DSN`.** A push to main deploys unattended,
+so an unhandled 500 went to gunicorn's stdout, sat in `docker logs`, and surfaced when Jess
+phoned. `sentry-sdk` is in `requirements-prod.txt`, not `requirements.txt` — that file is
+pinned to match p4td and adding to it obliges the other project too — and settings.py never
+imports it without a DSN. `send_default_pii` is **off and must stay off**: this app is almost
+entirely personal data, and attaching request bodies and user details to every event would
+copy Jess's client list to a third party by a different route.
 
 ## A tag is the release
 

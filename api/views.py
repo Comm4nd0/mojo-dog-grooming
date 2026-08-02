@@ -30,7 +30,7 @@ from djoser.views import TokenCreateView
 from rest_framework import status, viewsets
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import action, api_view, permission_classes, throttle_classes
-from rest_framework.exceptions import APIException
+from rest_framework.exceptions import APIException, PermissionDenied
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import AllowAny, BasePermission, IsAdminUser, IsAuthenticated
 from rest_framework.renderers import TemplateHTMLRenderer
@@ -216,6 +216,44 @@ class ClientScopedMixin:
         if client is None:
             return queryset.none()
         return queryset.filter(**{self.client_lookup: client})
+
+
+class StaffWriteOnlyMixin:
+    """Refuse update and delete to anyone who is not staff.
+
+    Scoping and field gating are not enough on their own, and this is the third
+    thing that has to be true. :class:`ClientScopedMixin` deliberately puts a
+    client's *own* rows in their queryset — that is the whole point of it — so
+    ``get_object`` finds them and every unguarded ``PATCH`` and ``DELETE`` on
+    those rows goes straight through. Read scoping is not write permission.
+
+    What that cost before this existed: a client could ``PATCH`` their own dog
+    to set ``price`` to 0.00 or repoint ``client`` at somebody else's record,
+    or ``DELETE`` it and take its appointments, photos, documents, problem
+    areas and groom sessions with it. On ``Client`` it quietly bypassed the
+    whole :class:`~api.models.ClientChangeRequest` review flow, which exists
+    precisely so those fields are *not* editable unreviewed.
+
+    ``perform_create`` stays with each viewset: what counts as a legitimate
+    create differs per model (a client may request an appointment but not add a
+    dog), and the existing refusal messages say so in Jess's words.
+
+    DRF routes both PUT and PATCH through ``perform_update``, so the two hooks
+    below cover all three verbs.
+    """
+
+    staff_write_message = 'Only staff can change this.'
+    staff_delete_message = 'Only staff can delete this.'
+
+    def perform_update(self, serializer):
+        if not self.request.user.is_staff:
+            raise PermissionDenied(self.staff_write_message)
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        if not self.request.user.is_staff:
+            raise PermissionDenied(self.staff_delete_message)
+        instance.delete()
 
 
 # ── Reference data ─────────────────────────────────────────────────────
@@ -627,7 +665,14 @@ class PasswordResetFormView(APIView):
 
 # ── Clients ────────────────────────────────────────────────────────────
 
-class ClientViewSet(viewsets.ModelViewSet):
+class ClientViewSet(StaffWriteOnlyMixin, viewsets.ModelViewSet):
+    # A client's own record is in their queryset so they can *read* it. Editing
+    # it goes through ClientChangeRequest for review — see StaffWriteOnlyMixin.
+    staff_write_message = (
+        'Ask us to change your details and we will confirm them with you.'
+    )
+    staff_delete_message = 'Only staff can delete a client record.'
+
     queryset = Client.objects.all().prefetch_related('dogs')
     serializer_class = ClientSerializer
     permission_classes = [IsAuthenticated]
@@ -799,7 +844,10 @@ class ClientClaimRequestViewSet(viewsets.ModelViewSet):
 
 # ── Dogs ───────────────────────────────────────────────────────────────
 
-class DogViewSet(ClientScopedMixin, viewsets.ModelViewSet):
+class DogViewSet(StaffWriteOnlyMixin, ClientScopedMixin, viewsets.ModelViewSet):
+    staff_write_message = 'Only staff can change a dog’s details.'
+    staff_delete_message = 'Only staff can remove a dog.'
+
     queryset = Dog.objects.select_related('client', 'breed').prefetch_related('problem_areas')
     permission_classes = [IsAuthenticated]
 
@@ -956,7 +1004,10 @@ class DogDocumentViewSet(ClientScopedMixin, viewsets.ModelViewSet):
         return response
 
 
-class DogPhotoViewSet(ClientScopedMixin, viewsets.ModelViewSet):
+class DogPhotoViewSet(StaffWriteOnlyMixin, ClientScopedMixin, viewsets.ModelViewSet):
+    staff_write_message = 'Only staff can change dog photos.'
+    staff_delete_message = 'Only staff can delete dog photos.'
+
     queryset = DogPhoto.objects.select_related('dog')
     serializer_class = DogPhotoSerializer
     permission_classes = [IsAuthenticated]

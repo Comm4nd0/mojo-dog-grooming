@@ -17,6 +17,20 @@ x-backend-environment: &backend-environment
   DJANGO_SUPERUSER_USERNAME: ${DJANGO_SUPERUSER_USERNAME:-}
   DJANGO_SUPERUSER_PASSWORD: ${DJANGO_SUPERUSER_PASSWORD:-}
   DJANGO_SUPERUSER_EMAIL: ${DJANGO_SUPERUSER_EMAIL:-info@mojoandco.uk}
+  # Empty by default, and settings.py never imports sentry-sdk without it. Set
+  # it in .env to start reporting; nobody is watching the logs otherwise.
+  SENTRY_DSN: ${SENTRY_DSN:-}
+  SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
+  DJANGO_LOG_LEVEL: ${DJANGO_LOG_LEVEL:-INFO}
+
+# Docker's json-file driver is unbounded by default, and this host was at 72%
+# disk when that was noticed. Capped per container rather than globally so the
+# other ten projects on the box keep whatever they already had.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
 
 services:
   db:
@@ -36,6 +50,7 @@ services:
     # one project from starving the others.
     mem_limit: 256m
     restart: unless-stopped
+    logging: *logging
 
   web:
     build: .
@@ -54,7 +69,14 @@ services:
       # postcode, phone, emergency contact and signature. They are served by a
       # gated Django view instead.
       #
-      # Not covered by deploy.sh's pre-deploy pg_dump, which is database only.
+      # Backed up by tools/backup.sh, which the deploy workflow runs before
+      # every deploy and which a nightly cron should also call. It was for a
+      # long time covered by nothing at all — the pre-deploy dump was database
+      # only, and this is the least replaceable data here.
+      #
+      # Excluded from the Docker build context by .dockerignore: the build
+      # context on the host is the directory this mounts out of, so `COPY . .`
+      # would otherwise bake every scanned form into the image.
       - ./private-media:/app/private-media
     depends_on:
       db:
@@ -72,6 +94,7 @@ services:
       start_period: 30s
     mem_limit: 384m
     restart: unless-stopped
+    logging: *logging
 
 volumes:
   pgdata:

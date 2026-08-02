@@ -64,37 +64,31 @@ jobs:
 
       - name: Back up, pull and rebuild on the server
         run: |
+          # TESTED_SHA is passed as a remote environment variable rather than
+          # interpolated into the heredoc: the heredoc stays quoted ('REMOTE'),
+          # so nothing else in it expands on the runner by accident.
           ssh -i ~/.ssh/deploy_key -p "${DEPLOY_PORT:-22}" \
             -o StrictHostKeyChecking=yes \
-            "$DEPLOY_USER@$DEPLOY_HOST" 'bash -se' <<'REMOTE'
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "TESTED_SHA='${TESTED_SHA}' bash -se" <<'REMOTE'
           set -euo pipefail
           cd /root/mojo-dog-grooming
 
           BACKUP_DIR=/root/backups/mojo-dog-grooming
-          mkdir -p "$BACKUP_DIR"
-          STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 
-          # entrypoint.sh runs `migrate --noinput` on every container start, so a
-          # deploy can change the schema before anyone has looked at it. Dump
-          # first; a bad migration is otherwise unrecoverable.
+          # entrypoint.sh runs `migrate --noinput` on every container start, so
+          # a deploy can change the schema before anyone has looked at it. Back
+          # up first; a bad migration is otherwise unrecoverable.
           #
-          # Credentials come from .env, defaulting the same way the compose file
-          # does — read them rather than hardcoding "mojo", so renaming the
-          # database in .env doesn't turn the backup into a silent no-op.
-          PGUSER=$(sed -n 's/^POSTGRES_USER=//p' .env | head -1)
-          PGDB=$(sed -n 's/^POSTGRES_DB=//p' .env | head -1)
-          if docker compose -f docker-compose.prod.yml ps --services --filter status=running \
-               | grep -qx db; then
-            docker compose -f docker-compose.prod.yml exec -T db \
-              pg_dump -U "${PGUSER:-mojo}" -d "${PGDB:-mojo}" --clean --if-exists \
-              | gzip -9 > "$BACKUP_DIR/db-$STAMP.sql.gz"
-            echo "backed up $(du -h "$BACKUP_DIR/db-$STAMP.sql.gz" | cut -f1) to $BACKUP_DIR/db-$STAMP.sql.gz"
-            # Keep the 20 most recent. The host is at 72% disk; these are ~15 KB
-            # each, but unbounded is unbounded.
-            ls -1t "$BACKUP_DIR"/db-*.sql.gz 2>/dev/null | tail -n +21 | xargs -r rm -f
-          else
-            echo "db container is not running — skipping the backup (first deploy?)"
-          fi
+          # tools/backup.sh covers the database, private-media/, media/ and
+          # .env — see the header there for why all four. It lives in the repo
+          # rather than inline here so a nightly cron can call exactly the same
+          # thing, and so there is one description of what a backup is.
+          #
+          # Note this runs the *previous* checkout's copy of the script, since
+          # it happens before the pull. That is the right way round: the backup
+          # protecting a deploy should not itself be part of what is changing.
+          ./tools/backup.sh --label pre-deploy
 
           # Remember what to roll back to, before deploy.sh pulls over it.
           PREVIOUS_SHA=$(git rev-parse HEAD)
@@ -104,7 +98,17 @@ jobs:
           # deploy.sh pulls, builds, restarts and waits for the health check.
           # Calling it rather than reimplementing it here keeps one description
           # of how this project deploys — the one that also gets used by hand.
-          ./deploy.sh --yes
+          #
+          # The SHA is pinned to the commit the Tests workflow actually went
+          # green on. \`git pull origin main\` would take whatever main is *now*:
+          # two pushes in quick succession and this run deploys the second,
+          # untested commit while reporting the first one's test result.
+          # The SHA is pinned to the commit the Tests workflow actually went
+          # green on. `git pull origin main` alone would take whatever main is
+          # *now*: two pushes in quick succession and this run deploys the
+          # second, untested commit while reporting the first one's result.
+          # Empty on workflow_dispatch, where deploy.sh falls back to the pull.
+          ./deploy.sh --yes --ref "${TESTED_SHA:-}"
 
           echo "--- smoke test ---"
           # No `|| true` anywhere below: a failure here has to fail the step, or
@@ -126,14 +130,21 @@ jobs:
           # also proves entrypoint.sh's `migrate --noinput` actually finished
           # rather than dying after gunicorn came up.
           echo "--- migrations are applied ---"
+          # `< /dev/null` for the same reason as in tools/backup.sh: this whole
+          # script arrives on stdin over SSH, and `exec -T` hands the container
+          # that same stream. Without the redirect the exec can eat the rest of
+          # the deploy — the trap deploy.sh already documents for `read`.
           docker compose -f docker-compose.prod.yml exec -T web \
-            python manage.py migrate --check
+            python manage.py migrate --check < /dev/null
           echo "schema is up to date"
           REMOTE
         env:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER || 'root' }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST || '178.104.29.66' }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          # The commit Tests actually passed on. Empty for workflow_dispatch,
+          # which is the escape hatch and deliberately deploys current main.
+          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
 
       - name: Roll back on failure
         if: failure()
