@@ -25,6 +25,8 @@ from rest_framework import serializers
 from .models import (
     AppSettings,
     Appointment,
+    AppointmentChangeRequest,
+    AppointmentStatus,
     BookingSeries,
     Breed,
     Client,
@@ -527,6 +529,61 @@ class ClientChangeRequestSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError('A name cannot be blank.')
             cleaned[field] = text
         return cleaned
+
+
+class AppointmentChangeRequestSerializer(serializers.ModelSerializer):
+    dog_name = serializers.CharField(source='appointment.dog.name', read_only=True)
+    client_name = serializers.CharField(source='appointment.dog.client.full_name', read_only=True)
+    client_phone = serializers.CharField(source='appointment.dog.client.phone', read_only=True)
+    appointment_start_at = serializers.DateTimeField(source='appointment.start_at', read_only=True)
+    appointment_status = serializers.CharField(source='appointment.status', read_only=True)
+    requested_by_username = serializers.CharField(source='requested_by.username', read_only=True)
+
+    class Meta:
+        model = AppointmentChangeRequest
+        fields = [
+            'id', 'appointment', 'appointment_start_at', 'appointment_status',
+            'dog_name', 'client_name', 'client_phone',
+            'requested_by', 'requested_by_username',
+            'kind', 'preferred_start_at', 'note',
+            'status', 'review_notes', 'reviewed_at', 'created_at',
+        ]
+        # `requested_by` comes from the session and `status` from staff review.
+        # `appointment` IS accepted from the body — a client has to say which
+        # booking they mean — but the viewset checks it belongs to them before
+        # saving. Ownership is not something a serializer can settle.
+        read_only_fields = [
+            'id', 'requested_by', 'status', 'reviewed_at', 'created_at',
+        ]
+
+    def validate(self, attrs):
+        kind = attrs.get('kind')
+        preferred = attrs.get('preferred_start_at')
+
+        if kind == AppointmentChangeRequest.Kind.RESCHEDULE and preferred is None:
+            raise serializers.ValidationError(
+                {'preferred_start_at': 'Say roughly when you would like to come instead.'}
+            )
+        if preferred is not None and preferred <= timezone.now():
+            # Not a warning, unlike the booking rules in scheduling.py: those
+            # warn because Jess is the one deciding and she books outside her
+            # own hours all the time. This is a client naming a date, and a
+            # request to move to last Tuesday is a mistake, not a preference.
+            raise serializers.ValidationError(
+                {'preferred_start_at': 'Pick a time in the future.'}
+            )
+
+        appointment = attrs.get('appointment')
+        if appointment is not None:
+            if appointment.status in (AppointmentStatus.CANCELLED, AppointmentStatus.COMPLETED):
+                raise serializers.ValidationError(
+                    {'appointment': 'That booking is already finished or cancelled.'}
+                )
+            if appointment.start_at <= timezone.now():
+                raise serializers.ValidationError(
+                    {'appointment': 'That booking has already started. Please ring us instead.'}
+                )
+        return attrs
 
 
 # ── Dogs ───────────────────────────────────────────────────────────────

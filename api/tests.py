@@ -30,6 +30,7 @@ from .management.commands.seed_breeds import BREEDS
 from .models import (
     AppSettings,
     Appointment,
+    AppointmentChangeRequest,
     AppointmentStatus,
     Breed,
     Client,
@@ -1603,6 +1604,283 @@ class NeuterUnknownTests(BaseAPITestCase):
             format='json',
         )
         self.assertIs(Dog.objects.get(name='Bramble').is_neutered, True)
+
+
+class AppointmentChangeRequestTests(BaseAPITestCase):
+    """A client asking to cancel or move their own booking.
+
+    Bookings stay read-only to clients — this is the way to *ask*, not a way
+    round AppointmentViewSet's guards. Several of these check exactly that.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.start = timezone.now() + timedelta(days=7)
+        self.appointment = Appointment.objects.create(
+            dog=self.alice_dog, start_at=self.start, end_at=self.start + timedelta(hours=2),
+        )
+
+    def _request(self, client, body):
+        return client.post('/api/appointment-change-requests/', body, format='json')
+
+    def test_a_client_can_ask_to_cancel_their_own_booking(self):
+        response = self._request(self.alice_client, {
+            'appointment': self.appointment.pk, 'kind': 'CANCEL', 'note': 'Away that week',
+        })
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['status'], ReviewStatus.PENDING)
+
+        # Asking is not doing. The booking stands until Jess approves.
+        self.appointment.refresh_from_db()
+        self.assertEqual(self.appointment.status, AppointmentStatus.BOOKED)
+
+    def test_approving_a_cancellation_cancels_the_booking(self):
+        change = AppointmentChangeRequest.objects.create(
+            appointment=self.appointment, requested_by=self.alice_user, kind='CANCEL',
+        )
+        response = self.staff_client.post(
+            f'/api/appointment-change-requests/{change.pk}/approve/', {}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.appointment.refresh_from_db()
+        self.assertEqual(self.appointment.status, AppointmentStatus.CANCELLED)
+
+    def test_approving_a_move_keeps_the_length(self):
+        """The duration was resolved from the services when the booking was
+        made. Recomputing it here would silently re-price a slot Jess may have
+        adjusted by hand."""
+        wanted = self.start + timedelta(days=3)
+        change = AppointmentChangeRequest.objects.create(
+            appointment=self.appointment, requested_by=self.alice_user,
+            kind='RESCHEDULE', preferred_start_at=wanted,
+        )
+        self.staff_client.post(
+            f'/api/appointment-change-requests/{change.pk}/approve/', {}, format='json',
+        )
+        self.appointment.refresh_from_db()
+        self.assertEqual(self.appointment.start_at, wanted)
+        self.assertEqual(self.appointment.end_at - self.appointment.start_at, timedelta(hours=2))
+
+    def test_jess_can_approve_a_move_to_a_different_time(self):
+        """The common case: the client picks a time that clashes and she puts
+        them in the next real gap."""
+        wanted = self.start + timedelta(days=3)
+        hers = self.start + timedelta(days=4)
+        change = AppointmentChangeRequest.objects.create(
+            appointment=self.appointment, requested_by=self.alice_user,
+            kind='RESCHEDULE', preferred_start_at=wanted,
+        )
+        response = self.staff_client.post(
+            f'/api/appointment-change-requests/{change.pk}/approve/',
+            {'start_at': hers.isoformat()}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.appointment.refresh_from_db()
+        self.assertEqual(self.appointment.start_at, hers)
+
+    def test_a_clashing_move_warns_and_still_goes_through(self):
+        """Warnings never block — the rule the whole diary runs on."""
+        clash_start = self.start + timedelta(days=3)
+        Appointment.objects.create(
+            dog=self.bob_dog, start_at=clash_start, end_at=clash_start + timedelta(hours=2),
+        )
+        change = AppointmentChangeRequest.objects.create(
+            appointment=self.appointment, requested_by=self.alice_user,
+            kind='RESCHEDULE', preferred_start_at=clash_start,
+        )
+        response = self.staff_client.post(
+            f'/api/appointment-change-requests/{change.pk}/approve/', {}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data['warnings'], 'an overlapping move should warn')
+        self.appointment.refresh_from_db()
+        self.assertEqual(self.appointment.start_at, clash_start)
+
+    def test_rejecting_leaves_the_booking_alone(self):
+        change = AppointmentChangeRequest.objects.create(
+            appointment=self.appointment, requested_by=self.alice_user, kind='CANCEL',
+        )
+        self.staff_client.post(
+            f'/api/appointment-change-requests/{change.pk}/reject/', {}, format='json',
+        )
+        self.appointment.refresh_from_db()
+        self.assertEqual(self.appointment.status, AppointmentStatus.BOOKED)
+
+    def test_a_client_cannot_ask_about_someone_elses_booking(self):
+        response = self._request(self.bob_client, {
+            'appointment': self.appointment.pk, 'kind': 'CANCEL',
+        })
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_a_client_cannot_approve_their_own_request(self):
+        change = AppointmentChangeRequest.objects.create(
+            appointment=self.appointment, requested_by=self.alice_user, kind='CANCEL',
+        )
+        response = self.alice_client.post(
+            f'/api/appointment-change-requests/{change.pk}/approve/', {}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.appointment.refresh_from_db()
+        self.assertEqual(self.appointment.status, AppointmentStatus.BOOKED)
+
+    def test_a_client_only_sees_their_own_requests(self):
+        AppointmentChangeRequest.objects.create(
+            appointment=self.appointment, requested_by=self.alice_user, kind='CANCEL',
+        )
+        self.assertEqual(self.alice_client.get('/api/appointment-change-requests/').data['count'], 1)
+        self.assertEqual(self.bob_client.get('/api/appointment-change-requests/').data['count'], 0)
+
+    def test_a_reschedule_must_say_when(self):
+        response = self._request(self.alice_client, {
+            'appointment': self.appointment.pk, 'kind': 'RESCHEDULE',
+        })
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('preferred_start_at', response.data)
+
+    def test_a_move_into_the_past_is_a_mistake_not_a_preference(self):
+        response = self._request(self.alice_client, {
+            'appointment': self.appointment.pk, 'kind': 'RESCHEDULE',
+            'preferred_start_at': (timezone.now() - timedelta(days=2)).isoformat(),
+        })
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_cannot_ask_about_a_booking_that_has_already_started(self):
+        past = timezone.now() - timedelta(hours=1)
+        started = Appointment.objects.create(
+            dog=self.alice_dog, start_at=past, end_at=past + timedelta(hours=2),
+        )
+        response = self._request(self.alice_client, {
+            'appointment': started.pk, 'kind': 'CANCEL',
+        })
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_a_request_cannot_be_dealt_with_twice(self):
+        change = AppointmentChangeRequest.objects.create(
+            appointment=self.appointment, requested_by=self.alice_user, kind='CANCEL',
+        )
+        url = f'/api/appointment-change-requests/{change.pk}/approve/'
+        self.assertEqual(self.staff_client.post(url, {}, format='json').status_code,
+                         status.HTTP_200_OK)
+        self.assertEqual(self.staff_client.post(url, {}, format='json').status_code,
+                         status.HTTP_409_CONFLICT)
+
+    def test_it_shows_up_in_what_is_waiting_for_jess(self):
+        AppointmentChangeRequest.objects.create(
+            appointment=self.appointment, requested_by=self.alice_user, kind='CANCEL',
+        )
+        pending = self.staff_client.get('/api/pending/')
+        self.assertEqual(pending.data['appointment_change_requests'], 1)
+        self.assertGreaterEqual(pending.data['total'], 1)
+
+
+class DogsDueTests(BaseAPITestCase):
+    """Who needs booking in.
+
+    The whole value of this list is what it *leaves out* — a dog already in the
+    diary is not a dog to phone about. Most of these guard that.
+    """
+
+    def _complete_groom(self, dog, weeks_ago):
+        start = timezone.now() - timedelta(weeks=weeks_ago)
+        return Appointment.objects.create(
+            dog=dog, start_at=start, end_at=start + timedelta(hours=2),
+            status=AppointmentStatus.COMPLETED,
+        )
+
+    def _names(self, response):
+        return [row['dog_name'] for row in response.data['results']]
+
+    def test_an_overdue_dog_is_listed_with_how_late_it_is(self):
+        # Biscuit's breed interval is 6 weeks; last groom was 10 weeks ago.
+        self._complete_groom(self.alice_dog, weeks_ago=10)
+        response = self.staff_client.get('/api/dogs/due/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        row = next(r for r in response.data['results'] if r['dog_name'] == self.alice_dog.name)
+        self.assertEqual(row['days_overdue'], 28)  # 10 weeks - 6 weeks
+        self.assertEqual(row['schedule_weeks'], 6)
+        self.assertEqual(row['client_name'], self.alice.full_name)
+        # The phone number is the point of the screen — it is a call list.
+        self.assertEqual(row['client_phone'], self.alice.phone)
+
+    def test_a_dog_already_booked_in_is_left_out(self):
+        """The property that makes this a to-do list rather than a report."""
+        self._complete_groom(self.alice_dog, weeks_ago=10)
+        soon = timezone.now() + timedelta(days=3)
+        Appointment.objects.create(
+            dog=self.alice_dog, start_at=soon, end_at=soon + timedelta(hours=2),
+        )
+        self.assertNotIn(self.alice_dog.name, self._names(self.staff_client.get('/api/dogs/due/')))
+
+        # ...but still reachable when the question really is "who is due".
+        with_booked = self.staff_client.get('/api/dogs/due/?include_booked=1')
+        self.assertIn(self.alice_dog.name, self._names(with_booked))
+
+    def test_a_cancelled_booking_does_not_count_as_booked_in(self):
+        """Otherwise a cancellation quietly removes the dog from the call list —
+        which is the exact moment it most needs to be on it."""
+        self._complete_groom(self.alice_dog, weeks_ago=10)
+        soon = timezone.now() + timedelta(days=3)
+        Appointment.objects.create(
+            dog=self.alice_dog, start_at=soon, end_at=soon + timedelta(hours=2),
+            status=AppointmentStatus.CANCELLED,
+        )
+        self.assertIn(self.alice_dog.name, self._names(self.staff_client.get('/api/dogs/due/')))
+
+    def test_a_dog_groomed_last_week_is_not_due(self):
+        self._complete_groom(self.alice_dog, weeks_ago=1)
+        self.assertNotIn(self.alice_dog.name, self._names(self.staff_client.get('/api/dogs/due/')))
+
+    def test_within_days_looks_ahead(self):
+        """Due in 10 days: absent from the default fortnight's overdue view only
+        once the window is tightened below it."""
+        self._complete_groom(self.alice_dog, weeks_ago=6)  # due in ~0 days
+        self._complete_groom(self.bob_dog, weeks_ago=5)    # 6-week interval, due in ~7 days
+
+        default = self._names(self.staff_client.get('/api/dogs/due/'))
+        self.assertIn(self.bob_dog.name, default)
+
+        tight = self._names(self.staff_client.get('/api/dogs/due/?within_days=0'))
+        self.assertNotIn(self.bob_dog.name, tight)
+        self.assertIn(self.alice_dog.name, tight)
+
+    def test_a_never_groomed_dog_is_flagged_not_guessed(self):
+        """Its due date is unknown, not far away. None on both, so the UI can
+        say so rather than rendering a date nobody worked out."""
+        response = self.staff_client.get('/api/dogs/due/')
+        row = next(r for r in response.data['results'] if r['dog_name'] == self.alice_dog.name)
+        self.assertIsNone(row['due_date'])
+        self.assertIsNone(row['days_overdue'])
+        self.assertIsNone(row['last_groom_date'])
+        self.assertEqual(row['basis'], 'no completed grooms yet')
+
+    def test_most_overdue_first_and_never_groomed_last(self):
+        self._complete_groom(self.alice_dog, weeks_ago=20)  # very overdue
+        self._complete_groom(self.bob_dog, weeks_ago=8)     # mildly overdue
+        never = Dog.objects.create(client=self.alice, name='Newbie', breed=self.breed)
+
+        names = self._names(self.staff_client.get('/api/dogs/due/'))
+        self.assertEqual(names[0], self.alice_dog.name)
+        self.assertEqual(names[1], self.bob_dog.name)
+        self.assertEqual(names[-1], never.name)
+
+    def test_an_inactive_dog_is_not_chased(self):
+        self._complete_groom(self.alice_dog, weeks_ago=20)
+        self.alice_dog.is_active = False
+        self.alice_dog.save(update_fields=['is_active'])
+        self.assertNotIn(self.alice_dog.name, self._names(self.staff_client.get('/api/dogs/due/')))
+
+    def test_overdue_count_counts_only_the_late_ones(self):
+        self._complete_groom(self.alice_dog, weeks_ago=10)  # overdue
+        self._complete_groom(self.bob_dog, weeks_ago=5)     # due soon, not late
+        response = self.staff_client.get('/api/dogs/due/')
+        self.assertEqual(response.data['overdue_count'], 1)
+        self.assertGreaterEqual(response.data['count'], 2)
+
+    def test_a_client_cannot_read_the_whole_books_worklist(self):
+        self.assertEqual(
+            self.alice_client.get('/api/dogs/due/').status_code, status.HTTP_403_FORBIDDEN,
+        )
 
 
 class NextAvailableTests(BaseAPITestCase):

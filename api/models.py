@@ -1145,6 +1145,90 @@ class Appointment(models.Model):
     )
 
 
+class AppointmentChangeRequest(models.Model):
+    """A client asking to cancel or move one of their own bookings.
+
+    Same shape as :class:`ClientChangeRequest` and :class:`ClientClaimRequest`,
+    for the same reason: everything a client sends in is a request Jess
+    reviews, never a direct write. Bookings in particular are hers — the diary
+    is the business, and a client silently removing a slot from it (or worse,
+    moving one on top of another dog) is not something to find out about later.
+
+    Before this, a client who could not make it had **no in-app path at all**.
+    They phoned, or they did not turn up. A no-show costs Jess the slot; a
+    cancellation she hears about is a slot she can refill.
+
+    ``appointment`` is checked against the requester's own client record in the
+    viewset, never trusted from the body — the same rule as ``client`` on
+    ClientChangeRequest, and for the same reason.
+    """
+
+    class Kind(models.TextChoices):
+        CANCEL = 'CANCEL', 'Cancel'
+        RESCHEDULE = 'RESCHEDULE', 'Move'
+
+    appointment = models.ForeignKey(
+        Appointment, on_delete=models.CASCADE, related_name='change_requests',
+    )
+    requested_by = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name='appointment_change_requests',
+    )
+    kind = models.CharField(max_length=10, choices=Kind.choices)
+    preferred_start_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text='Only meaningful for a reschedule, and only ever a preference.',
+    )
+    note = models.TextField(blank=True)
+    status = models.CharField(max_length=10, choices=ReviewStatus.choices, default=ReviewStatus.PENDING)
+    reviewed_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='reviewed_appointment_changes',
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'{self.get_kind_display()} request for {self.appointment} ({self.status})'
+
+    def apply(self, start_at=None):
+        """Carry out the request against the booking.
+
+        ``start_at`` lets Jess approve a move to a *different* time from the one
+        asked for, which is the common case — the client picks a time that
+        clashes and she puts them in the next real gap. It mirrors
+        ``ClientClaimRequestViewSet.approve`` taking a ``client_id`` the staff
+        member chose rather than the one the server guessed.
+
+        The length is carried over rather than recomputed. The booking's
+        duration was already resolved from its services when it was made, and
+        re-running ``resolve_slot`` here would silently re-price a booking Jess
+        may have adjusted by hand.
+        """
+        appointment = self.appointment
+
+        if self.kind == self.Kind.CANCEL:
+            appointment.status = AppointmentStatus.CANCELLED
+            appointment.save(update_fields=['status', 'updated_at'])
+            return appointment
+
+        new_start = start_at or self.preferred_start_at
+        if new_start is None:
+            # A reschedule with no time to move to is not actionable. Refusing
+            # here rather than silently doing nothing, because "approved" on a
+            # request that changed nothing is the worst of both.
+            raise ValueError('A reschedule needs a time to move the booking to.')
+
+        duration = appointment.end_at - appointment.start_at
+        appointment.start_at = new_start
+        appointment.end_at = new_start + duration
+        appointment.save(update_fields=['start_at', 'end_at', 'updated_at'])
+        return appointment
+
+
 # ── Groom timing ───────────────────────────────────────────────────────
 
 class GroomSession(models.Model):

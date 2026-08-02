@@ -26,6 +26,10 @@ router.register('opening-hours', views.OpeningHoursViewSet, basename='opening-ho
 router.register('closures', views.ClosureDayViewSet, basename='closure')
 router.register('dog-documents', views.DogDocumentViewSet, basename='dog-document')
 router.register('client-change-requests', views.ClientChangeRequestViewSet, basename='client-change-request')
+router.register(
+    'appointment-change-requests', views.AppointmentChangeRequestViewSet,
+    basename='appointment-change-request',
+)
 router.register('services', views.ServiceViewSet, basename='service')
 router.register('temperament-grades', views.TemperamentGradeViewSet, basename='temperament-grade')
 # Deprecated. A push to main is the backend deploy, but the app reaches Jess

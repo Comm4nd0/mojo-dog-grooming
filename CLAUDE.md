@@ -53,7 +53,7 @@ mobile/lib/
 Backend:
 ```bash
 python manage.py migrate && python manage.py seed_breeds
-python manage.py test api        # 297 tests
+python manage.py test api        # 321 tests
 python manage.py runserver 0.0.0.0:8000
 python manage.py accounts        # who can sign in — usernames live only in the DB
 python manage.py reset_link jess # a way back in when the superuser is locked out
@@ -62,7 +62,7 @@ python manage.py reset_link jess # a way back in when the superuser is locked ou
 Mobile:
 ```bash
 cd mobile && flutter pub get
-flutter analyze && flutter test  # 144 tests
+flutter analyze && flutter test  # 149 tests
 flutter run --dart-define=MOJO_API_BASE=http://192.168.1.20:8000/api
 ```
 
@@ -189,6 +189,50 @@ Jess's notes are explicit: *"warn when exceeding temperament booking limits, but
 booking."* The same applies to opening hours and overlaps. `POST /api/appointments/check/`
 returns a `warnings` array; the app shows them in a confirm dialog with "BOOK ANYWAY" always
 available. `api/scheduling.py` produces warnings and never raises.
+
+Approving a client's reschedule request follows the same rule: the move is applied and the
+warnings come back with it, so a clash is something Jess is *told about* and can slide in the
+day view, never something that refuses her.
+
+## Who is due, and asking about a booking
+
+Two things that both come down to the same gap — nothing in this system tells anybody anything.
+There is no push, no SMS, and email is on the dummy backend, so `PendingView` polling is the
+only signal there has ever been.
+
+**`GET /api/dogs/due/`** (`dogs_due()` in `scheduling.py`) is `suggested_next_groom` across the
+whole book. That endpoint could only answer for a dog Jess had already thought to check, which
+means a client who quietly stops coming is never noticed — and rebooking a lapsed client is the
+cheapest work there is.
+
+**A dog already in the diary is left off the list.** That is the property that makes it a call
+list rather than a report, and it is worth defending: put the booked ones back in and the
+handful worth ringing are buried. `include_booked=1` exists for the rare whole-book question.
+A **cancelled** booking does not count as being in the diary — that is the exact moment a dog
+most needs to be back on the list, and there is a test for it.
+
+Never-groomed dogs are included and **marked**, with `due_date` and `days_overdue` both null.
+Their due date is genuinely unknown rather than far away, and coercing that to `0` would file
+them under "due today", which is a claim nobody made. Same rule as everywhere else here. They
+sort last, because "40 days overdue" is a firmer statement than "never been in".
+
+**`AppointmentChangeRequest`** is a client asking to cancel or move. Before it, a client who
+could not make it had *no in-app path at all* — ring the salon, or don't turn up. A no-show
+costs Jess the slot; a cancellation she hears about is a slot she can refill.
+
+It is a request, not a write, and the same shape as `ClientChangeRequest` and
+`ClientClaimRequest` for the same reason: everything a client sends in is reviewed. Bookings
+stay read-only to them — `AppointmentViewSet` still refuses their PATCH and DELETE, and this
+does not go round it.
+
+- `approve` takes an optional `start_at`, so Jess can move it to a time other than the one
+  asked for. That is the common case, not the exception: the client picks something that
+  clashes and she puts them in the next real gap. Mirrors claim approval taking a `client_id`.
+- `apply()` **carries the duration over rather than recomputing it.** The length was resolved
+  from the booking's services when it was made, and re-running `resolve_slot` would silently
+  re-price a slot Jess may have adjusted by hand.
+- The app says "request sent", never "cancelled" or "moved". Nothing has changed until she
+  approves it, and saying otherwise is how somebody doesn't turn up to a groom that is still on.
 
 ## Breeds price off a grid, not per breed
 

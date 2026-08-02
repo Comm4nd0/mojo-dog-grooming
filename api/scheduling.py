@@ -9,12 +9,15 @@ the user decides.
 
 from datetime import datetime, time, timedelta
 
+from django.db.models import OuterRef, Subquery
 from django.utils import timezone
 
 from .models import (
     Appointment,
+    AppointmentStatus,
     AppSettings,
     ClosureDay,
+    Dog,
     FALLBACK_NAIL_VISIT_MINUTES,
     OpeningHours,
     ServiceType,
@@ -374,3 +377,108 @@ def booking_warnings(dog, start_at, end_at=None, exclude_appointment=None,
         unpriced_service_warning(service_type, services),
     ]
     return [warning for warning in checks if warning is not None]
+
+
+# ── Who is due ─────────────────────────────────────────────────────────
+
+def dogs_due(within_days=14, include_booked=False, include_never_groomed=True):
+    """Dogs whose next groom is due, most overdue first.
+
+    ``suggested_next_groom`` answers this for one dog on request, which means
+    the answer only exists if Jess already suspected it. Rebooking a lapsed
+    client is the cheapest work there is and it was resting entirely on her
+    remembering, so this does the same sum across the whole book.
+
+    **A dog already in the diary is not on this list.** That is the property
+    that makes it a to-do rather than a report: anything with an upcoming
+    appointment is going to be seen anyway, and leaving those in would bury the
+    handful that actually need a phone call. ``include_booked`` puts them back
+    for the rare "who is due this month regardless" question.
+
+    Never-groomed dogs are included and marked, not silently dropped. A new dog
+    with no booking is exactly the one most easily forgotten, and its due date
+    is genuinely unknown rather than far away — the UI needs to be able to tell
+    those apart, so ``due_date`` is None and ``days_overdue`` is None too. They
+    sort to the end, since "overdue by 40 days" is a firmer claim than "never
+    been in".
+
+    Returns plain dicts, not model instances: the caller needs the derived
+    figures more than the ORM object, and the queryset already carries
+    everything through annotations.
+    """
+    today = timezone.localdate()
+    now = timezone.now()
+
+    # Subqueries rather than a per-dog query — this walks the whole book, and
+    # the N+1 would be two extra queries per dog.
+    last_groom = (
+        Appointment.objects
+        .filter(dog=OuterRef('pk'), status=AppointmentStatus.COMPLETED)
+        .order_by('-start_at')
+        .values('start_at')[:1]
+    )
+    next_booking = (
+        Appointment.objects
+        .filter(dog=OuterRef('pk'), start_at__gte=now, status__in=Appointment.ACTIVE_STATUSES)
+        .order_by('start_at')
+        .values('start_at')[:1]
+    )
+
+    dogs = (
+        Dog.objects.filter(is_active=True)
+        .select_related('client', 'breed')
+        .annotate(
+            last_groom_at=Subquery(last_groom),
+            next_booking_at=Subquery(next_booking),
+        )
+    )
+
+    rows = []
+    for dog in dogs:
+        if dog.next_booking_at and not include_booked:
+            continue
+
+        if dog.last_groom_at is None:
+            if not include_never_groomed:
+                continue
+            rows.append({
+                'dog_id': dog.pk,
+                'dog_name': dog.name,
+                'breed_label': dog.breed_label,
+                'client_id': dog.client_id,
+                'client_name': dog.client.full_name,
+                'client_phone': dog.client.phone,
+                'last_groom_date': None,
+                'due_date': None,
+                'days_overdue': None,
+                'schedule_weeks': dog.effective_schedule_weeks,
+                'next_booking_at': dog.next_booking_at,
+                'basis': 'no completed grooms yet',
+            })
+            continue
+
+        last_date = timezone.localtime(dog.last_groom_at).date()
+        due = last_date + timedelta(weeks=dog.effective_schedule_weeks)
+        days_overdue = (today - due).days
+        # Negative means not due yet; within_days is how far ahead to look.
+        if days_overdue < -within_days:
+            continue
+
+        rows.append({
+            'dog_id': dog.pk,
+            'dog_name': dog.name,
+            'breed_label': dog.breed_label,
+            'client_id': dog.client_id,
+            'client_name': dog.client.full_name,
+            'client_phone': dog.client.phone,
+            'last_groom_date': last_date.isoformat(),
+            'due_date': due.isoformat(),
+            'days_overdue': days_overdue,
+            'schedule_weeks': dog.effective_schedule_weeks,
+            'next_booking_at': dog.next_booking_at,
+            'basis': f'{dog.effective_schedule_weeks} weeks after {last_date:%d %b %Y}',
+        })
+
+    # Most overdue first; never-groomed last (see the docstring).
+    rows.sort(key=lambda row: (row['days_overdue'] is None, -(row['days_overdue'] or 0)))
+    return rows

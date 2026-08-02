@@ -529,6 +529,121 @@ class DogSummary {
   }
 }
 
+/// A client asking to cancel or move one of their own bookings.
+///
+/// Asking is not doing: the booking stands, unchanged, until Jess approves.
+/// Nothing here should be rendered as though the change has happened.
+class AppointmentChangeRequest {
+  final int id;
+  final int appointmentId;
+  final DateTime? appointmentStartAt;
+  final String dogName;
+  final String clientName;
+  final String clientPhone;
+  final String kind;
+  final DateTime? preferredStartAt;
+  final String note;
+  final String status;
+  final String requestedByUsername;
+
+  const AppointmentChangeRequest({
+    required this.id,
+    required this.appointmentId,
+    required this.dogName,
+    required this.clientName,
+    required this.clientPhone,
+    required this.kind,
+    required this.note,
+    required this.status,
+    required this.requestedByUsername,
+    this.appointmentStartAt,
+    this.preferredStartAt,
+  });
+
+  factory AppointmentChangeRequest.fromJson(Map<String, dynamic> json) =>
+      AppointmentChangeRequest(
+        id: (json['id'] as num).toInt(),
+        appointmentId: (json['appointment'] as num).toInt(),
+        appointmentStartAt: _parseDate(json['appointment_start_at']),
+        dogName: json['dog_name']?.toString() ?? '',
+        clientName: json['client_name']?.toString() ?? '',
+        clientPhone: json['client_phone']?.toString() ?? '',
+        kind: json['kind']?.toString() ?? 'CANCEL',
+        preferredStartAt: _parseDate(json['preferred_start_at']),
+        note: json['note']?.toString() ?? '',
+        status: json['status']?.toString() ?? 'PENDING',
+        requestedByUsername: json['requested_by_username']?.toString() ?? '',
+      );
+
+  static DateTime? _parseDate(Object? raw) =>
+      raw == null ? null : DateTime.tryParse(raw.toString())?.toLocal();
+
+  bool get isCancellation => kind == 'CANCEL';
+  bool get isPending => status == 'PENDING';
+  String get kindLabel => isCancellation ? 'Cancel' : 'Move';
+}
+
+/// One row of "who needs booking in" — `GET /api/dogs/due/`.
+///
+/// [dueDate] and [daysOverdue] are **nullable and mean "never groomed"**, not
+/// "not due". The server deliberately does not invent a date for a dog with no
+/// completed groom behind it, so neither may be coerced to a number here — the
+/// same rule as everywhere else in this file.
+class DueDog {
+  final int dogId;
+  final String dogName;
+  final String breedLabel;
+  final int clientId;
+  final String clientName;
+  final String clientPhone;
+  final String? lastGroomDate;
+  final String? dueDate;
+  final int? daysOverdue;
+  final int scheduleWeeks;
+  final String basis;
+
+  const DueDog({
+    required this.dogId,
+    required this.dogName,
+    required this.breedLabel,
+    required this.clientId,
+    required this.clientName,
+    required this.clientPhone,
+    required this.scheduleWeeks,
+    required this.basis,
+    this.lastGroomDate,
+    this.dueDate,
+    this.daysOverdue,
+  });
+
+  factory DueDog.fromJson(Map<String, dynamic> json) => DueDog(
+        dogId: (json['dog_id'] as num).toInt(),
+        dogName: json['dog_name']?.toString() ?? '',
+        breedLabel: json['breed_label']?.toString() ?? '',
+        clientId: (json['client_id'] as num).toInt(),
+        clientName: json['client_name']?.toString() ?? '',
+        clientPhone: json['client_phone']?.toString() ?? '',
+        lastGroomDate: json['last_groom_date']?.toString(),
+        dueDate: json['due_date']?.toString(),
+        daysOverdue: (json['days_overdue'] as num?)?.toInt(),
+        scheduleWeeks: (json['schedule_weeks'] as num?)?.toInt() ?? 8,
+        basis: json['basis']?.toString() ?? '',
+      );
+
+  bool get neverGroomed => daysOverdue == null;
+  bool get isOverdue => (daysOverdue ?? 0) > 0;
+
+  /// "28 days overdue" / "due in 5 days" / "never been in".
+  String get whenLabel {
+    final days = daysOverdue;
+    if (days == null) return 'Never been in';
+    if (days > 0) return '$days ${days == 1 ? 'day' : 'days'} overdue';
+    if (days == 0) return 'Due today';
+    final ahead = -days;
+    return 'Due in $ahead ${ahead == 1 ? 'day' : 'days'}';
+  }
+}
+
 class ProblemArea {
   final int id;
   final List<String> gridCells;

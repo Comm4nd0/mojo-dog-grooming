@@ -7,6 +7,7 @@ import '../../services/data_service.dart';
 import '../../services/service_locator.dart';
 import '../../widgets/common.dart';
 import '../account_switcher.dart';
+import 'due_screen.dart';
 import 'equipment_screen.dart';
 import 'intake_review_screen.dart';
 import 'invoices_screen.dart';
@@ -74,6 +75,13 @@ class _MoreScreenState extends State<MoreScreen> with WidgetsBindingObserver {
             // and that was the one thing about it that worked. Moving the list
             // here without the badge would just make it easy to forget.
             badge: DataService.outstandingTodos,
+          ),
+          _tile(
+            context,
+            icon: Icons.event_repeat_outlined,
+            title: 'Due a groom',
+            subtitle: 'Who is overdue and not booked in',
+            builder: (_) => const DueScreen(),
           ),
           _tile(
             context,

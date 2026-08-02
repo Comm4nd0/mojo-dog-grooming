@@ -220,7 +220,135 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
     );
   }
 
+  /// Whether this booking can still be asked about.
+  ///
+  /// Mirrors what the server will accept, so the sheet is never offered for a
+  /// request that is about to be refused. The server is still the authority —
+  /// this only keeps the UI honest.
+  bool _canAskAbout(Appointment appointment) =>
+      appointment.startAt.isAfter(DateTime.now()) &&
+      !appointment.isCancelled &&
+      appointment.status != 'COMPLETED';
+
+  Future<void> _askAbout(Appointment appointment) async {
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 20, 16, 4),
+              child: Text(
+                '${appointment.dogName} — ${formatDate(appointment.startAt)}',
+                style: Theme.of(sheetContext).textTheme.titleMedium,
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: Text(
+                'We will confirm before anything changes.',
+                style: TextStyle(fontSize: 12.5, color: sheetContext.mojo.muted),
+              ),
+            ),
+            ListTile(
+              leading: Icon(Icons.edit_calendar_outlined, color: sheetContext.mojo.accent),
+              title: const Text('Ask to move it'),
+              subtitle: const Text('Suggest another day or time'),
+              onTap: () => Navigator.pop(sheetContext, 'RESCHEDULE'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.event_busy_outlined, color: AppColors.error),
+              title: const Text('Ask to cancel it'),
+              onTap: () => Navigator.pop(sheetContext, 'CANCEL'),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+
+    if (choice == null || !mounted) return;
+    if (choice == 'CANCEL') {
+      await _sendCancellation(appointment);
+    } else {
+      await _sendReschedule(appointment);
+    }
+  }
+
+  Future<void> _sendCancellation(Appointment appointment) async {
+    final note = await promptForText(
+      context,
+      title: 'Ask to cancel',
+      labelText: 'Anything you would like us to know?',
+      helperText: 'Optional',
+      confirmLabel: 'SEND REQUEST',
+    );
+    if (note == null || !mounted) return;
+    await _send(appointmentId: appointment.id, kind: 'CANCEL', note: note);
+  }
+
+  Future<void> _sendReschedule(Appointment appointment) async {
+    final date = await showDatePicker(
+      context: context,
+      initialDate: appointment.startAt.add(const Duration(days: 7)),
+      firstDate: DateTime.now(),
+      lastDate: DateTime.now().add(const Duration(days: 365)),
+      helpText: 'When would suit instead?',
+    );
+    if (date == null || !mounted) return;
+
+    final time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(appointment.startAt),
+      initialEntryMode: TimePickerEntryMode.input,
+    );
+    if (time == null || !mounted) return;
+
+    final note = await promptForText(
+      context,
+      title: 'Ask to move it',
+      labelText: 'Anything you would like us to know?',
+      helperText: 'Optional',
+      confirmLabel: 'SEND REQUEST',
+    );
+    if (note == null || !mounted) return;
+
+    await _send(
+      appointmentId: appointment.id,
+      kind: 'RESCHEDULE',
+      preferredStartAt:
+          DateTime(date.year, date.month, date.day, time.hour, time.minute),
+      note: note,
+    );
+  }
+
+  Future<void> _send({
+    required int appointmentId,
+    required String kind,
+    DateTime? preferredStartAt,
+    String note = '',
+  }) async {
+    try {
+      await _data.requestAppointmentChange(
+        appointmentId: appointmentId,
+        kind: kind,
+        preferredStartAt: preferredStartAt,
+        note: note,
+      );
+      if (!mounted) return;
+      // Deliberately not "cancelled" or "moved": nothing has changed yet, and
+      // saying otherwise would have people not turning up.
+      showSnack(context, 'Request sent. Mojo and Co will confirm with you.');
+      await _load();
+    } catch (error) {
+      if (mounted) showSnack(context, error.toString(), isError: true);
+    }
+  }
+
   Widget _row(Appointment appointment, {bool past = false}) {
+    final askable = !past && _canAskAbout(appointment);
+
     return ListTile(
       leading: Icon(
         appointment.status == 'REQUESTED' ? Icons.hourglass_empty : Icons.event,
@@ -235,9 +363,11 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
       subtitle: Text(
         '${formatDate(appointment.startAt)} · ${appointment.timeRange}',
       ),
-      trailing: appointment.status == 'BOOKED'
-          ? null
-          : InfoTag(
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (appointment.status != 'BOOKED')
+            InfoTag(
               label: appointment.statusLabel,
               color: switch (appointment.status) {
                 'REQUESTED' => AppColors.warning,
@@ -246,6 +376,15 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
                 _ => context.mojo.muted,
               },
             ),
+          if (askable)
+            IconButton(
+              icon: const Icon(Icons.more_horiz),
+              tooltip: 'Change this booking',
+              onPressed: () => _askAbout(appointment),
+            ),
+        ],
+      ),
+      onTap: askable ? () => _askAbout(appointment) : null,
     );
   }
 }

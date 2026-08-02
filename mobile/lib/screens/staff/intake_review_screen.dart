@@ -7,6 +7,7 @@ import '../../models/models.dart';
 import '../../services/data_service.dart';
 import '../../services/service_locator.dart';
 import '../../widgets/common.dart';
+import '../../widgets/contact_actions.dart';
 import '../../widgets/dog_silhouette.dart';
 
 /// Review what comes in from the outside: intake forms and profile claims.
@@ -28,6 +29,7 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
   List<IntakeSubmission> _submissions = const [];
   List<ClaimRequest> _claims = const [];
   List<ChangeRequest> _changes = const [];
+  List<AppointmentChangeRequest> _bookingChanges = const [];
   bool _loading = true;
   Object? _error;
 
@@ -43,11 +45,14 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
       final submissions = await _data.getIntakeSubmissions();
       final claims = await _data.getClaimRequests();
       final changes = await _data.getChangeRequests(status: 'PENDING');
+      final bookingChanges =
+          await _data.getAppointmentChangeRequests(status: 'PENDING');
       if (!mounted) return;
       setState(() {
         _submissions = submissions;
         _claims = claims;
         _changes = changes;
+        _bookingChanges = bookingChanges;
         _loading = false;
         _error = null;
       });
@@ -67,7 +72,10 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
     final pendingClaims = _claims.where((c) => c.status == 'PENDING').toList();
 
     return DefaultTabController(
-      length: 3,
+      // Bookings first: a cancellation nobody has seen is a slot that could
+      // have been refilled and now cannot. The others keep.
+      initialIndex: _bookingChanges.isNotEmpty ? 3 : 0,
+      length: 4,
       child: Scaffold(
         appBar: AppBar(
           title: const Text('Waiting for you'),
@@ -77,6 +85,7 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
               Tab(text: 'Forms (${pendingSubmissions.length})'),
               Tab(text: 'Claims (${pendingClaims.length})'),
               Tab(text: 'Changes (${_changes.length})'),
+              Tab(text: 'Bookings (${_bookingChanges.length})'),
             ],
           ),
         ),
@@ -89,6 +98,7 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
                       _submissionList(pendingSubmissions),
                       _claimList(pendingClaims),
                       _changeList(),
+                      _bookingChangeList(),
                     ],
                   ),
       ),
@@ -134,6 +144,136 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
         },
       ),
     );
+  }
+
+  /// Clients asking to cancel or move a booking.
+  ///
+  /// Approving a move applies it and shows the server's warnings rather than
+  /// refusing — same rule as everywhere else in the diary. Jess can slide it
+  /// in the day view afterwards if the warning matters.
+  Widget _bookingChangeList() {
+    if (_bookingChanges.isEmpty) {
+      return const EmptyState(
+        icon: Icons.event_available_outlined,
+        title: 'Nothing to check',
+        message: 'When a client asks to cancel or move a booking it lands here.',
+      );
+    }
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: ListView.separated(
+        itemCount: _bookingChanges.length,
+        separatorBuilder: (_, _) => const Divider(height: 1),
+        itemBuilder: (context, index) {
+          final change = _bookingChanges[index];
+          final when = change.appointmentStartAt;
+          final wanted = change.preferredStartAt;
+
+          return ListTile(
+            isThreeLine: true,
+            leading: Icon(
+              change.isCancellation
+                  ? Icons.event_busy_outlined
+                  : Icons.edit_calendar_outlined,
+              color: change.isCancellation ? AppColors.error : context.mojo.accent,
+            ),
+            title: Text('${change.kindLabel} — ${change.dogName}'),
+            subtitle: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(change.clientName),
+                if (when != null)
+                  Text('Booked ${formatDate(when)} · ${formatTime(when)}'),
+                if (wanted != null)
+                  Text(
+                    'Would prefer ${formatDate(wanted)} · ${formatTime(wanted)}',
+                    style: TextStyle(
+                      color: context.mojo.accent, fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                if (change.note.isNotEmpty)
+                  Text(
+                    '“${change.note}”',
+                    style: TextStyle(
+                      fontStyle: FontStyle.italic, color: context.mojo.muted,
+                    ),
+                  ),
+              ],
+            ),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (change.clientPhone.isNotEmpty)
+                  IconButton(
+                    icon: const Icon(Icons.phone_outlined),
+                    tooltip: 'Ring ${change.clientName}',
+                    onPressed: () => callNumber(context, change.clientPhone),
+                  ),
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  tooltip: 'Leave the booking as it is',
+                  onPressed: () => _decideBookingChange(change, approve: false),
+                ),
+                IconButton(
+                  icon: Icon(Icons.check, color: context.mojo.accent),
+                  tooltip: change.isCancellation ? 'Cancel it' : 'Move it',
+                  onPressed: () => _decideBookingChange(change, approve: true),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _decideBookingChange(
+    AppointmentChangeRequest change, {
+    required bool approve,
+  }) async {
+    List<String> warnings = const [];
+    try {
+      if (approve) {
+        warnings = await _data.approveAppointmentChange(change.id);
+      } else {
+        await _data.rejectAppointmentChange(change.id);
+      }
+    } catch (error) {
+      if (mounted) showSnack(context, error.toString(), isError: true);
+      return;
+    }
+    if (!mounted) return;
+
+    if (warnings.isNotEmpty) {
+      // Already applied — this is telling her what to look at, not asking.
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Moved, but worth a look'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [for (final warning in warnings) Text('• $warning')],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      );
+    } else {
+      showSnack(
+        context,
+        approve
+            ? (change.isCancellation ? 'Booking cancelled.' : 'Booking moved.')
+            : 'Left as it was.',
+      );
+    }
+
+    _load();
+    unawaited(_data.getPending());
   }
 
   Future<void> _decideChange(ChangeRequest change, {required bool approve}) async {

@@ -549,4 +549,63 @@ void main() {
       expect(settings.nailVisitMinutes, isNull);
     });
   });
+
+  group('Booking change requests', () {
+    test('a cancellation request is a request, not a cancellation', () {
+      // Nothing has happened to the booking yet. Rendering this as "cancelled"
+      // is how somebody ends up not turning up to a groom that is still on.
+      final change = AppointmentChangeRequest.fromJson({
+        'id': 1, 'appointment': 7, 'kind': 'CANCEL', 'status': 'PENDING',
+        'appointment_start_at': '2026-08-20T09:00:00Z',
+      });
+      expect(change.isCancellation, isTrue);
+      expect(change.isPending, isTrue);
+      expect(change.kindLabel, 'Cancel');
+      expect(change.preferredStartAt, isNull, reason: 'a cancellation names no new time');
+    });
+
+    test('a move carries the time the client would prefer', () {
+      final change = AppointmentChangeRequest.fromJson({
+        'id': 2, 'appointment': 7, 'kind': 'RESCHEDULE', 'status': 'PENDING',
+        'preferred_start_at': '2026-08-27T14:30:00Z',
+      });
+      expect(change.isCancellation, isFalse);
+      expect(change.kindLabel, 'Move');
+      expect(change.preferredStartAt, isNotNull);
+    });
+  });
+
+  group('Due a groom', () {
+    Map<String, dynamic> dueJson(Map<String, dynamic> extra) => {
+          'dog_id': 1, 'dog_name': 'Biscuit', 'breed_label': 'Cockapoo',
+          'client_id': 2, 'client_name': 'Alice Adams', 'client_phone': '07700900001',
+          'schedule_weeks': 6, 'basis': '', ...extra,
+        };
+
+    test('never groomed is null, not overdue by zero', () {
+      // The server deliberately does not invent a due date for a dog with no
+      // completed groom behind it. Coercing that to 0 would file the dog under
+      // "due today", which is a claim nobody made.
+      final dog = DueDog.fromJson(dueJson({}));
+      expect(dog.daysOverdue, isNull);
+      expect(dog.dueDate, isNull);
+      expect(dog.neverGroomed, isTrue);
+      expect(dog.isOverdue, isFalse, reason: 'unknown is not late');
+      expect(dog.whenLabel, 'Never been in');
+    });
+
+    test('overdue, due today and due ahead each read differently', () {
+      expect(DueDog.fromJson(dueJson({'days_overdue': 28})).whenLabel, '28 days overdue');
+      expect(DueDog.fromJson(dueJson({'days_overdue': 1})).whenLabel, '1 day overdue');
+      expect(DueDog.fromJson(dueJson({'days_overdue': 0})).whenLabel, 'Due today');
+      expect(DueDog.fromJson(dueJson({'days_overdue': -5})).whenLabel, 'Due in 5 days');
+      expect(DueDog.fromJson(dueJson({'days_overdue': -1})).whenLabel, 'Due in 1 day');
+    });
+
+    test('only a positive figure counts as overdue', () {
+      expect(DueDog.fromJson(dueJson({'days_overdue': 3})).isOverdue, isTrue);
+      expect(DueDog.fromJson(dueJson({'days_overdue': 0})).isOverdue, isFalse);
+      expect(DueDog.fromJson(dueJson({'days_overdue': -3})).isOverdue, isFalse);
+    });
+  });
 }

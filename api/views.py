@@ -24,7 +24,7 @@ from django.http import FileResponse
 from django.db.models import Q, Value
 from django.db.models.functions import Replace, Upper
 from django.utils import timezone
-from django.utils.dateparse import parse_date
+from django.utils.dateparse import parse_date, parse_datetime
 from django.utils.safestring import mark_safe
 from djoser.views import TokenCreateView
 from rest_framework import status, viewsets
@@ -61,6 +61,7 @@ def load_silhouette_svg():
 from .models import (
     AppSettings,
     Appointment,
+    AppointmentChangeRequest,
     AppointmentStatus,
     BookingSeries,
     BookingType,
@@ -96,10 +97,11 @@ from .models import (
     UserProfile,
 )
 from .passwords import build_reset_link, send_reset_email
-from .scheduling import booking_warnings, next_available_slots
+from .scheduling import booking_warnings, dogs_due, next_available_slots
 from .serializers import (
     AccountSerializer,
     AppSettingsSerializer,
+    AppointmentChangeRequestSerializer,
     AppointmentCheckSerializer,
     AppointmentSerializer,
     BookingSeriesSerializer,
@@ -893,6 +895,36 @@ class DogViewSet(StaffWriteOnlyMixin, ClientScopedMixin, viewsets.ModelViewSet):
     def problem_areas(self, request, pk=None):
         dog = self.get_object()
         return Response(ProblemAreaSerializer(dog.problem_areas.all(), many=True).data)
+
+    @action(detail=False, methods=['get'], permission_classes=[IsAdminUser])
+    def due(self, request):
+        """Who needs booking in — the same sum as ``suggested_next_groom``, but
+        across the whole book instead of one dog Jess already thought to check.
+
+        Staff only, and not because the figures are secret: it is a worklist
+        over every client's dog, so it is not a thing a client has any version
+        of. ``ClientScopedMixin`` would narrow it to their own dog, which is
+        both useless and misleading.
+        """
+        try:
+            within_days = int(request.query_params.get('within_days', 14))
+        except (TypeError, ValueError):
+            within_days = 14
+        within_days = max(0, min(within_days, 365))
+
+        rows = dogs_due(
+            within_days=within_days,
+            include_booked=request.query_params.get('include_booked') in ('1', 'true', 'True'),
+            include_never_groomed=(
+                request.query_params.get('include_never_groomed', '1') in ('1', 'true', 'True')
+            ),
+        )
+        return Response({
+            'count': len(rows),
+            'overdue_count': sum(1 for row in rows if (row['days_overdue'] or 0) > 0),
+            'within_days': within_days,
+            'results': rows,
+        })
 
     @action(detail=True, methods=['get'])
     def suggested_next_groom(self, request, pk=None):
@@ -1825,6 +1857,121 @@ class ClientChangeRequestViewSet(viewsets.ModelViewSet):
         return Response(self.get_serializer(change).data)
 
 
+class AppointmentChangeRequestViewSet(viewsets.ModelViewSet):
+    """A client asking to cancel or move one of their own bookings.
+
+    Bookings are read-only to clients and stay that way — see
+    ``AppointmentViewSet``, which refuses their PATCH and DELETE. What was
+    missing was any way to *ask*: a client who could not make it had no in-app
+    path at all, so the choice was ring the salon or don't turn up. A no-show
+    costs Jess the slot; a cancellation she hears about is a slot she can
+    refill.
+    """
+
+    queryset = AppointmentChangeRequest.objects.select_related(
+        'appointment', 'appointment__dog', 'appointment__dog__client', 'requested_by',
+    )
+    serializer_class = AppointmentChangeRequestSerializer
+    permission_classes = [IsAuthenticated]
+    http_method_names = ['get', 'post', 'head', 'options']
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if self.request.user.is_staff:
+            status_filter = self.request.query_params.get('status')
+            if status_filter:
+                queryset = queryset.filter(status=status_filter)
+            return queryset
+        return queryset.filter(requested_by=self.request.user)
+
+    def perform_create(self, serializer):
+        user = self.request.user
+        appointment = serializer.validated_data['appointment']
+
+        # Staff have the diary itself and do not go through review. Allowing it
+        # would put Jess's own edits in her own approval queue.
+        if not user.is_staff:
+            client = getattr(user, 'client', None)
+            if client is None or appointment.dog.client_id != client.pk:
+                # The same 403 whether the booking belongs to somebody else or
+                # does not exist. A different answer for each would make this
+                # endpoint a way to probe which appointment ids are real.
+                raise PermissionDenied('You can only ask about your own bookings.')
+
+        serializer.save(requested_by=user)
+
+    @action(detail=True, methods=['post'], permission_classes=[IsAdminUser])
+    def approve(self, request, pk=None):
+        change = self.get_object()
+        if change.status != ReviewStatus.PENDING:
+            return Response(
+                {'detail': 'That request has already been dealt with.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        # Jess can approve a move to a time other than the one asked for — the
+        # common case, since a client picks a time that clashes and she puts
+        # them in the next real gap. Mirrors claim approval taking a client_id.
+        override = request.data.get('start_at')
+        start_at = None
+        if override:
+            start_at = parse_datetime(override)
+            if start_at is None:
+                return Response(
+                    {'detail': 'Could not read that start time.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if timezone.is_naive(start_at):
+                start_at = timezone.make_aware(start_at)
+
+        try:
+            with transaction.atomic():
+                appointment = change.apply(start_at=start_at)
+                change.status = ReviewStatus.APPROVED
+                change.reviewed_by = request.user
+                change.reviewed_at = timezone.now()
+                change.review_notes = request.data.get('review_notes', '')
+                change.save()
+        except ValueError as error:
+            return Response({'detail': str(error)}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Warnings, never a refusal — the rule the whole diary runs on. A move
+        # that now clashes or falls outside opening hours still goes through,
+        # and Jess sees why so she can slide it in the day view.
+        warnings = []
+        if change.kind == AppointmentChangeRequest.Kind.RESCHEDULE:
+            warnings = booking_warnings(
+                appointment.dog, appointment.start_at, appointment.end_at,
+                exclude_appointment=appointment,
+                service_type=appointment.service_type,
+                services=list(appointment.services.all()),
+            )
+
+        return Response({
+            **self.get_serializer(change).data,
+            'appointment': AppointmentSerializer(
+                appointment, context=self.get_serializer_context(),
+            ).data,
+            'warnings': warnings,
+        })
+
+    @action(detail=True, methods=['post'], permission_classes=[IsAdminUser])
+    def reject(self, request, pk=None):
+        change = self.get_object()
+        if change.status != ReviewStatus.PENDING:
+            return Response(
+                {'detail': 'That request has already been dealt with.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+        # Touches the booking not at all — it stands as it was.
+        change.status = ReviewStatus.REJECTED
+        change.reviewed_by = request.user
+        change.reviewed_at = timezone.now()
+        change.review_notes = request.data.get('review_notes', '')
+        change.save()
+        return Response(self.get_serializer(change).data)
+
+
 class PendingView(APIView):
     """How much is waiting for Jess, for the badge on the More tab.
 
@@ -1857,6 +2004,12 @@ class PendingView(APIView):
                 status=ReviewStatus.PENDING,
             ).count(),
             'change_requests': ClientChangeRequest.objects.filter(
+                status=ReviewStatus.PENDING,
+            ).count(),
+            # A client asking to cancel or move. Time-sensitive in a way the
+            # others are not — an unseen cancellation is a slot Jess could have
+            # refilled and now cannot.
+            'appointment_change_requests': AppointmentChangeRequest.objects.filter(
                 status=ReviewStatus.PENDING,
             ).count(),
         }

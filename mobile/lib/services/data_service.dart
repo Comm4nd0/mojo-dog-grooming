@@ -53,6 +53,19 @@ class DataService {
     return (payload as Map<String, dynamic>)['due_date']?.toString();
   }
 
+  /// Who needs booking in. Staff only — it is a worklist over the whole book.
+  ///
+  /// Dogs already in the diary are left out by the server unless
+  /// [includeBooked], which is what makes it a call list rather than a report.
+  Future<List<DueDog>> getDogsDue({int withinDays = 14, bool includeBooked = false}) async {
+    final payload = await _api.get('/dogs/due/', query: {
+      'within_days': '$withinDays',
+      if (includeBooked) 'include_booked': '1',
+    });
+    final rows = (payload as Map<String, dynamic>)['results'] as List<dynamic>? ?? const [];
+    return rows.map((row) => DueDog.fromJson(row as Map<String, dynamic>)).toList();
+  }
+
   // ── Clients ────────────────────────────────────────────────────────
 
   Future<List<ClientRecord>> getClients({String? search}) async {
@@ -318,6 +331,49 @@ class DataService {
 
   Future<void> rejectChangeRequest(int id) =>
       _api.post('/client-change-requests/$id/reject/', {});
+
+  // ── Booking change requests ────────────────────────────────────────
+  //
+  // Bookings are read-only to a client. This is how they *ask* to cancel or
+  // move one; Jess reviews it and the booking is unchanged until she does.
+
+  Future<List<AppointmentChangeRequest>> getAppointmentChangeRequests({String? status}) async {
+    final payload = await _api.get('/appointment-change-requests/', query: {
+      'status': ?status,
+    });
+    return ApiClient.resultsOf(payload).map(AppointmentChangeRequest.fromJson).toList();
+  }
+
+  Future<AppointmentChangeRequest> requestAppointmentChange({
+    required int appointmentId,
+    required String kind,
+    DateTime? preferredStartAt,
+    String note = '',
+  }) async {
+    final payload = await _api.post('/appointment-change-requests/', {
+      'appointment': appointmentId,
+      'kind': kind,
+      if (preferredStartAt != null) 'preferred_start_at': preferredStartAt.toIso8601String(),
+      'note': note,
+    });
+    return AppointmentChangeRequest.fromJson(payload as Map<String, dynamic>);
+  }
+
+  /// [startAt] lets Jess approve a move to a time other than the one asked
+  /// for — the common case, when the requested slot clashes.
+  ///
+  /// Returns the server's warnings, which never block: an approved move that
+  /// overlaps still happens, and she slides it in the day view.
+  Future<List<String>> approveAppointmentChange(int id, {DateTime? startAt}) async {
+    final payload = await _api.post('/appointment-change-requests/$id/approve/', {
+      if (startAt != null) 'start_at': startAt.toIso8601String(),
+    });
+    final warnings = (payload as Map<String, dynamic>)['warnings'] as List<dynamic>? ?? const [];
+    return warnings.map((w) => w.toString()).toList();
+  }
+
+  Future<void> rejectAppointmentChange(int id) =>
+      _api.post('/appointment-change-requests/$id/reject/', {});
 
   // ── Documents ──────────────────────────────────────────────────────
 
