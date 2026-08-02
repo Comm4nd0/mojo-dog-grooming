@@ -8,16 +8,22 @@ final GetIt getIt = GetIt.instance;
 
 /// Where the API lives.
 ///
-/// The default is the interim host: app.mojoandco.uk has no DNS record yet, so
-/// Caddy cannot get a certificate for it, while sslip.io resolves this name to
-/// the server over public DNS and does have a real certificate. Swap the two
-/// once the proper subdomain points at the box.
+/// HTTPS, and not negotiable: the token that authenticates every call rides in
+/// an Authorization header, so plain HTTP would hand it to anyone on the same
+/// wifi as the salon. `DJANGO_SECURE_HTTPS` redirects http to https server-side
+/// as well, but a redirect is a round trip that already carried the header.
+///
+/// This used to default to https://mojo.178-104-29-66.sslip.io/api, an interim
+/// name that existed only because app.mojoandco.uk had no A record and Caddy
+/// therefore could not get a certificate for it. The record exists now. Caddy
+/// still answers to the old name for builds already on a phone — see the
+/// Caddyfile — but nothing new should use it.
 ///
 /// Override at build time for a device pointed at a dev machine:
 ///   flutter run --dart-define=MOJO_API_BASE=http://192.168.1.20:8000/api
 const String apiBaseUrl = String.fromEnvironment(
   'MOJO_API_BASE',
-  defaultValue: 'https://mojo.178-104-29-66.sslip.io/api',
+  defaultValue: 'https://app.mojoandco.uk/api',
 );
 
 /// Registers services. Call once from `main()` before `runApp`.

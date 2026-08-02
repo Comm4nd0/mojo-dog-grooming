@@ -8,11 +8,20 @@
 # through Caddy — binding the container to a high port directly is
 # unreachable from outside.
 
-# Interim hostname. sslip.io resolves *.<dashed-ip>.sslip.io to that IP via
-# public DNS, so Caddy can obtain a real Let's Encrypt certificate without
-# anyone touching the mojoandco.uk zone. Delete this block once the proper
-# subdomain is pointed here.
-mojo.178-104-29-66.sslip.io {
+# app.mojoandco.uk is the real home and what new builds point at. The sslip.io
+# name is the interim one it ran on before the A record existed, and it is
+# still listed here on purpose: every TestFlight build already on a phone has
+# https://mojo.178-104-29-66.sslip.io/api compiled into it, so dropping the
+# name would black those installs out with no way to recover but reinstalling.
+#
+# Both names on one site block rather than a redirect from the old to the new:
+# the clients are API callers, not browsers, and a redirect changes POST
+# semantics for anything that does not follow it exactly.
+#
+# Retire the sslip name once no build in the wild still points at it — that
+# means a release out and adopted, not merely cut. Removing it also needs
+# DJANGO_ALLOWED_HOSTS on the host trimmed to match.
+app.mojoandco.uk, mojo.178-104-29-66.sslip.io {
     handle_path /media/* {
         root * /srv/mojo-media
         file_server
@@ -20,14 +29,3 @@ mojo.178-104-29-66.sslip.io {
     reverse_proxy 172.17.0.1:8010
     encode gzip
 }
-
-# The real home, once an A record for app.mojoandco.uk points at this host.
-# Until then Caddy cannot get a certificate for it, so it stays commented out.
-# app.mojoandco.uk {
-#     handle_path /media/* {
-#         root * /srv/mojo-media
-#         file_server
-#     }
-#     reverse_proxy 172.17.0.1:8010
-#     encode gzip
-# }
