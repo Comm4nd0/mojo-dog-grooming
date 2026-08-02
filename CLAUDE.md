@@ -239,6 +239,37 @@ form and the password-reset pages both — so a role fixed there is fixed for al
 `test/theme_test.dart` holds the line: display text must resolve to the theme's colour, and
 every role must clear WCAG AA against the surface it is used on.
 
+### The admin wears the same palette
+
+`api/static/mojo/admin.css`, pulled in by `templates/admin/base_site.html`, which **shadows**
+the file of that name inside `django.contrib.admin`. It is almost entirely a redefinition of
+Django's own custom properties, because the admin already drives every surface off them.
+
+- **The three-block structure is copied from Django and has to stay.**
+  `html[data-theme="light"], :root` / `@media (prefers-color-scheme: dark) { :root }` /
+  `html[data-theme="dark"]`. The admin's theme toggle writes `data-theme` on `<html>`, and
+  `html[data-theme="dark"]` outranks a bare `:root`, so a light value written only as `:root`
+  loses to `dark_mode.css` for anyone who has picked a theme. Every variable `dark_mode.css`
+  sets must be set again in **both** dark blocks or its Django-blue value survives.
+- **Several variables do two unrelated jobs, and that constrains the value.** `--header-bg` is
+  not just the page header, it is the caption bar on every module and inline group, which is
+  why the admin keeps a green bar where the web pages use a white one. `--breadcrumbs-fg` is
+  reused as a foreground *on* `--primary` by the filter widget, so it cannot be the deep green.
+  `--accent` is the wordmark colour **and** the calendar caption's background under text Django
+  hardcodes to `#333`, so it has to be the pale tint in dark mode too. Changing one of these to
+  suit the surface you are looking at will break the other one somewhere you are not.
+- Square corners are one `* { border-radius: 0 !important }`. Django sets a radius in seven
+  stylesheets plus a vendored select2, several above any sane specificity — this is a
+  deliberate `!important`, not a lazy one.
+- `ApiConfig.verbose_name` is what stops the index and every breadcrumb reading **"API"**.
+
+`AdminSkinTests` in `api/tests.py` is the guard, and what it guards is the shadow going stale:
+a Django upgrade that restructures the `branding` or `extrastyle` blocks would silently drop
+the branding and leave the default blue, with nothing failing until Jess opened it. It also
+asserts the stylesheet is somewhere `collectstatic` will find it — `{% static %}` renders a
+link to a missing file quite happily, and production has manifest storage and no `runserver`
+fallback to cover for it.
+
 ## Getting back in is a separate problem from getting in
 
 There is no SMTP configured on the box and there never has been — intake links

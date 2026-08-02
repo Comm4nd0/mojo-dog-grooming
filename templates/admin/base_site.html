@@ -1,0 +1,38 @@
+{% extends "admin/base.html" %}
+{% load i18n static %}
+
+{#
+  Shadows django/contrib/admin/templates/admin/base_site.html. Every admin page
+  extends "admin/base_site.html", and TEMPLATES['DIRS'] is searched before the
+  app directories, so this file is what they all get — including the ones that
+  override extrastyle themselves, whose {{ block.super }} resolves to the block
+  below and so still picks the skin up.
+#}
+
+{% block title %}{% if subtitle %}{{ subtitle }} | {% endif %}{{ title }} | {{ site_title|default:_('Mojo and Co') }}{% endblock %}
+
+{% block extrastyle %}{{ block.super }}
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&family=Playfair+Display:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{% static 'mojo/admin.css' %}">
+{% endblock %}
+
+{% block branding %}
+<div id="branding-inner">
+  {# The same mark and wordmark as templates/base.html, so the admin, the
+     intake form and the reset page all open the same way. #}
+  <span class="mojo-mark" aria-hidden="true">
+    <svg viewBox="0 0 24 24" fill="#000"><path d="M4.5 10a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm5-2.5a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm5 0a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm5 2.5a2 2 0 1 0 0-4 2 2 0 0 0 0 4ZM12 10c-2.7 0-6 3.4-6 6.2 0 1.8 1.3 2.8 3 2.8 1.2 0 2.1-.6 3-.6s1.8.6 3 .6c1.7 0 3-1 3-2.8C18 13.4 14.7 10 12 10Z"/></svg>
+  </span>
+  <span>
+    <div id="site-name"><a href="{% url 'admin:index' %}">{{ site_header|default:_('Mojo and Co') }}</a></div>
+    <div class="mojo-sub">DOG GROOMING</div>
+  </span>
+</div>
+{% if user.is_anonymous %}
+  {% include "admin/color_theme_toggle.html" %}
+{% endif %}
+{% endblock %}
+
+{% block nav-global %}{% endblock %}

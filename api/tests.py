@@ -12,6 +12,7 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.contrib.auth.models import User
+from django.contrib.staticfiles import finders
 from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
@@ -3310,3 +3311,51 @@ class NailVisitBookingTests(BaseAPITestCase):
             settings_row.nail_visit_minutes,
         )
         self.assertEqual(response.data['suggested_price'], settings_row.nail_visit_price)
+
+
+class AdminSkinTests(BaseAPITestCase):
+    """The admin skin hangs on templates/admin/base_site.html, which *shadows*
+    a file inside django.contrib.admin. Nothing fails loudly if that shadow
+    goes stale — a Django upgrade that restructures the branding or extrastyle
+    blocks would just quietly drop the branding and leave the default blue,
+    which nobody would notice until Jess opened it."""
+
+    def setUp(self):
+        super().setUp()
+        self.web = APIClient()
+        self.web.login(username='jess', password='pw')
+
+    def test_the_index_names_the_records_not_the_app_label(self):
+        html = self.web.get('/admin/').content.decode()
+        # ApiConfig.verbose_name. Without it the admin groups every model Jess
+        # uses under a heading reading "API".
+        self.assertIn('Grooming records', html)
+        self.assertNotIn('>API<', html)
+
+    def test_the_skin_reaches_every_kind_of_admin_page(self):
+        # change_form and friends override extrastyle themselves and pull ours
+        # in through {{ block.super }}. If that chain breaks, the stylesheet
+        # silently stops loading on exactly the pages Jess spends time on.
+        for url in [
+            '/admin/',
+            '/admin/api/client/',
+            f'/admin/api/client/{self.alice.pk}/change/',
+            '/admin/api/client/add/',
+            '/admin/api/dog/',
+        ]:
+            with self.subTest(url=url):
+                response = self.web.get(url)
+                self.assertEqual(response.status_code, status.HTTP_200_OK)
+                self.assertIn('mojo/admin.css', response.content.decode())
+
+    def test_the_branding_is_on_the_page_an_anonymous_visitor_gets(self):
+        html = APIClient().get('/admin/login/').content.decode()
+        self.assertIn('branding-inner', html)
+        self.assertIn('DOG GROOMING', html)
+        self.assertIn('mojo/admin.css', html)
+
+    def test_the_stylesheet_is_where_collectstatic_will_look(self):
+        # The template links it through {% static %}; if the file is not on a
+        # staticfiles path the link still renders and 404s in production, where
+        # manifest storage is on and there is no runserver fallback.
+        self.assertIsNotNone(finders.find('mojo/admin.css'))

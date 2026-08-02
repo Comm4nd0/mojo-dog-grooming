@@ -1,0 +1,294 @@
+/*
+    Mojo and Co — Django admin skin.
+
+    The palette is the same one sampled from mojoandco.uk that drives
+    templates/base.html and mobile/lib/constants/app_colors.dart. Nothing here
+    is invented; if a value changes there it should change here too.
+
+    This is almost entirely a redefinition of Django's own custom properties
+    rather than new rules, because the admin already drives every surface off
+    them. The structure below deliberately mirrors django/contrib/admin's
+    base.css and dark_mode.css:
+
+        html[data-theme="light"], :root   { light }
+        @media (prefers-color-scheme: dark) { :root { dark } }
+        html[data-theme="dark"]           { dark }
+
+    Copying that shape matters. The admin's theme toggle writes data-theme on
+    <html>, and `html[data-theme="dark"]` outranks a bare `:root`, so a light
+    override written only as `:root` would silently lose to dark_mode.css for
+    anyone who has picked a theme. Every variable dark_mode.css sets has to be
+    set again in *both* dark blocks below or its Django-blue value survives.
+
+    Loaded from templates/admin/base_site.html's extrastyle block, which the
+    admin puts after base.css and dark_mode.css — so equal-specificity rules
+    here win on source order.
+*/
+
+html[data-theme="light"],
+:root {
+    /* --primary and --secondary are *backgrounds* carrying white text
+       (autocomplete highlight, calendar hover, the chosen-items header in the
+       filter widget), so they have to be dark enough for it. #01821B on white
+       is 4.99:1. */
+    --primary: #01821B;
+    --secondary: #015412;
+    --primary-fg: #fff;
+
+    /* --accent does two unrelated jobs: it colours the wordmark on the green
+       header bar, and it is the *background* of the calendar caption, whose
+       text colour Django hardcodes to #333. The pale tint is the only value
+       that works for both (4.5:1 on the header, 11.4:1 under #333), and for
+       the same reason it must stay pale in dark mode. */
+    --accent: #D2FFD4;
+
+    --body-fg: #151515;
+    --body-bg: #fff;
+    --body-quiet-color: #5E5E5E;
+    --body-medium-color: #3A3A3A;
+    --body-loud-color: #000;
+
+    /* --header-bg is not only the page header: it is also the caption bar on
+       every module and inline group. It has to be a solid block that white
+       text sits on, which is why the admin keeps a green bar where the web
+       pages use a white one with green text. */
+    --header-color: #D2FFD4;
+    --header-branding-color: #D2FFD4;
+    --header-bg: #01821B;
+    --header-link-color: #fff;
+
+    /* --breadcrumbs-fg is reused as a foreground on --primary by the
+       filter widget's "clear all" link, so it cannot be the deep green — that
+       would be green on green. Pale text on a darker green band instead. */
+    --breadcrumbs-fg: #D2FFD4;
+    --breadcrumbs-link-fg: #D2FFD4;
+    --breadcrumbs-bg: #015412;
+
+    --link-fg: #01821B;
+    --link-hover-color: #015412;
+    --link-selected-fg: #015412;
+
+    --hairline-color: #E2E2E2;
+    --border-color: #D5D5D5;
+
+    --error-fg: #C62828;
+
+    --message-success-bg: #D2FFD4;
+    --message-warning-bg: #FFF4CE;
+    --message-error-bg: #FDECEC;
+
+    --darkened-bg: #FAFAFA;
+    --selected-bg: #EDFFEE;
+    --selected-row: #D2FFD4;
+
+    --button-fg: #fff;
+    --button-bg: #01821B;
+    --button-hover-bg: #015412;
+    /* The default (primary) button is the bright green, and the brand rule is
+       that the bright green carries a black label only — white on it is about
+       1.9:1. Django only swaps the background for .default, so the black
+       foreground is set explicitly further down. */
+    --default-button-bg: #02D42C;
+    --default-button-hover-bg: #02B825;
+    --close-button-bg: #5E5E5E;
+    --close-button-hover-bg: #151515;
+    --delete-button-bg: #C62828;
+    --delete-button-hover-bg: #A31F1F;
+
+    --object-tools-fg: #fff;
+    --object-tools-bg: #01821B;
+    --object-tools-hover-bg: #015412;
+
+    --font-family-primary:
+        Montserrat,
+        "Segoe UI",
+        system-ui,
+        Roboto,
+        "Helvetica Neue",
+        Arial,
+        sans-serif,
+        "Apple Color Emoji",
+        "Segoe UI Emoji",
+        "Segoe UI Symbol",
+        "Noto Color Emoji";
+
+    /* Not a Django variable — the square mark in the header, and nothing
+       else. The bright green is a block colour here, never text. */
+    --mojo-bright: #02D42C;
+
+    color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --body-fg: #fff;
+        --body-bg: #121212;
+        --body-quiet-color: #B0B0B0;
+        --body-medium-color: #E0E0E0;
+        --body-loud-color: #fff;
+
+        /* The deep green is a filled bar here, not a foreground, so it stays.
+           As *text* on #121212 it would be about 2:1 — which is why --link-fg
+           swaps to the bright green below and the header does not. */
+        --breadcrumbs-bg: #015412;
+
+        --link-fg: #02D42C;
+        --link-hover-color: #8CFFA0;
+        --link-selected-fg: #8CFFA0;
+
+        --hairline-color: #2E2E2E;
+        --border-color: #3A3A3A;
+
+        --error-fg: #EF9A9A;
+
+        /* Message text is --body-fg, which is white here, so these have to
+           become dark blocks — the pale tint would be white on near-white. */
+        --message-success-bg: #123317;
+        --message-warning-bg: #40300A;
+        --message-error-bg: #3A1414;
+
+        --darkened-bg: #1B1B1B;
+        --selected-bg: #16301A;
+        --selected-row: #015412;
+
+        --close-button-bg: #333;
+        --close-button-hover-bg: #666;
+
+        color-scheme: dark;
+    }
+}
+
+html[data-theme="dark"] {
+    --body-fg: #fff;
+    --body-bg: #121212;
+    --body-quiet-color: #B0B0B0;
+    --body-medium-color: #E0E0E0;
+    --body-loud-color: #fff;
+
+    --breadcrumbs-bg: #015412;
+
+    --link-fg: #02D42C;
+    --link-hover-color: #8CFFA0;
+    --link-selected-fg: #8CFFA0;
+
+    --hairline-color: #2E2E2E;
+    --border-color: #3A3A3A;
+
+    --error-fg: #EF9A9A;
+
+    --message-success-bg: #123317;
+    --message-warning-bg: #40300A;
+    --message-error-bg: #3A1414;
+
+    --darkened-bg: #1B1B1B;
+    --selected-bg: #16301A;
+    --selected-row: #015412;
+
+    --close-button-bg: #333;
+    --close-button-hover-bg: #666;
+
+    color-scheme: dark;
+}
+
+/*
+    Square corners are a brand rule rather than a preference — the site rounds
+    nothing, and softening it reads as a different brand. Django sets
+    border-radius in seven stylesheets (base, forms, login, changelists,
+    autocomplete, widgets, responsive) plus a vendored select2, several of them
+    on higher-specificity selectors than anything sane written here, so this is
+    one !important instead of a specificity race with all of them.
+*/
+* {
+    border-radius: 0 !important;
+}
+
+/* ── Type ──────────────────────────────────────────────────────────── */
+
+#site-name,
+#content h1,
+.module h2,
+.module caption,
+.inline-group h2 {
+    font-family: "Playfair Display", Georgia, serif;
+    font-weight: 400;
+    letter-spacing: .5px;
+}
+
+/* ── Header ────────────────────────────────────────────────────────── */
+
+#branding-inner {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.mojo-mark {
+    width: 34px;
+    height: 34px;
+    background: var(--mojo-bright);
+    display: grid;
+    place-items: center;
+    flex: none;
+}
+
+.mojo-mark svg {
+    width: 20px;
+    height: 20px;
+}
+
+#site-name {
+    margin-inline-end: 0;
+    font-size: 1.375rem;
+    line-height: 1.15;
+}
+
+.mojo-sub {
+    font-size: 0.625rem;
+    letter-spacing: 3px;
+    font-weight: 700;
+    color: var(--accent);
+}
+
+/* ── Buttons ───────────────────────────────────────────────────────── */
+
+/*
+    Uppercase, weight 700, wide tracking, square. The web pages use 3px of
+    letter-spacing on full-width buttons; 2px here because the admin's are
+    small and sit several to a row — "Save and continue editing" at 3px runs
+    off a narrow submit row.
+*/
+.button,
+input[type=submit],
+input[type=button],
+.submit-row input,
+a.button,
+.object-tools a:link,
+.object-tools a:visited {
+    text-transform: uppercase;
+    font-weight: 700;
+    letter-spacing: 2px;
+    font-size: 0.6875rem;
+}
+
+/* Django's .button.default only swaps the background and sets weight 400, so
+   both the black label and the weight have to be restated here. */
+.button.default,
+input[type=submit].default,
+.submit-row input.default {
+    color: #000;
+    font-weight: 700;
+}
+
+/* ── Fields ────────────────────────────────────────────────────────── */
+
+input:not([type]):focus, input[type=text]:focus, input[type=password]:focus,
+input[type=email]:focus, input[type=url]:focus, input[type=number]:focus,
+input[type=tel]:focus, textarea:focus, select:focus, .vTextField:focus {
+    border-color: var(--primary);
+    box-shadow: inset 0 0 0 1px var(--primary);
+}
+
+input[type=checkbox],
+input[type=radio] {
+    accent-color: var(--primary);
+}
