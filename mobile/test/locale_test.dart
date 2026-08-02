@@ -18,6 +18,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mojo_app/main.dart';
+import 'package:mojo_app/models/models.dart';
 
 /// Builds the same localisation setup `MojoApp` does, and hands back a context
 /// underneath it.
@@ -38,7 +39,33 @@ Future<BuildContext> _localisedContext(WidgetTester tester) async {
   return captured;
 }
 
+CurrentUser _user({String first = '', String last = ''}) => CurrentUser(
+      id: 1,
+      username: 'jess',
+      email: 'info@mojoandco.uk',
+      isStaff: true,
+      firstName: first,
+      lastName: last,
+    );
+
 void main() {
+  group('What to call somebody', () {
+    // Jess asked to be "Jessica Croll" rather than "jess". "jess" was her
+    // *username* showing, because that was all the app had — and a username
+    // is what she signs in with, so it is not the thing to change.
+    test('a name is used when there is one', () {
+      expect(_user(first: 'Jessica', last: 'Croll').displayName, 'Jessica Croll');
+    });
+
+    test('a first name on its own is enough', () {
+      expect(_user(first: 'Jessica').displayName, 'Jessica');
+    });
+
+    test('the username is the fallback, not a blank', () {
+      expect(_user().displayName, 'jess');
+    });
+  });
+
   test('the app supports exactly one locale, en_GB', () {
     expect(kSupportedLocales, const [Locale('en', 'GB')]);
   });

@@ -36,6 +36,8 @@ class CurrentUser {
   final int id;
   final String username;
   final String email;
+  final String firstName;
+  final String lastName;
   final bool isStaff;
 
   /// Gates the account-management screen. Handing out a password reset link is
@@ -49,6 +51,8 @@ class CurrentUser {
     required this.username,
     required this.email,
     required this.isStaff,
+    this.firstName = '',
+    this.lastName = '',
     this.isSuperuser = false,
     this.clientId,
   });
@@ -57,10 +61,23 @@ class CurrentUser {
         id: json['id'] as int,
         username: json['username']?.toString() ?? '',
         email: json['email']?.toString() ?? '',
+        firstName: json['first_name']?.toString() ?? '',
+        lastName: json['last_name']?.toString() ?? '',
         isStaff: json['is_staff'] == true,
         isSuperuser: json['is_superuser'] == true,
         clientId: json['client_id'] as int?,
       );
+
+  /// What to call this person on screen.
+  ///
+  /// Jess asked to be "Jessica Croll" rather than "jess" — which was her
+  /// *username* showing, because that was all this had. The username is still
+  /// what she signs in with and is not something to change lightly; her name
+  /// is a separate thing, and this is it.
+  String get displayName {
+    final full = [firstName, lastName].where((part) => part.isNotEmpty).join(' ');
+    return full.isEmpty ? username : full;
+  }
 
   /// A client login with no linked record can't see anything yet — the app
   /// routes these to the "claim your profile" flow.

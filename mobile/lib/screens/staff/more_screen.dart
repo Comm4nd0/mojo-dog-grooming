@@ -126,7 +126,7 @@ class _MoreScreenState extends State<MoreScreen> with WidgetsBindingObserver {
           ListTile(
             leading: const Icon(Icons.logout, color: AppColors.error),
             title: const Text('Sign out', style: TextStyle(color: AppColors.error)),
-            subtitle: Text(user?.username ?? ''),
+            subtitle: Text(user?.displayName ?? ''),
             onTap: () => confirmSignOut(context),
           ),
           const SizedBox(height: 24),
