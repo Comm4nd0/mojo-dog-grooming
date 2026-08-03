@@ -61,27 +61,51 @@ void main() {
     WidgetController.hitTestWarningShouldBeFatal = true;
   });
 
-  /// Pump a timeline on a surface tall enough that it does not scroll.
+  /// Pump a timeline with room to lay out its whole day, so it never scrolls.
   ///
-  /// The window is 07:00–19:00, which at 72dp an hour is **864dp of content**.
-  /// The default 800x600 test surface cannot show that, so the timeline
-  /// scrolls and everything past 600dp is clipped — and a clipped block is
-  /// still *laid out* where the finder says it is, so `getCenter` happily
-  /// returns a point that paints nothing. Hit testing there finds the
-  /// Scaffold's Material instead of the block, which is exactly what the macOS
-  /// log showed: no RenderOpacity in the chain and a bare Material on top.
+  /// The window is 07:00–19:00 — 864dp of content at 72dp an hour. Give it less
+  /// than that and `SingleChildScrollView` becomes scrollable, and `Scrollable`
+  /// wraps its viewport in an `IgnorePointer` that **ignores pointers while a
+  /// scroll activity is in flight**. While it ignores, the entire timeline
+  /// subtree drops out of the hit path: a tap at a block's own centre walks
+  /// straight past the viewport, the Stack and the gesture detector, and lands
+  /// on the Scaffold's Material.
   ///
-  /// Whether that bites depends on the viewport, which is why this file was
-  /// green here and red on Apple's runners. A surface taller than the content
-  /// takes the viewport out of the question rather than leaving it to chance.
+  /// That is precisely the chain the macOS runs printed — a Material on top and
+  /// nothing of the timeline in it — while this machine, where the content
+  /// happened to fit, saw the full path down to RenderPointerListener. It is
+  /// also why the two earlier readings of that log were wrong: the
+  /// AbsorbPointer and IgnorePointer entries near the bottom are route-level
+  /// proxy boxes passing pointers through, and the one that mattered was the
+  /// Scrollable's, which is invisible precisely when it is doing the damage.
   ///
-  /// `setSurfaceSize` has to be called inside the test body — it goes through
-  /// the binding's async guard, so setUp/tearDown is too early.
+  /// The SizedBox is the belt: it fixes the height regardless of the surface,
+  /// so nothing here depends on `setSurfaceSize` behaving the same everywhere
+  /// (`view.physicalSize` still reports the old size after it on this machine).
+  /// The surface size is the braces, so the box is not itself clipped.
   Future<void> pumpTimeline(WidgetTester tester, Widget timeline) async {
     await tester.binding.setSurfaceSize(const Size(800, 1000));
     addTearDown(() => tester.binding.setSurfaceSize(null));
-    await tester.pumpWidget(MaterialApp(home: Scaffold(body: timeline)));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(height: 900, child: timeline),
+        ),
+      ),
+    );
     await tester.pumpAndSettle();
+
+    // Assert the premise rather than trusting it: if a future window change
+    // makes the day taller than this box, the scroll view comes back and these
+    // tests start lying again. Better to fail here, saying why.
+    final viewport = tester.renderObject<RenderBox>(
+      find.byType(Scrollable).first,
+    );
+    expect(
+      viewport.size.height,
+      greaterThanOrEqualTo(864.0),
+      reason: 'the timeline must not be scrollable in these tests — see above',
+    );
   }
 
   testWidgets('long-pressing and sliding reports the new time', (tester) async {
