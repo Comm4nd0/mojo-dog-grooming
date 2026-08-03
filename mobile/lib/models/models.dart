@@ -749,6 +749,15 @@ class Dog {
   final String? temperament;
   final String? temperamentDisplay;
   final String? temperamentNotes;
+
+  /// Staff-only, so **nullable**: null means the server withheld it, not that
+  /// no restraint is needed. Never render it as "no" without a null check —
+  /// telling a groomer a bitey dog needs nothing is how somebody gets bitten.
+  final bool? requiresRestraint;
+
+  /// What this dog's grooms have actually taken, once there are enough of
+  /// them. Null means not enough history yet, and the breed estimate stands.
+  final int? averageGroomMinutes;
   final List<ProblemArea>? problemAreas;
 
   const Dog({
@@ -791,6 +800,8 @@ class Dog {
     this.temperament,
     this.temperamentDisplay,
     this.temperamentNotes,
+    this.requiresRestraint,
+    this.averageGroomMinutes,
     this.problemAreas,
   });
 
@@ -838,6 +849,9 @@ class Dog {
         temperament: json['temperament']?.toString(),
         temperamentDisplay: json['temperament_display']?.toString(),
         temperamentNotes: json['temperament_notes']?.toString(),
+        // `== true` would turn a withheld field into a confident "no".
+        requiresRestraint: json['requires_restraint'] as bool?,
+        averageGroomMinutes: (json['average_groom_minutes'] as num?)?.toInt(),
         problemAreas: json.containsKey('problem_areas')
             ? ((json['problem_areas'] as List?) ?? const [])
                 .map((area) => ProblemArea.fromJson(area as Map<String, dynamic>))
@@ -1103,6 +1117,7 @@ class GroomSession {
   final String finalBody;
   final String finalFeet;
   final String finalTail;
+  final String finalFace;
 
   final bool nailsDone;
   final bool fleasTreated;
@@ -1138,6 +1153,7 @@ class GroomSession {
     this.finalBody = '',
     this.finalFeet = '',
     this.finalTail = '',
+    this.finalFace = '',
     this.nailsDone = false,
     this.fleasTreated = false,
     this.ticksRemoved = false,
@@ -1178,6 +1194,7 @@ class GroomSession {
         finalBody: json['final_body']?.toString() ?? '',
         finalFeet: json['final_feet']?.toString() ?? '',
         finalTail: json['final_tail']?.toString() ?? '',
+        finalFace: json['final_face']?.toString() ?? '',
         nailsDone: json['nails_done'] == true,
         fleasTreated: json['fleas_treated'] == true,
         ticksRemoved: json['ticks_removed'] == true,

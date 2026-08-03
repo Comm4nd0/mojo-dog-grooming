@@ -291,10 +291,42 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
             ],
           ),
         ),
+        // Only when it is true. An absent or false flag says nothing worth a
+        // row, and a "Restraints: no" line on a dog nobody has assessed reads
+        // as an assurance nobody gave.
+        if (dog.requiresRestraint == true)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            child: Row(
+              children: [
+                const Icon(Icons.pan_tool_outlined, size: 18, color: AppColors.warning),
+                const SizedBox(width: 8),
+                Text(
+                  'Restraints required',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.warning,
+                  ),
+                ),
+              ],
+            ),
+          ),
         if ((dog.temperamentNotes ?? '').isNotEmpty)
           DetailRow(label: 'Handling', value: dog.temperamentNotes),
       ],
     );
+  }
+
+  /// Where the groom time came from, so the number is never a mystery.
+  ///
+  /// It has three possible sources now — something Jess typed, what this dog's
+  /// last few grooms actually took, or the breed grid's estimate — and a bare
+  /// figure that quietly changed after a couple of sessions would be alarming
+  /// rather than helpful.
+  String _groomTimeBasis(Dog dog) {
+    if (dog.groomMinutesOverride != null) return '';
+    if (dog.averageGroomMinutes != null) return ' (average of recent grooms)';
+    return ' (breed default)';
   }
 
   Widget _groomingSection(Dog dog) {
@@ -304,8 +336,7 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
         const SectionHeader(title: 'Groom'),
         DetailRow(
           label: 'Time',
-          value: '${formatDuration(dog.groomMinutes)}'
-              '${dog.groomMinutesOverride == null ? ' (breed default)' : ''}',
+          value: '${formatDuration(dog.groomMinutes)}${_groomTimeBasis(dog)}',
         ),
         DetailRow(
           label: 'Price',

@@ -53,7 +53,7 @@ mobile/lib/
 Backend:
 ```bash
 python manage.py migrate && python manage.py seed_breeds
-python manage.py test api        # 343 tests
+python manage.py test api        # 357 tests
 python manage.py runserver 0.0.0.0:8000
 python manage.py accounts        # who can sign in — usernames live only in the DB
 python manage.py reset_link jess # a way back in when the superuser is locked out
@@ -62,7 +62,7 @@ python manage.py reset_link jess # a way back in when the superuser is locked ou
 Mobile:
 ```bash
 cd mobile && flutter pub get
-flutter analyze && flutter test  # 157 tests
+flutter analyze && flutter test  # 160 tests
 flutter run --dart-define=MOJO_API_BASE=http://192.168.1.20:8000/api
 ```
 

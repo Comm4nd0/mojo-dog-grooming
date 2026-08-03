@@ -569,6 +569,18 @@ class Dog(models.Model):
         help_text='Handling difficulty. Drives the per-day booking limit. Hidden from clients.',
     )
     temperament_notes = models.TextField(blank=True, help_text='How to handle this dog. Hidden from clients.')
+    # Jess's request, and it sits with the handling notes rather than beside
+    # the consent of the same name: the RESTRAINT consent is the owner
+    # *permitting* a collar or muzzle, this is Jess recording that this dog
+    # actually needs one. Somebody can agree and never need it.
+    #
+    # **Staff only**, like everything else in this block. A client opening
+    # their dog's profile must not be told their dog gets muzzled.
+    requires_restraint = models.BooleanField(
+        default=False,
+        verbose_name='Restraints required',
+        help_text='This dog needs a collar or muzzle to be groomed safely. Hidden from clients.',
+    )
 
     # Overrides for the breed averages. Null means "use the breed's value".
     groom_minutes = models.PositiveIntegerField(
@@ -582,6 +594,21 @@ class Dog(models.Model):
     schedule_weeks = models.PositiveIntegerField(
         null=True, blank=True,
         help_text='Overrides the breed average grooming interval. Blank = use the breed default.',
+    )
+    #: What this dog's grooms have actually taken — Jess's "once sessions added
+    #: can the average groom time be the approximate dog groom time?".
+    #:
+    #: Denormalised rather than computed on read, because ``Doguments`` renders
+    #: ``effective_groom_minutes`` for every dog in the book and a query per row
+    #: would be an N+1 on the busiest screen in the app.
+    #:
+    #: Null means "not enough real grooms yet" — see
+    #: ``recalculate_average_groom_minutes``. Null is not zero: a dog with no
+    #: history falls back to its breed, it does not book a nil-minute slot.
+    average_groom_minutes = models.PositiveIntegerField(
+        null=True, blank=True,
+        editable=False,
+        help_text='Worked out from past grooms. Not edited by hand.',
     )
 
     # Grooming preferences, one free-text note per area.
@@ -635,13 +662,83 @@ class Dog(models.Model):
     # these values — a bare ``dog.price`` is null whenever the breed default
     # applies, which is the common case.
 
+    #: How many past grooms to average, and the fewest that will do.
+    #:
+    #: Recent, because a puppy's first groom and its fifth are different jobs
+    #: and the old ones should fall out of the reckoning. At least two, because
+    #: a single visit is as likely to be a bad afternoon as a true measure —
+    #: and the breed grid, for all that it is an estimate, is at least a
+    #: considered one.
+    AVERAGE_OVER_SESSIONS = 5
+    MIN_SESSIONS_FOR_AVERAGE = 2
+
     @property
     def effective_groom_minutes(self):
+        # An explicit override still wins. `apply_to_dog()` writes to it, and
+        # so does the dog form, and both are somebody deciding — that should
+        # not be quietly outvoted by an average.
         if self.groom_minutes is not None:
             return self.groom_minutes
+        # What this dog's grooms actually take, ahead of what the breed grid
+        # guesses they might. The grid prices by size band and coat, and its
+        # times are general estimates; two real grooms of this dog beat them.
+        if self.average_groom_minutes:
+            return self.average_groom_minutes
         if self.breed_id:
             return self.breed.avg_groom_minutes
         return 90  # Fallback for an unknown breed with no override.
+
+    def recalculate_average_groom_minutes(self, save=True):
+        """Re-derive :attr:`average_groom_minutes` from this dog's history.
+
+        Only **whole grooms** count, via the same ``_was_a_whole_groom()``
+        guard ``apply_to_dog()`` uses. A nails visit is twenty minutes and a
+        "Tidy Up" is twenty-five; averaging either into a full groom books the
+        next one into a slot far too short, which is the bug that guard exists
+        to prevent, arrived at by a different road.
+
+        Called from ``GroomSession.save()`` and ``delete()`` rather than left
+        to a nightly job — the figure has to be right the moment Jess finishes
+        writing up a visit and books the next one.
+        """
+        # `_was_a_whole_groom` reads appointment.services and `total_seconds`
+        # reads timings, so both are prefetched — this runs on every session
+        # save and should not fan out into a query per visit.
+        #
+        # Over-fetch a little, because sessions that fail the whole-groom guard
+        # are skipped and we still want the most recent five that pass.
+        sessions = (
+            self.groom_sessions
+            .filter(visit_type=ServiceType.GROOM)
+            .order_by('-started_at', '-id')
+            .select_related('appointment')
+            .prefetch_related('appointment__services', 'timings')[
+                : self.AVERAGE_OVER_SESSIONS * 3
+            ]
+        )
+
+        minutes = []
+        for session in sessions:
+            if not session._was_a_whole_groom():
+                continue
+            total = session.total_minutes
+            if total > 0:
+                minutes.append(total)
+            if len(minutes) >= self.AVERAGE_OVER_SESSIONS:
+                break
+
+        average = (
+            round(sum(minutes) / len(minutes))
+            if len(minutes) >= self.MIN_SESSIONS_FOR_AVERAGE
+            else None
+        )
+
+        if average == self.average_groom_minutes:
+            return average
+        self.average_groom_minutes = average
+        if save:
+            self.save(update_fields=['average_groom_minutes', 'updated_at'])
+        return average
 
     @property
     def effective_price(self):
@@ -1282,6 +1379,12 @@ class GroomSession(models.Model):
     final_body = models.TextField(blank=True, verbose_name='Final body trim')
     final_feet = models.TextField(blank=True, verbose_name='Final feet shape')
     final_tail = models.TextField(blank=True, verbose_name='Final tail')
+    # Jess's request. Note this goes **beyond the paper card**, which records
+    # body, feet and tail only (docs/paper-cards.md) — the card is the spec for
+    # everything else here, so the difference is deliberate rather than drift.
+    # The dog still carries `pref_ears` and `pref_skirt` with no `final_`
+    # counterpart; she asked for the face, so that is what this adds.
+    final_face = models.TextField(blank=True, verbose_name='Final face shape')
 
     # ── The nails / fleas / ticks card ─────────────────────────────────
     nails_done = models.BooleanField(default=False)
@@ -1355,6 +1458,28 @@ class GroomSession(models.Model):
         self.applied_to_dog_at = timezone.now()
         self.save(update_fields=['applied_to_dog_at'])
         return True
+
+    def save(self, *args, **kwargs):
+        """Save, then re-derive the dog's average groom time.
+
+        Here rather than in a nightly job because the figure has to be right
+        the moment Jess finishes writing a visit up and books the next one.
+        """
+        super().save(*args, **kwargs)
+        self._refresh_dog_average()
+
+    def delete(self, *args, **kwargs):
+        # Hold the dog before the row goes, or there is nothing to recalculate
+        # against afterwards.
+        dog = self.dog
+        result = super().delete(*args, **kwargs)
+        dog.recalculate_average_groom_minutes()
+        return result
+
+    def _refresh_dog_average(self):
+        # `update_fields` on the dog is deliberately narrow, so this cannot
+        # clobber a concurrent edit to the rest of the profile.
+        self.dog.recalculate_average_groom_minutes()
 
     def _was_a_whole_groom(self):
         """Whether this session's time is a fair default for a full groom.

@@ -1606,6 +1606,177 @@ class NeuterUnknownTests(BaseAPITestCase):
         self.assertIs(Dog.objects.get(name='Bramble').is_neutered, True)
 
 
+class RestraintsRequiredTests(BaseAPITestCase):
+    """Jess's tickbox, sitting with the handling notes.
+
+    Not the same thing as the RESTRAINT consent: that is the owner *permitting*
+    a collar or muzzle, this is Jess recording that the dog needs one. Somebody
+    can agree to it and never need it.
+    """
+
+    def test_staff_can_tick_it(self):
+        response = self.staff_client.patch(
+            f'/api/dogs/{self.alice_dog.pk}/', {'requires_restraint': True}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.alice_dog.refresh_from_db()
+        self.assertTrue(self.alice_dog.requires_restraint)
+
+    def test_a_client_is_never_told_their_dog_gets_muzzled(self):
+        self.alice_dog.requires_restraint = True
+        self.alice_dog.save(update_fields=['requires_restraint'])
+
+        response = self.alice_client.get(f'/api/dogs/{self.alice_dog.pk}/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertNotIn('requires_restraint', response.data)
+
+    def test_it_is_also_hidden_on_the_dog_list(self):
+        self.alice_dog.requires_restraint = True
+        self.alice_dog.save(update_fields=['requires_restraint'])
+        self.assertNotIn('requires_restraint', str(self.alice_client.get('/api/dogs/').data))
+
+
+class AverageGroomTimeTests(BaseAPITestCase):
+    """"Once sessions added can the average groom time be the approximate dog
+    groom time?" — Jess.
+
+    The order that matters: an explicit override still wins, then what this
+    dog's grooms actually take, then the breed grid's estimate.
+    """
+
+    def _session(self, minutes, dog=None, visit_type=ServiceType.GROOM, appointment=None):
+        return GroomSession.objects.create(
+            dog=dog or self.alice_dog,
+            visit_type=visit_type,
+            started_at=timezone.now(),
+            recorded_minutes=minutes,
+            appointment=appointment,
+        )
+
+    def test_one_groom_is_not_enough_to_move_off_the_breed_default(self):
+        """A single visit is as likely to be a bad afternoon as a true
+        measure. The breed grid is an estimate, but a considered one."""
+        self._session(200)
+        self.alice_dog.refresh_from_db()
+        self.assertIsNone(self.alice_dog.average_groom_minutes)
+        self.assertEqual(self.alice_dog.effective_groom_minutes, 105)  # the breed's
+
+    def test_two_grooms_become_the_dog_s_time(self):
+        self._session(120)
+        self._session(130)
+        self.alice_dog.refresh_from_db()
+        self.assertEqual(self.alice_dog.average_groom_minutes, 125)
+        self.assertEqual(self.alice_dog.effective_groom_minutes, 125)
+
+    def test_an_explicit_override_still_wins(self):
+        self._session(120)
+        self._session(130)
+        self.alice_dog.groom_minutes = 90
+        self.alice_dog.save(update_fields=['groom_minutes'])
+        self.alice_dog.refresh_from_db()
+        self.assertEqual(self.alice_dog.average_groom_minutes, 125, 'still worked out')
+        self.assertEqual(self.alice_dog.effective_groom_minutes, 90, 'but not used')
+
+    def test_a_nails_visit_never_counts(self):
+        """Twenty minutes is how long a nail trim takes. Averaging it in books
+        the next full groom into a twenty-minute slot."""
+        self._session(120)
+        self._session(130)
+        self._session(20, visit_type=ServiceType.NAILS_FLEAS_TICKS)
+        self.alice_dog.refresh_from_db()
+        self.assertEqual(self.alice_dog.average_groom_minutes, 125)
+
+    def test_a_part_groom_never_counts(self):
+        """The same trap in a new coat: a 25-minute Tidy Up is a GROOM visit,
+        and it is not a fair measure of a whole groom. Uses the same
+        `_was_a_whole_groom` guard `apply_to_dog` does."""
+        tidy = Service.objects.create(
+            code='tidy_up_test', name='Tidy Up', category=ServiceType.GROOM,
+            takes_dog_defaults=False, default_minutes=25,
+        )
+        start = timezone.now()
+        appointment = Appointment.objects.create(
+            dog=self.alice_dog, start_at=start, end_at=start + timedelta(minutes=25),
+        )
+        appointment.services.set([tidy])
+
+        self._session(120)
+        self._session(130)
+        self._session(25, appointment=appointment)
+        self.alice_dog.refresh_from_db()
+        self.assertEqual(self.alice_dog.average_groom_minutes, 125)
+
+    def test_only_the_most_recent_grooms_count(self):
+        """A puppy's first groom and its fifth are different jobs."""
+        for minutes in (300, 300, 300, 100, 100, 100, 100, 100):
+            self._session(minutes)
+        self.alice_dog.refresh_from_db()
+        # Five most recent, all 100 — the early 300s have fallen out.
+        self.assertEqual(self.alice_dog.average_groom_minutes, 100)
+
+    def test_deleting_a_session_re_derives_it(self):
+        self._session(120)
+        outlier = self._session(300)
+        self.alice_dog.refresh_from_db()
+        self.assertEqual(self.alice_dog.average_groom_minutes, 210)
+
+        outlier.delete()
+        self.alice_dog.refresh_from_db()
+        self.assertIsNone(
+            self.alice_dog.average_groom_minutes,
+            'back below the minimum, so back to the breed default',
+        )
+
+    def test_it_is_worked_out_after_the_timings_are_written(self):
+        """The API writes timings *after* saving the session, so an average
+        taken during save() would be computed against no timings at all."""
+        for _ in range(2):
+            self.staff_client.post('/api/groom-sessions/', {
+                'dog': self.alice_dog.pk,
+                'visit_type': ServiceType.GROOM,
+                'started_at': timezone.now().isoformat(),
+                'timings': [
+                    {'phase': GroomPhase.WASH, 'duration_seconds': 1800},
+                    {'phase': GroomPhase.CLIP, 'duration_seconds': 1800},
+                ],
+            }, format='json')
+
+        self.alice_dog.refresh_from_db()
+        self.assertEqual(self.alice_dog.average_groom_minutes, 60)
+
+    def test_the_average_is_read_only_over_the_api(self):
+        response = self.staff_client.patch(
+            f'/api/dogs/{self.alice_dog.pk}/', {'average_groom_minutes': 999}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.alice_dog.refresh_from_db()
+        self.assertIsNone(self.alice_dog.average_groom_minutes)
+
+
+class FinalFaceTests(BaseAPITestCase):
+    def test_a_session_records_the_final_face_shape(self):
+        response = self.staff_client.post('/api/groom-sessions/', {
+            'dog': self.alice_dog.pk,
+            'visit_type': ServiceType.GROOM,
+            'started_at': timezone.now().isoformat(),
+            'final_body': 'Half inch all over',
+            'final_face': 'Teddy bear, rounded',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['final_face'], 'Teddy bear, rounded')
+
+    def test_it_is_not_the_same_as_what_the_owner_asked_for(self):
+        """`pref_face` is the request at intake; `final_face` is what was done.
+        Same distinction the card already draws for body, feet and tail."""
+        self.alice_dog.pref_face = 'Long, leave the beard'
+        self.alice_dog.save(update_fields=['pref_face'])
+        session = GroomSession.objects.create(
+            dog=self.alice_dog, visit_type=ServiceType.GROOM,
+            started_at=timezone.now(), final_face='Had to take the beard off — matted',
+        )
+        self.assertNotEqual(session.final_face, self.alice_dog.pref_face)
+
+
 class InvoiceNumberingTests(BaseAPITestCase):
     """Numbering belongs on the server.
 

@@ -50,6 +50,7 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
   late final TextEditingController _finalBody;
   late final TextEditingController _finalFeet;
   late final TextEditingController _finalTail;
+  late final TextEditingController _finalFace;
   late final TextEditingController _notes;
   late final TextEditingController _sensitive;
 
@@ -85,6 +86,7 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
     _finalBody = TextEditingController(text: session?.finalBody ?? '');
     _finalFeet = TextEditingController(text: session?.finalFeet ?? '');
     _finalTail = TextEditingController(text: session?.finalTail ?? '');
+    _finalFace = TextEditingController(text: session?.finalFace ?? '');
     _notes = TextEditingController(text: session?.notes ?? '');
     _sensitive = TextEditingController(text: session?.sensitiveNotes ?? '');
 
@@ -107,7 +109,7 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
   void dispose() {
     for (final controller in [
       _recordedMinutes, _healthCheck, _mattingNotes, _shampoo,
-      _finalBody, _finalFeet, _finalTail, _notes, _sensitive,
+      _finalBody, _finalFeet, _finalTail, _finalFace, _notes, _sensitive,
     ]) {
       controller.dispose();
     }
@@ -164,6 +166,7 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
           'final_body': _finalBody.text.trim(),
           'final_feet': _finalFeet.text.trim(),
           'final_tail': _finalTail.text.trim(),
+          'final_face': _finalFace.text.trim(),
         },
         if (!_isGroom) ...{
           'nails_done': _nails,
@@ -353,6 +356,14 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
                   MojoTextField(
                     controller: _finalTail,
                     decoration: const InputDecoration(labelText: 'Final tail'),
+                    textCapitalization: TextCapitalization.sentences,
+                  ),
+                  const SizedBox(height: 14),
+                  // Jess's request. Goes beyond the paper card, which records
+                  // body, feet and tail only — see docs/paper-cards.md.
+                  MojoTextField(
+                    controller: _finalFace,
+                    decoration: const InputDecoration(labelText: 'Final face shape'),
                     textCapitalization: TextCapitalization.sentences,
                   ),
                 ],

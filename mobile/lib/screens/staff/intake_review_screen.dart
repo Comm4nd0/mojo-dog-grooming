@@ -97,14 +97,21 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
       child: Scaffold(
         appBar: AppBar(
           title: const Text('Waiting for you'),
+          // Icons, not labels. Five worded tabs did not fit, so the bar
+          // scrolled — and a tab you have to scroll to find is a tab you do
+          // not know is there, which rather defeats a screen whose whole job
+          // is telling Jess what is waiting. The count rides on the icon as a
+          // badge, the tooltip carries the wording, and nothing is hidden.
           bottom: TabBar(
-            isScrollable: true,
             tabs: [
-              Tab(text: 'Requests (${_requests.length})'),
-              Tab(text: 'Bookings (${_bookingChanges.length})'),
-              Tab(text: 'Forms (${pendingSubmissions.length})'),
-              Tab(text: 'Claims (${pendingClaims.length})'),
-              Tab(text: 'Changes (${_changes.length})'),
+              _tab(Icons.event_available_outlined, 'Requests', _requests.length),
+              _tab(Icons.edit_calendar_outlined, 'Booking changes',
+                  _bookingChanges.length),
+              _tab(Icons.assignment_outlined, 'Intake forms',
+                  pendingSubmissions.length),
+              _tab(Icons.person_search_outlined, 'Profile claims',
+                  pendingClaims.length),
+              _tab(Icons.edit_note_outlined, 'Detail changes', _changes.length),
             ],
           ),
         ),
@@ -162,6 +169,26 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
             ),
           );
         },
+      ),
+    );
+  }
+
+  /// One icon tab, with its outstanding count as a badge.
+  ///
+  /// The tooltip is what a worded tab used to say — long-press or a screen
+  /// reader still gets it, so dropping the labels costs nothing but width.
+  Tab _tab(IconData icon, String label, int count) {
+    return Tab(
+      // Height is set because a bare Icon in a Tab collapses tighter than a
+      // text one, and the bar would jump between screens.
+      height: 52,
+      child: Tooltip(
+        message: count == 0 ? label : '$label ($count)',
+        child: Badge(
+          label: Text('$count'),
+          isLabelVisible: count > 0,
+          child: Icon(icon),
+        ),
       ),
     );
   }

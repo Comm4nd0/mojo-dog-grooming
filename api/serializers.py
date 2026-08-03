@@ -829,7 +829,13 @@ class DogListSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
 
 
 class DogSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
-    staff_only_fields = ('temperament', 'temperament_display', 'temperament_notes', 'problem_areas')
+    # `requires_restraint` joins the handling notes, not the consent of the
+    # same name: the RESTRAINT consent is the owner permitting a muzzle, this
+    # is Jess recording that this dog needs one. A client must not be shown it.
+    staff_only_fields = (
+        'temperament', 'temperament_display', 'temperament_notes',
+        'requires_restraint', 'problem_areas',
+    )
 
     client_detail = ClientSerializer(source='client', read_only=True)
     breed_label = serializers.CharField(read_only=True)
@@ -854,7 +860,8 @@ class DogSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
             'id', 'client', 'client_detail', 'name', 'breed', 'breed_other', 'breed_label',
             'date_of_birth', 'sex', 'is_neutered', 'colour', 'microchip_number', 'profile_image',
             'temperament', 'temperament_display', 'temperament_notes',
-            'groom_minutes', 'price', 'schedule_weeks',
+            'requires_restraint',
+            'groom_minutes', 'price', 'schedule_weeks', 'average_groom_minutes',
             'groom_minutes_effective', 'price_effective', 'schedule_weeks_effective',
             'pref_body', 'pref_feet', 'pref_tail', 'pref_face', 'pref_ears', 'pref_skirt',
             'default_services', 'default_services_detail',
@@ -1020,7 +1027,7 @@ class GroomSessionSerializer(serializers.ModelSerializer):
             'matting_notes', 'matting_found',
             'bathed_well_behaved', 'high_velocity_dryer', 'shampoo_used',
             'equipment_used', 'equipment_used_detail',
-            'final_body', 'final_feet', 'final_tail',
+            'final_body', 'final_feet', 'final_tail', 'final_face',
             'nails_done', 'fleas_treated', 'ticks_removed',
             'notes', 'sensitive_notes',
             'temperament_observed', 'temperament_observed_display',
@@ -1057,6 +1064,10 @@ class GroomSessionSerializer(serializers.ModelSerializer):
             session.equipment_used.set(equipment)
         for timing in timings:
             PhaseTiming.objects.create(session=session, **timing)
+        # After the timings, not before: `total_seconds` sums them, so the
+        # average GroomSession.save() worked out a moment ago was computed
+        # against a session that had none yet.
+        session.dog.recalculate_average_groom_minutes()
         return session
 
     def update(self, instance, validated_data):
@@ -1070,9 +1081,14 @@ class GroomSessionSerializer(serializers.ModelSerializer):
         if timings is not None:
             # Phases are a small fixed set; replacing them wholesale keeps the
             # client free to send whichever subset was actually used.
+            #
+            # Note this is a *queryset* delete, so PhaseTiming's model hooks do
+            # not run — which is exactly why the average is refreshed here
+            # rather than left to them.
             instance.timings.all().delete()
             for timing in timings:
                 PhaseTiming.objects.create(session=instance, **timing)
+        instance.dog.recalculate_average_groom_minutes()
         return instance
 
 

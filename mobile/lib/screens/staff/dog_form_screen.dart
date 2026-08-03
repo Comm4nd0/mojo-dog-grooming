@@ -36,6 +36,9 @@ class _DogFormScreenState extends State<DogFormScreen> {
   late final TextEditingController _price;
   late final TextEditingController _scheduleWeeks;
   late final TextEditingController _temperamentNotes;
+  // Absent means the server withheld it, which only happens for a client —
+  // and a client cannot reach this form at all. False is the right start.
+  late bool _requiresRestraint;
   late final TextEditingController _colour;
   late final TextEditingController _microchip;
   late final TextEditingController _allergies;
@@ -76,6 +79,7 @@ class _DogFormScreenState extends State<DogFormScreen> {
     _price = TextEditingController(text: dog?.priceOverride?.toString() ?? '');
     _scheduleWeeks = TextEditingController(text: dog?.scheduleWeeksOverride?.toString() ?? '');
     _temperamentNotes = TextEditingController(text: dog?.temperamentNotes ?? '');
+    _requiresRestraint = dog?.requiresRestraint ?? false;
     _colour = TextEditingController(text: dog?.colour ?? '');
     _microchip = TextEditingController(text: dog?.microchipNumber ?? '');
     _allergies = TextEditingController(text: dog?.allergies ?? '');
@@ -240,6 +244,7 @@ class _DogFormScreenState extends State<DogFormScreen> {
       'is_active': _isActive,
       'temperament': _temperament,
       'temperament_notes': _temperamentNotes.text.trim(),
+      'requires_restraint': _requiresRestraint,
       // Null means "inherit from the breed" — send it explicitly so clearing
       // an override actually clears it.
       'groom_minutes': asInt(_groomMinutes),
@@ -469,7 +474,19 @@ class _DogFormScreenState extends State<DogFormScreen> {
               onSelected: (code) =>
                   setState(() => _temperament = code ?? _temperament),
             ),
-            const SizedBox(height: 14),
+            const SizedBox(height: 6),
+            // Jess's request. Sits with the handling notes rather than with
+            // the consents: the RESTRAINT consent is the owner agreeing a
+            // muzzle *may* be used, this is Jess recording that this dog
+            // needs one. Staff-only, like the rest of this section.
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _requiresRestraint,
+              onChanged: (value) => setState(() => _requiresRestraint = value),
+              title: const Text('Restraints required'),
+              subtitle: const Text('A collar or muzzle is needed to groom safely'),
+            ),
+            const SizedBox(height: 8),
             MojoTextField(
               controller: _temperamentNotes,
               decoration: const InputDecoration(labelText: 'Handling notes'),
