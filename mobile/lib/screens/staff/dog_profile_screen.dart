@@ -216,7 +216,7 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
             color: context.mojo.tint,
             alignment: Alignment.center,
             child: dog.profileImage != null && dog.profileImage!.isNotEmpty
-                ? Image.network(dog.profileImage!, fit: BoxFit.cover, width: 76, height: 76)
+                ? MojoNetworkImage(url: dog.profileImage!, width: 76, height: 76)
                 : Text(
                     dog.name.isEmpty ? '?' : dog.name.characters.first.toUpperCase(),
                     style: AppColors.display(32, color: context.mojo.onTint),
@@ -467,32 +467,133 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
     );
   }
 
+  /// File a scanned document against the dog.
+  ///
+  /// This used to take a camera shot and send it with the service's defaults —
+  /// which meant every document was filed as an intake form and shown to the
+  /// owner, and the "Not shown to the owner" subtitle above could never be
+  /// produced by anything. What Jess files for herself (a vet letter, a note
+  /// about a bite) is not the same as the form the owner signed and should be
+  /// able to read back.
   Future<void> _addDocument(Dog dog) async {
-    final picked = await ImagePicker().pickImage(
-      source: ImageSource.camera,
-      imageQuality: 85,
+    final source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: Icon(Icons.photo_camera_outlined, color: sheetContext.mojo.accent),
+              title: const Text('Photograph it'),
+              onTap: () => Navigator.pop(sheetContext, ImageSource.camera),
+            ),
+            ListTile(
+              leading: Icon(Icons.photo_library_outlined, color: sheetContext.mojo.accent),
+              title: const Text('Choose from photos'),
+              subtitle: const Text('A scan already on the phone'),
+              onTap: () => Navigator.pop(sheetContext, ImageSource.gallery),
+            ),
+          ],
+        ),
+      ),
     );
+    if (source == null || !mounted) return;
+
+    final picked = await ImagePicker().pickImage(source: source, imageQuality: 85);
     if (picked == null || !mounted) return;
 
-    final title = await promptForText(
-      context,
-      title: 'What is it?',
-      initialValue: 'Signed intake form',
-      confirmLabel: 'FILE IT',
-    );
-    if (title == null || title.isEmpty) return;
+    final details = await _askDocumentDetails();
+    if (details == null || !mounted) return;
 
     try {
       await _data.uploadDogDocument(
         dogId: dog.id,
         filePath: picked.path,
-        title: title,
+        title: details.title,
+        kind: details.kind,
+        visibleToClient: details.visibleToClient,
       );
     } catch (error) {
       if (mounted) showSnack(context, error.toString(), isError: true);
       return;
     }
     _load();
+  }
+
+  /// Title, kind and who can see it — asked together, because the last two
+  /// were previously never asked at all.
+  Future<_DocumentDetails?> _askDocumentDetails() async {
+    var kind = 'INTAKE_FORM';
+    // Matches the server's default and the point of the feature: the owner
+    // seeing their own form. Turning it off is the deliberate act.
+    var visible = true;
+    final title = TextEditingController(text: 'Signed intake form');
+
+    const kinds = <String, String>{
+      'INTAKE_FORM': 'Intake form',
+      'VACCINATION': 'Vaccination record',
+      'VET': 'Vet letter',
+      'OTHER': 'Other',
+    };
+
+    final saved = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (sheetContext, setSheetState) => Padding(
+          padding: EdgeInsets.only(
+            left: 16, right: 16, top: 16,
+            bottom: MediaQuery.of(sheetContext).viewInsets.bottom + 24,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('File it', style: Theme.of(sheetContext).textTheme.headlineSmall),
+              const SizedBox(height: 14),
+              TextField(
+                controller: title,
+                decoration: const InputDecoration(labelText: 'What is it?'),
+                textCapitalization: TextCapitalization.sentences,
+              ),
+              const SizedBox(height: 14),
+              DropdownButtonFormField<String>(
+                initialValue: kind,
+                decoration: const InputDecoration(labelText: 'Kind'),
+                items: [
+                  for (final entry in kinds.entries)
+                    DropdownMenuItem(value: entry.key, child: Text(entry.value)),
+                ],
+                onChanged: (value) => setSheetState(() => kind = value ?? kind),
+              ),
+              const SizedBox(height: 8),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                value: visible,
+                title: const Text('The owner can see this'),
+                subtitle: Text(
+                  visible
+                      ? 'They can open and download it from their app.'
+                      : 'Kept for you only.',
+                  style: TextStyle(fontSize: 12, color: sheetContext.mojo.muted),
+                ),
+                onChanged: (value) => setSheetState(() => visible = value),
+              ),
+              const SizedBox(height: 16),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(sheetContext, true),
+                child: const Text('FILE IT'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    final text = title.text.trim();
+    title.dispose();
+    if (saved != true || text.isEmpty) return null;
+    return _DocumentDetails(title: text, kind: kind, visibleToClient: visible);
   }
 
   Future<void> _deleteDocument(DogDocument document) async {
@@ -564,14 +665,7 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
                     SizedBox(
                       width: 90,
                       height: 90,
-                      child: Image.network(
-                        photo.imageUrl,
-                        fit: BoxFit.cover,
-                        errorBuilder: (_, _, _) => Container(
-                          color: context.mojo.tint,
-                          child: const Icon(Icons.broken_image_outlined),
-                        ),
-                      ),
+                      child: MojoNetworkImage(url: photo.imageUrl),
                     ),
                     const SizedBox(height: 3),
                     Text(
@@ -751,4 +845,18 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
       ],
     );
   }
+}
+
+/// What `_askDocumentDetails` collects. Kind and visibility were previously
+/// never asked for at all — the service's defaults went out on every upload.
+class _DocumentDetails {
+  final String title;
+  final String kind;
+  final bool visibleToClient;
+
+  const _DocumentDetails({
+    required this.title,
+    required this.kind,
+    required this.visibleToClient,
+  });
 }

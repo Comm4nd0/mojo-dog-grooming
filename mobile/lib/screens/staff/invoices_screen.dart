@@ -370,8 +370,12 @@ class _InvoiceFormScreenState extends State<_InvoiceFormScreen> {
         _clients = clients;
         _recent = recent.where((a) => a.status == 'COMPLETED').toList();
         _loading = false;
-        // Suggest a sequential-looking number so Jess doesn't have to invent one.
-        _number.text = 'INV-${DateTime.now().millisecondsSinceEpoch % 100000}';
+        // Deliberately left blank. This used to be
+        // 'INV-${millisecondsSinceEpoch % 100000}' — sequential-*looking* and
+        // nothing more: it did not sort, could not be read down a phone, and
+        // modulo a timestamp it could collide with an existing number and fail
+        // the unique constraint in front of Jess. The server allocates the
+        // real next number when this is empty.
       });
     } catch (error) {
       if (!mounted) return;
@@ -439,7 +443,11 @@ class _InvoiceFormScreenState extends State<_InvoiceFormScreen> {
           const SizedBox(height: 14),
           MojoTextField(
             controller: _number,
-            decoration: const InputDecoration(labelText: 'Invoice number *'),
+            decoration: const InputDecoration(
+              labelText: 'Invoice number',
+              hintText: 'Leave blank for the next one',
+              helperText: 'Only fill this in to match a number you have already written down',
+            ),
           ),
 
           if (_clientId != null && _billable.isNotEmpty) ...[

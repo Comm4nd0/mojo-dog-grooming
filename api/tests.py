@@ -1606,6 +1606,223 @@ class NeuterUnknownTests(BaseAPITestCase):
         self.assertIs(Dog.objects.get(name='Bramble').is_neutered, True)
 
 
+class InvoiceNumberingTests(BaseAPITestCase):
+    """Numbering belongs on the server.
+
+    The app used to send ``INV-${millisecondsSinceEpoch % 100000}`` — not a
+    number anybody can read down a phone, it does not sort, and modulo a
+    timestamp it can collide.
+    """
+
+    def test_a_blank_number_gets_the_next_in_sequence(self):
+        first = Invoice.objects.create(client=self.alice)
+        second = Invoice.objects.create(client=self.bob)
+        self.assertEqual(first.number, 'INV-0001')
+        self.assertEqual(second.number, 'INV-0002')
+
+    def test_numbers_sort_in_the_order_they_were_raised(self):
+        numbers = [Invoice.objects.create(client=self.alice).number for _ in range(11)]
+        self.assertEqual(numbers, sorted(numbers), 'zero padding is what makes this true')
+        self.assertEqual(numbers[-1], 'INV-0011')
+
+    def test_a_number_jess_types_herself_is_honoured(self):
+        invoice = Invoice.objects.create(client=self.alice, number='2026-04-CASH')
+        self.assertEqual(invoice.number, '2026-04-CASH')
+
+    def test_a_hand_typed_number_does_not_shift_the_sequence(self):
+        """Only INV-shaped numbers count, so a one-off written on a paper
+        receipt sits alongside without pushing the counter somewhere odd."""
+        Invoice.objects.create(client=self.alice)               # INV-0001
+        Invoice.objects.create(client=self.alice, number='2026-04-CASH')
+        self.assertEqual(Invoice.objects.create(client=self.bob).number, 'INV-0002')
+
+    def test_a_deleted_drafts_number_is_reused_and_that_is_deliberate(self):
+        """MAX+1 over surviving rows, so deleting the newest draft frees its
+        number again.
+
+        That is correct rather than a gap, and the deletion guard is what makes
+        it safe: only a DRAFT can be deleted, and a draft has never been sent,
+        so nobody has been quoted the number. Anything sent or paid must be
+        voided instead — `perform_destroy` says so — precisely so its number
+        stays used up.
+        """
+        Invoice.objects.create(client=self.alice)               # INV-0001
+        second = Invoice.objects.create(client=self.alice)      # INV-0002
+        self.assertEqual(second.status, Invoice.Status.DRAFT)
+        second.delete()
+        self.assertEqual(Invoice.objects.create(client=self.bob).number, 'INV-0002')
+
+    def test_a_sent_invoices_number_cannot_be_freed(self):
+        """The other half of the rule above: once quoted, the number stays
+        used up, because the invoice cannot be deleted at all."""
+        Invoice.objects.create(client=self.alice)               # INV-0001
+        sent = Invoice.objects.create(client=self.alice)        # INV-0002
+        sent.status = Invoice.Status.SENT
+        sent.save(update_fields=['status'])
+
+        response = self.staff_client.delete(f'/api/invoices/{sent.pk}/')
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(Invoice.objects.create(client=self.bob).number, 'INV-0003')
+
+    def test_the_api_no_longer_demands_a_number(self):
+        response = self.staff_client.post(
+            '/api/invoices/', {'client': self.alice.pk}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(response.data['number'].startswith('INV-'))
+
+    def test_raising_one_from_an_appointment_needs_no_number(self):
+        start = timezone.now() - timedelta(days=1)
+        appointment = Appointment.objects.create(
+            dog=self.alice_dog, start_at=start, end_at=start + timedelta(hours=2),
+            price_quoted=Decimal('50.00'),
+        )
+        response = self.staff_client.post(
+            '/api/invoices/from_appointment/', {'appointment': appointment.pk}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['invoice']['number'], 'INV-0001')
+
+    def test_a_duplicate_hand_typed_number_is_still_refused(self):
+        Invoice.objects.create(client=self.alice, number='INV-9999')
+        start = timezone.now() - timedelta(days=1)
+        appointment = Appointment.objects.create(
+            dog=self.alice_dog, start_at=start, end_at=start + timedelta(hours=2),
+            price_quoted=Decimal('50.00'),
+        )
+        response = self.staff_client.post(
+            '/api/invoices/from_appointment/',
+            {'appointment': appointment.pk, 'number': 'INV-9999'}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+
+
+class WalkInConsentTests(BaseAPITestCase):
+    """Recording disclaimers for a client who never used the intake form.
+
+    Before this, ``Consent`` rows had exactly one creation path — intake
+    approval — so a walk-in had no consent record and no way to get one.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.walk_in = Client.objects.create(
+            uid='MOJO-050', first_name='Wanda', last_name='Walker',
+            email='wanda@example.com', phone='07700900050', postcode='RG7 7WW',
+        )
+
+    def test_jess_can_record_a_signed_disclaimer(self):
+        response = self.staff_client.post('/api/consents/', {
+            'client': self.walk_in.pk,
+            'kind': ConsentKind.MATTING,
+            'agreed': True,
+            'signed_name': 'Wanda Walker',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        consent = Consent.objects.get(client=self.walk_in, kind=ConsentKind.MATTING)
+        self.assertTrue(consent.agreed)
+        self.assertEqual(consent.signed_name, 'Wanda Walker')
+
+    def test_the_wording_is_stamped_by_the_server_not_the_caller(self):
+        """The whole point of storing the wording is that a later rewording
+        cannot rewrite what somebody agreed to. A caller-supplied string could
+        say anything, which would make the record worth nothing."""
+        response = self.staff_client.post('/api/consents/', {
+            'client': self.walk_in.pk,
+            'kind': ConsentKind.VET,
+            'agreed': True,
+            'signed_name': 'Wanda Walker',
+            'wording': 'I agree to absolutely anything at all',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        consent = Consent.objects.get(client=self.walk_in, kind=ConsentKind.VET)
+        self.assertEqual(consent.wording, ConsentKind.VET.label)
+        self.assertNotIn('anything at all', consent.wording)
+
+    def test_a_paper_card_keeps_its_own_date(self):
+        signed = timezone.now() - timedelta(days=3)
+        self.staff_client.post('/api/consents/', {
+            'client': self.walk_in.pk, 'kind': ConsentKind.POLICIES, 'agreed': True,
+            'signed_name': 'Wanda Walker', 'signed_at': signed.isoformat(),
+        }, format='json')
+        consent = Consent.objects.get(client=self.walk_in, kind=ConsentKind.POLICIES)
+        self.assertEqual(consent.signed_at.date(), signed.date())
+
+    def test_a_disclaimer_cannot_be_signed_in_the_future(self):
+        response = self.staff_client.post('/api/consents/', {
+            'client': self.walk_in.pk, 'kind': ConsentKind.POLICIES, 'agreed': True,
+            'signed_name': 'Wanda Walker',
+            'signed_at': (timezone.now() + timedelta(days=2)).isoformat(),
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_withdrawing_is_a_new_row_and_edits_the_old_one_not_at_all(self):
+        self.staff_client.post('/api/consents/', {
+            'client': self.walk_in.pk, 'kind': ConsentKind.PHOTOS, 'agreed': True,
+            'signed_name': 'Wanda Walker',
+        }, format='json')
+        first = Consent.objects.get(client=self.walk_in, kind=ConsentKind.PHOTOS)
+
+        # No PUT, no PATCH, no DELETE — the record is evidence, not state.
+        url = f'/api/consents/{first.pk}/'
+        self.assertEqual(self.staff_client.patch(url, {'agreed': False}, format='json').status_code,
+                         status.HTTP_405_METHOD_NOT_ALLOWED)
+        self.assertEqual(self.staff_client.delete(url).status_code,
+                         status.HTTP_405_METHOD_NOT_ALLOWED)
+
+        # Changing her mind is a second row, and photo_consent reads the latest.
+        self.staff_client.post('/api/consents/', {
+            'client': self.walk_in.pk, 'kind': ConsentKind.PHOTOS, 'agreed': False,
+            'signed_name': 'Wanda Walker',
+        }, format='json')
+        self.assertEqual(
+            Consent.objects.filter(client=self.walk_in, kind=ConsentKind.PHOTOS).count(), 2,
+        )
+        self.walk_in.refresh_from_db()
+        self.assertIs(self.walk_in.photo_consent, False)
+
+    def test_photo_consent_is_still_null_before_anyone_asks(self):
+        """Null means never asked, and must not become False just because a
+        consent endpoint now exists."""
+        self.assertIsNone(self.walk_in.photo_consent)
+
+    def test_a_client_cannot_record_their_own_consent(self):
+        response = self.alice_client.post('/api/consents/', {
+            'client': self.alice.pk, 'kind': ConsentKind.MATTING, 'agreed': True,
+            'signed_name': 'Alice Adams',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_the_six_disclaimers_are_served_not_hardcoded_in_the_app(self):
+        """Two copies of a string drift, and the copy that matters here is the
+        one stored against a signature. The app also needs the list before any
+        consent exists, which is exactly the walk-in case."""
+        response = self.staff_client.get('/api/consents/kinds/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), len(ConsentKind.values))
+
+        by_kind = {row['kind']: row for row in response.data}
+        self.assertEqual(by_kind[ConsentKind.VET]['label'], ConsentKind.VET.label)
+
+        # Five of six are conditions of being groomed; PHOTOS is the question.
+        self.assertTrue(by_kind[ConsentKind.MATTING]['required'])
+        self.assertFalse(by_kind[ConsentKind.PHOTOS]['required'])
+        self.assertEqual(
+            sum(1 for row in response.data if row['required']), len(REQUIRED_CONSENTS),
+        )
+
+    def test_consents_can_be_listed_for_one_client(self):
+        for kind in (ConsentKind.POLICIES, ConsentKind.ACCURACY):
+            self.staff_client.post('/api/consents/', {
+                'client': self.walk_in.pk, 'kind': kind, 'agreed': True,
+                'signed_name': 'Wanda Walker',
+            }, format='json')
+        response = self.staff_client.get(f'/api/consents/?client={self.walk_in.pk}')
+        self.assertEqual(response.data['count'], 2)
+
+
 class AppointmentChangeRequestTests(BaseAPITestCase):
     """A client asking to cancel or move their own booking.
 

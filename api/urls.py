@@ -11,6 +11,7 @@ router.register(
 )
 router.register('clients', views.ClientViewSet, basename='client')
 router.register('claim-requests', views.ClientClaimRequestViewSet, basename='claim-request')
+router.register('consents', views.ConsentViewSet, basename='consent')
 router.register('dogs', views.DogViewSet, basename='dog')
 router.register('problem-areas', views.ProblemAreaViewSet, basename='problem-area')
 router.register('dog-photos', views.DogPhotoViewSet, basename='dog-photo')

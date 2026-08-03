@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -32,11 +33,33 @@ class NoConnectionException implements Exception {
 
 /// Thin HTTP wrapper: base URL, token header, JSON decoding, error mapping.
 class ApiClient {
-  ApiClient({required this.baseUrl, http.Client? httpClient})
-      : _http = httpClient ?? http.Client();
+  ApiClient({
+    required this.baseUrl,
+    http.Client? httpClient,
+    this.timeout = const Duration(seconds: 20),
+    this.uploadTimeout = const Duration(seconds: 90),
+  }) : _http = httpClient ?? http.Client();
 
   final String baseUrl;
   final http.Client _http;
+
+  /// How long to wait before giving up on a request.
+  ///
+  /// There was no timeout at all, which meant a half-open connection — a phone
+  /// on salon wifi that has drifted out of range, the commonest failure here —
+  /// left the request hanging forever. Every screen in the app is
+  /// `_loading = true` until its fetch returns, so "forever" meant a spinner
+  /// that never resolves and no way back except force-quitting.
+  ///
+  /// A timeout surfaces as [NoConnectionException], the same as an outright
+  /// refusal, because from the user's side they are the same thing and the
+  /// wifi-off wording in [ErrorRetry] is right for both.
+  final Duration timeout;
+
+  /// Longer, because this one is pushing a photo up a domestic connection.
+  /// 20 seconds would fail a perfectly good upload on a slow line.
+  final Duration uploadTimeout;
+
   String? _token;
 
   void setToken(String? token) => _token = token;
@@ -69,12 +92,16 @@ class ApiClient {
   /// in the URL instead would defeat the point of gating it at all.
   Future<List<int>> getBytes(String path) async {
     try {
-      final response = await _http.get(_uri(path), headers: _headers(json: false));
+      final response = await _http
+          .get(_uri(path), headers: _headers(json: false))
+          .timeout(uploadTimeout);
       if (response.statusCode >= 400) {
         throw ApiException(response.statusCode, 'Could not fetch that file.');
       }
       return response.bodyBytes;
     } on SocketException {
+      throw const NoConnectionException();
+    } on TimeoutException {
       throw const NoConnectionException();
     }
   }
@@ -105,19 +132,27 @@ class ApiClient {
       ..fields.addAll(fields)
       ..files.add(await http.MultipartFile.fromPath(field, filePath));
     try {
-      final streamed = await request.send();
-      return _decode(await http.Response.fromStream(streamed));
+      final streamed = await request.send().timeout(uploadTimeout);
+      return _decode(
+        await http.Response.fromStream(streamed).timeout(uploadTimeout),
+      );
     } on SocketException {
+      throw const NoConnectionException();
+    } on TimeoutException {
       throw const NoConnectionException();
     }
   }
 
   Future<dynamic> _send(Future<http.Response> Function() request) async {
     try {
-      return _decode(await request());
+      return _decode(await request().timeout(timeout));
     } on SocketException {
       throw const NoConnectionException();
     } on http.ClientException {
+      throw const NoConnectionException();
+    } on TimeoutException {
+      // A connection that hangs open is indistinguishable from no connection
+      // as far as anyone using the app is concerned.
       throw const NoConnectionException();
     }
   }

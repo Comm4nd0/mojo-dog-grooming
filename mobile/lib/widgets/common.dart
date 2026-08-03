@@ -1,3 +1,4 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
 import '../constants/app_colors.dart';
@@ -254,6 +255,53 @@ class DetailRow extends StatelessWidget {
 }
 
 /// Placeholder for an empty list, with an optional call to action.
+/// A dog photo or profile image, cached on disk.
+///
+/// `cached_network_image` has been in pubspec.yaml the whole time and was never
+/// imported by anything — every image site used a bare `Image.network`, which
+/// keeps nothing between builds. Scrolling the Doguments list re-fetched every
+/// thumbnail over the salon's wifi each time the screen was opened.
+///
+/// These are safe to cache and safe to fetch without the auth header: dog
+/// photos live under `MEDIA_URL` and are served by Caddy directly. **Scanned
+/// paperwork is not** — that goes through the gated download view and
+/// `ApiClient.getBytes`, and must never be pointed at this.
+class MojoNetworkImage extends StatelessWidget {
+  const MojoNetworkImage({
+    super.key,
+    required this.url,
+    this.fit = BoxFit.cover,
+    this.width,
+    this.height,
+    this.errorWidget,
+  });
+
+  final String url;
+  final BoxFit fit;
+  final double? width;
+  final double? height;
+  final Widget? errorWidget;
+
+  @override
+  Widget build(BuildContext context) {
+    return CachedNetworkImage(
+      imageUrl: url,
+      fit: fit,
+      width: width,
+      height: height,
+      // A quiet tinted block rather than a spinner: these are thumbnails in a
+      // grid, and a dozen spinners reads as an error state.
+      placeholder: (context, _) => Container(color: context.mojo.tint),
+      errorWidget: (context, _, _) =>
+          errorWidget ??
+          Container(
+            color: context.mojo.tint,
+            child: Icon(Icons.broken_image_outlined, color: context.mojo.onTint),
+          ),
+    );
+  }
+}
+
 class EmptyState extends StatelessWidget {
   const EmptyState({
     super.key,

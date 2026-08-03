@@ -425,6 +425,54 @@ class ConsentSerializer(serializers.ModelSerializer):
         read_only_fields = ['id']
 
 
+class ConsentWriteSerializer(serializers.ModelSerializer):
+    """Recording a disclaimer against a client Jess set up by hand.
+
+    Until this existed, ``Consent`` rows could be created exactly one way —
+    inside intake approval — so a walk-in had no consent record at all and no
+    way to get one. Six disclaimers modelled with a wording snapshot and an
+    append-only trail, reachable only through the electronic form.
+
+    Two things are deliberately not the caller's to set:
+
+    * **``wording`` is stamped server-side** from the enum. The whole point of
+      storing it is that a later rewording cannot rewrite what somebody
+      actually agreed to; a caller-supplied string would make the audit trail
+      worth nothing, because it could say anything.
+    * **There is no update and no delete.** Withdrawing agreement is a *new
+      row*, which is what the model and the admin inline already assume.
+    """
+
+    kind_display = serializers.CharField(source='get_kind_display', read_only=True)
+    client_name = serializers.CharField(source='client.full_name', read_only=True)
+
+    class Meta:
+        model = Consent
+        fields = [
+            'id', 'client', 'client_name', 'kind', 'kind_display',
+            'agreed', 'signed_name', 'signed_at', 'wording',
+        ]
+        read_only_fields = ['id', 'wording']
+
+    def validate_signed_at(self, value):
+        # Backdating is the normal case here — Jess is typing up a card signed
+        # across the counter, possibly days ago. Forward-dating is not: a
+        # consent that starts applying next week is not a thing.
+        if value and value > timezone.now():
+            raise serializers.ValidationError('A disclaimer cannot be signed in the future.')
+        return value
+
+    def validate_signed_name(self, value):
+        name = (value or '').strip()
+        if not name:
+            raise serializers.ValidationError('Who signed it?')
+        return name
+
+    def create(self, validated_data):
+        validated_data['wording'] = ConsentKind(validated_data['kind']).label
+        return super().create(validated_data)
+
+
 class ClientSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
     # `uid` is Jess's filing reference off the paper cards, not a secret —
     # it is printed on the client's own booking card. Hiding it is a
@@ -1066,6 +1114,12 @@ class InvoiceSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
             'total', 'amount_paid', 'balance', 'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
+        extra_kwargs = {
+            # Blank means "allocate the next one" — see Invoice.next_number.
+            # Still writable, because Jess occasionally needs to match a number
+            # she has already written on a paper receipt.
+            'number': {'required': False, 'allow_blank': True},
+        }
 
     def validate_status(self, value):
         """Refuse a move the lifecycle does not allow.

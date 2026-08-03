@@ -34,6 +34,14 @@ class _DogumentsScreenState extends State<DogumentsScreen> {
   Object? _error;
   Timer? _debounce;
 
+  /// Off by default — the list is a working list, and a dog Jess has retired
+  /// should not be in the way of the ones coming in this week.
+  ///
+  /// It exists at all because `getDogs(includeInactive:)` had no call site: the
+  /// profile happily renders an "Inactive" tag on a dog that nothing in the app
+  /// could reach, so retiring one made it disappear for good.
+  bool _includeInactive = false;
+
   @override
   void initState() {
     super.initState();
@@ -53,7 +61,7 @@ class _DogumentsScreenState extends State<DogumentsScreen> {
       _error = null;
     });
     try {
-      final dogs = await _data.getDogs(search: search);
+      final dogs = await _data.getDogs(search: search, includeInactive: _includeInactive);
       if (!mounted) return;
       setState(() {
         _dogs = dogs;
@@ -121,6 +129,16 @@ class _DogumentsScreenState extends State<DogumentsScreen> {
       appBar: AppBar(
         title: const Text('Doguments'),
         actions: [
+          IconButton(
+            icon: Icon(
+              _includeInactive ? Icons.visibility_off_outlined : Icons.visibility_outlined,
+            ),
+            tooltip: _includeInactive ? 'Hide retired dogs' : 'Show retired dogs',
+            onPressed: () {
+              setState(() => _includeInactive = !_includeInactive);
+              _load(search: _query.trim().isEmpty ? null : _query.trim());
+            },
+          ),
           IconButton(
             icon: const Icon(Icons.people_outline),
             tooltip: 'Clients',
@@ -294,10 +312,9 @@ class _Avatar extends StatelessWidget {
       return SizedBox(
         width: 52,
         height: 52,
-        child: Image.network(
-          url!,
-          fit: BoxFit.cover,
-          errorBuilder: (_, _, _) => _initials(context),
+        child: MojoNetworkImage(
+          url: url!,
+          errorWidget: _initials(context),
         ),
       );
     }
@@ -326,7 +343,11 @@ class _ClientListScreen extends StatefulWidget {
 
 class _ClientListScreenState extends State<_ClientListScreen> {
   final _data = getIt<DataService>();
+  final _searchController = TextEditingController();
+  Timer? _debounce;
+
   List<ClientRecord> _clients = const [];
+  String _query = '';
   bool _loading = true;
   Object? _error;
 
@@ -336,10 +357,19 @@ class _ClientListScreenState extends State<_ClientListScreen> {
     _load();
   }
 
-  Future<void> _load() async {
-    setState(() => _loading = true);
+  @override
+  void dispose() {
+    _debounce?.cancel();
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load({String? search}) async {
+    // Only blank the list when there is nothing worth keeping, so typing does
+    // not replace results with a spinner on every keystroke.
+    if (_clients.isEmpty) setState(() => _loading = true);
     try {
-      final clients = await _data.getClients();
+      final clients = await _data.getClients(search: search);
       if (!mounted) return;
       setState(() {
         _clients = clients;
@@ -355,10 +385,60 @@ class _ClientListScreenState extends State<_ClientListScreen> {
     }
   }
 
+  // Same shape as the dog list next door: debounced server search, plus an
+  // immediate local filter so results narrow while the request is in flight.
+  // The API has always supported `search` here; nothing was calling it.
+  void _onSearchChanged(String value) {
+    setState(() => _query = value);
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 350), () {
+      _load(search: value.trim().isEmpty ? null : value.trim());
+    });
+  }
+
+  List<ClientRecord> get _visible {
+    final q = _query.trim().toLowerCase();
+    if (q.isEmpty) return _clients;
+    final digits = q.replaceAll(' ', '');
+    return _clients.where((client) {
+      return client.fullName.toLowerCase().contains(q) ||
+          (client.uid?.toLowerCase().contains(q) ?? false) ||
+          client.email.toLowerCase().contains(q) ||
+          client.phone.replaceAll(' ', '').contains(digits);
+    }).toList();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Clients')),
+      appBar: AppBar(
+        title: const Text('Clients'),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(60),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+            child: TextField(
+              controller: _searchController,
+              onChanged: _onSearchChanged,
+              textInputAction: TextInputAction.search,
+              decoration: InputDecoration(
+                hintText: 'Name, code, phone or email',
+                prefixIcon: const Icon(Icons.search),
+                isDense: true,
+                suffixIcon: _query.isEmpty
+                    ? null
+                    : IconButton(
+                        icon: const Icon(Icons.clear),
+                        onPressed: () {
+                          _searchController.clear();
+                          _onSearchChanged('');
+                        },
+                      ),
+              ),
+            ),
+          ),
+        ),
+      ),
       floatingActionButton: FloatingActionButton(
         onPressed: () async {
           final saved = await Navigator.of(context).push<bool>(
@@ -368,42 +448,68 @@ class _ClientListScreenState extends State<_ClientListScreen> {
         },
         child: const Icon(Icons.person_add_outlined),
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : _error != null
-              ? ErrorRetry(error: _error!, onRetry: _load)
-              : ListView.separated(
-                  itemCount: _clients.length,
-                  separatorBuilder: (_, _) => const Divider(height: 1),
-                  itemBuilder: (context, index) {
-                    final client = _clients[index];
-                    return ListTile(
-                      title: Row(
-                        children: [
-                          Flexible(child: Text(client.fullName)),
-                          if (client.chatty == true) ...[
-                            const SizedBox(width: 8),
-                            const InfoTag(label: 'Chatty', icon: Icons.chat_bubble_outline),
-                          ],
-                        ],
-                      ),
-                      subtitle: Text(
-                        '${client.uid} · ${client.dogCount} dog'
-                        '${client.dogCount == 1 ? '' : 's'}'
-                        '${client.phone.isEmpty ? '' : ' · ${client.phone}'}',
-                      ),
-                      trailing: const Icon(Icons.chevron_right),
-                      onTap: () async {
-                        await Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => ClientProfileScreen(clientId: client.id),
-                          ),
-                        );
-                        if (mounted) _load();
-                      },
-                    );
-                  },
+      body: _buildBody(),
+    );
+  }
+
+  Widget _buildBody() {
+    if (_loading && _clients.isEmpty) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    // Don't throw away a usable list because a refresh failed.
+    if (_error != null && _clients.isEmpty) {
+      return ErrorRetry(error: _error!, onRetry: _load);
+    }
+
+    final visible = _visible;
+    if (visible.isEmpty) {
+      return EmptyState(
+        icon: _query.isEmpty ? Icons.people_outline : Icons.search_off,
+        title: _query.isEmpty ? 'No clients yet' : 'No matches',
+        message: _query.isEmpty
+            ? 'Add one with the button below, or send an intake form.'
+            : 'Nothing matching “$_query”.',
+      );
+    }
+
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: ListView.separated(
+        itemCount: visible.length,
+        separatorBuilder: (_, _) => const Divider(height: 1),
+        itemBuilder: (context, index) {
+          final client = visible[index];
+          // `uid` is staff-only and so nullable. This screen is staff-only, but
+          // interpolating it bare would render the literal "null" if that ever
+          // stopped being true — same rule as everywhere else here.
+          final parts = [
+            ?client.uid,
+            '${client.dogCount} dog${client.dogCount == 1 ? '' : 's'}',
+            if (client.phone.isNotEmpty) client.phone,
+          ];
+          return ListTile(
+            title: Row(
+              children: [
+                Flexible(child: Text(client.fullName)),
+                if (client.chatty == true) ...[
+                  const SizedBox(width: 8),
+                  const InfoTag(label: 'Chatty', icon: Icons.chat_bubble_outline),
+                ],
+              ],
+            ),
+            subtitle: Text(parts.join(' · ')),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () async {
+              await Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => ClientProfileScreen(clientId: client.id),
                 ),
+              );
+              if (mounted) _load();
+            },
+          );
+        },
+      ),
     );
   }
 }

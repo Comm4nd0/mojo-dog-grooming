@@ -292,11 +292,20 @@ class _ClientProfileScreenState extends State<ClientProfileScreen> {
   /// particular day, and something Jess could edit afterwards would be worth
   /// nothing. Changing an answer means asking again.
   Widget _consentsSection(ClientRecord client) {
-    if (client.consents.isEmpty) return const SizedBox.shrink();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const SectionHeader(title: 'Agreed terms'),
+        if (client.consents.isEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+            child: Text(
+              'Nothing recorded. Clients who filled in the online form have '
+              'these already — for anyone signed up across the counter, type '
+              'up what they signed.',
+              style: TextStyle(fontSize: 12.5, color: context.mojo.muted),
+            ),
+          ),
         for (final consent in client.consents)
           ListTile(
             dense: true,
@@ -313,7 +322,160 @@ class _ClientProfileScreenState extends State<ClientProfileScreen> {
               style: TextStyle(fontSize: 11.5, color: context.mojo.muted),
             ),
           ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+          child: OutlinedButton.icon(
+            icon: const Icon(Icons.history_edu_outlined, size: 18),
+            label: Text(
+              client.consents.isEmpty
+                  ? 'RECORD WHAT THEY SIGNED'
+                  : 'RECORD AN ANSWER AGAIN',
+            ),
+            onPressed: () => _recordConsents(client),
+          ),
+        ),
       ],
     );
+  }
+
+  /// Type up the disclaimers a client signed on paper.
+  ///
+  /// Nothing here edits an existing row — a change of mind is a new one, and
+  /// the server refuses PATCH and DELETE outright. That is why the button says
+  /// "record again" rather than "edit" once some exist.
+  Future<void> _recordConsents(ClientRecord client) async {
+    final List<ConsentKindOption> kinds;
+    try {
+      kinds = await _data.getConsentKinds();
+    } catch (error) {
+      if (mounted) showSnack(context, error.toString(), isError: true);
+      return;
+    }
+    if (!mounted) return;
+
+    // Nothing pre-selected. A pre-ticked answer is as invented here as it is
+    // on the intake form's three radios — see the null-is-not-false rule.
+    final answers = <String, bool?>{for (final kind in kinds) kind.kind: null};
+    final signedBy = TextEditingController(text: client.fullName);
+    DateTime signedOn = DateTime.now();
+
+    final confirmed = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (sheetContext, setSheetState) => Padding(
+          padding: EdgeInsets.only(
+            left: 16, right: 16, top: 16,
+            bottom: MediaQuery.of(sheetContext).viewInsets.bottom + 24,
+          ),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text('What they signed',
+                    style: Theme.of(sheetContext).textTheme.headlineSmall),
+                const SizedBox(height: 6),
+                Text(
+                  'Only the ones you answer are recorded. Leave the rest blank.',
+                  style: TextStyle(fontSize: 12.5, color: sheetContext.mojo.muted),
+                ),
+                const SizedBox(height: 12),
+                for (final kind in kinds) ...[
+                  Padding(
+                    padding: const EdgeInsets.only(top: 10, bottom: 4),
+                    child: Text(
+                      kind.required ? kind.label : '${kind.label} (optional)',
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                  ),
+                  SegmentedButton<bool>(
+                    segments: const [
+                      ButtonSegment(value: true, label: Text('Agreed')),
+                      ButtonSegment(value: false, label: Text('Declined')),
+                    ],
+                    selected: answers[kind.kind] == null
+                        ? <bool>{}
+                        : {answers[kind.kind]!},
+                    emptySelectionAllowed: true,
+                    onSelectionChanged: (selected) => setSheetState(
+                      () => answers[kind.kind] =
+                          selected.isEmpty ? null : selected.first,
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 18),
+                TextField(
+                  controller: signedBy,
+                  decoration: const InputDecoration(labelText: 'Signed by'),
+                  textCapitalization: TextCapitalization.words,
+                ),
+                const SizedBox(height: 12),
+                InkWell(
+                  onTap: () async {
+                    final picked = await showDatePicker(
+                      context: sheetContext,
+                      initialDate: signedOn,
+                      // Backdating is the normal case — she is typing up a card
+                      // signed across the counter. Forward-dating is refused by
+                      // the server too.
+                      firstDate: DateTime(2015),
+                      lastDate: DateTime.now(),
+                    );
+                    if (picked != null) setSheetState(() => signedOn = picked);
+                  },
+                  child: InputDecorator(
+                    decoration: const InputDecoration(labelText: 'Date signed'),
+                    child: Text(formatDate(signedOn)),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                ElevatedButton(
+                  onPressed: () => Navigator.pop(sheetContext, true),
+                  child: const Text('RECORD'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    if (confirmed != true || !mounted) {
+      signedBy.dispose();
+      return;
+    }
+
+    final answered = answers.entries.where((entry) => entry.value != null).toList();
+    if (answered.isEmpty) {
+      showSnack(context, 'Nothing to record.');
+      signedBy.dispose();
+      return;
+    }
+
+    final name = signedBy.text.trim();
+    signedBy.dispose();
+    if (name.isEmpty) {
+      showSnack(context, 'Say who signed it.', isError: true);
+      return;
+    }
+
+    try {
+      for (final entry in answered) {
+        await _data.recordConsent(
+          clientId: client.id,
+          kind: entry.key,
+          agreed: entry.value!,
+          signedName: name,
+          signedAt: signedOn,
+        );
+      }
+    } catch (error) {
+      if (mounted) showSnack(context, error.toString(), isError: true);
+      return;
+    }
+    if (!mounted) return;
+    showSnack(context, 'Recorded ${answered.length} of ${kinds.length}.');
+    _load();
   }
 }

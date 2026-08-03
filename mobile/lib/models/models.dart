@@ -354,6 +354,30 @@ class Consent {
       );
 }
 
+/// One of the six disclaimers, with the wording as the server currently has it.
+///
+/// Served rather than hardcoded here: two copies of a string drift, and the
+/// copy that matters is the one stored against a signature. The app also needs
+/// the list *before* any consent exists — the walk-in case — so it cannot read
+/// them off existing rows.
+class ConsentKindOption {
+  final String kind;
+  final String label;
+  final bool required;
+
+  const ConsentKindOption({
+    required this.kind,
+    required this.label,
+    required this.required,
+  });
+
+  factory ConsentKindOption.fromJson(Map<String, dynamic> json) => ConsentKindOption(
+        kind: json['kind']?.toString() ?? '',
+        label: json['label']?.toString() ?? '',
+        required: json['required'] == true,
+      );
+}
+
 class ClientRecord {
   final int id;
 

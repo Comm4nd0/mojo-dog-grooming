@@ -332,6 +332,35 @@ class DataService {
   Future<void> rejectChangeRequest(int id) =>
       _api.post('/client-change-requests/$id/reject/', {});
 
+  // ── Consents ───────────────────────────────────────────────────────
+  //
+  // Staff only, and append-only: withdrawing agreement is a new row, never an
+  // edit. A consent is evidence of what was signed on a day.
+
+  Future<List<ConsentKindOption>> getConsentKinds() async {
+    final payload = await _api.get('/consents/kinds/');
+    return (payload as List<dynamic>)
+        .map((row) => ConsentKindOption.fromJson(row as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// [signedAt] is for typing up a card signed across the counter days ago.
+  /// The server refuses a future date and stamps the wording itself.
+  Future<void> recordConsent({
+    required int clientId,
+    required String kind,
+    required bool agreed,
+    required String signedName,
+    DateTime? signedAt,
+  }) =>
+      _api.post('/consents/', {
+        'client': clientId,
+        'kind': kind,
+        'agreed': agreed,
+        'signed_name': signedName,
+        if (signedAt != null) 'signed_at': signedAt.toIso8601String(),
+      });
+
   // ── Booking change requests ────────────────────────────────────────
   //
   // Bookings are read-only to a client. This is how they *ask* to cancel or
@@ -523,9 +552,11 @@ class DataService {
     return ApiClient.resultsOf(payload).map(Invoice.fromJson).toList();
   }
 
+  /// [number] is optional: blank means the server allocates the next in
+  /// sequence. Only pass one to match a number already written on paper.
   Future<Invoice> createInvoice({
     required int clientId,
-    required String number,
+    String number = '',
     required List<InvoiceLine> lines,
     String notes = '',
   }) async {

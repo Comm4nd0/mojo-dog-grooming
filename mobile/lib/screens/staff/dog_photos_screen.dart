@@ -163,14 +163,7 @@ class _DogPhotosScreenState extends State<DogPhotosScreen> {
                                   onTap: () => _openFullscreen(photo),
                                   onLongPress:
                                       _isStaff ? () => _confirmDelete(photo) : null,
-                                  child: Image.network(
-                                    photo.imageUrl,
-                                    fit: BoxFit.cover,
-                                    errorBuilder: (_, _, _) => Container(
-                                      color: context.mojo.tint,
-                                      child: const Icon(Icons.broken_image_outlined),
-                                    ),
-                                  ),
+                                  child: MojoNetworkImage(url: photo.imageUrl),
                                 );
                               },
                             ),
@@ -189,7 +182,7 @@ class _DogPhotosScreenState extends State<DogPhotosScreen> {
           backgroundColor: Colors.black,
           body: Center(
             child: InteractiveViewer(
-              child: Image.network(photo.imageUrl, fit: BoxFit.contain),
+              child: MojoNetworkImage(url: photo.imageUrl, fit: BoxFit.contain),
             ),
           ),
         ),

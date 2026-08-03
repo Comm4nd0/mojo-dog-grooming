@@ -120,6 +120,17 @@ class _CalendarScreenState extends State<CalendarScreen> {
       appBar: AppBar(
         title: Text(_title),
         actions: [
+          // A button rather than pull-to-refresh, deliberately. The day view's
+          // blocks are dragged vertically to move a booking, and a
+          // RefreshIndicator over the same surface would race that gesture —
+          // a slow downward drag near the top would sometimes reload the
+          // screen instead of sliding the groom, which is the one interaction
+          // Jess asked for by name.
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            tooltip: 'Refresh',
+            onPressed: _load,
+          ),
           IconButton(
             icon: const Icon(Icons.today_outlined),
             tooltip: 'Today',

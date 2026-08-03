@@ -53,7 +53,7 @@ mobile/lib/
 Backend:
 ```bash
 python manage.py migrate && python manage.py seed_breeds
-python manage.py test api        # 321 tests
+python manage.py test api        # 339 tests
 python manage.py runserver 0.0.0.0:8000
 python manage.py accounts        # who can sign in — usernames live only in the DB
 python manage.py reset_link jess # a way back in when the superuser is locked out
@@ -62,7 +62,7 @@ python manage.py reset_link jess # a way back in when the superuser is locked ou
 Mobile:
 ```bash
 cd mobile && flutter pub get
-flutter analyze && flutter test  # 149 tests
+flutter analyze && flutter test  # 157 tests
 flutter run --dart-define=MOJO_API_BASE=http://192.168.1.20:8000/api
 ```
 
@@ -448,6 +448,20 @@ would quietly claim they had agreed to whatever the current text says. Each row 
 wording it was signed against. Withdrawing agreement is a *new row*; nothing is edited or
 deleted, and the admin inline is deliberately read-only.
 
+**A walk-in can have consent recorded too.** For a long time `Consent` rows had exactly one
+creation path — intake approval — so a client Jess set up across the counter had no consent
+record and no way to get one. `ConsentViewSet` (`/api/consents/`) is that route: staff only,
+create-and-read only, `POST`/`GET` and nothing else, so the append-only rule is the HTTP method
+list rather than a convention. `signed_at` may be backdated to the date on the paper card but
+never forward-dated. **`wording` is stamped server-side from the enum** and ignored on input —
+the point of storing it is that a later rewording cannot rewrite what somebody agreed to, and a
+caller-supplied string could say anything.
+
+`GET /api/consents/kinds/` serves the six and which are required, rather than the app carrying
+its own copy. Same reasoning as the temperament labels: two copies of a string drift, and here
+the copy that matters is the one stored against a signature. The app also needs the list
+*before* any consent exists — precisely the walk-in case — so it cannot read them off rows.
+
 - **Five of the six are required, `PHOTOS` is not.** It is the only one the card phrases as a
   question, and declining it must still let the form through. `REQUIRED_CONSENTS` is the list.
 - **`Client.photo_consent` is nullable and null means "never asked"** — not "no". Anything
@@ -591,6 +605,34 @@ One trap found by its own test: **DRF turns a missing boolean into `False` for m
 data.** `visible_to_client` arrived `False` on every upload, so every document Jess filed would
 have been invisible to the client — silently, and the opposite of the point.
 `AbsentMeansDefaultBooleanField` exists for that.
+
+## Invoice numbers are the server's, and the app has a timeout
+
+**`Invoice.number` blank means "allocate the next one"** — `Invoice.next_number()`, MAX+1 over
+`INV-####`. The app used to send `INV-${millisecondsSinceEpoch % 100000}`: sequential-*looking*
+and nothing more. It did not sort, could not be read down a phone, told a client nothing, and
+modulo a timestamp it could collide with an existing number and fail the unique constraint in
+front of Jess. A number she types herself is still honoured, and only `INV-`-shaped ones count
+towards the sequence, so a one-off written on a paper receipt ("2026-04-CASH") sits alongside
+without shifting the counter.
+
+Deleting a *draft* frees its number again, and that is correct rather than a gap: only a draft
+can be deleted at all (`perform_destroy`), and a draft has never been sent, so nobody has been
+quoted it. Anything sent or paid must be voided instead, precisely so its number stays used up.
+`save()` retries on `IntegrityError` because read-then-write races, and the unique index is the
+real guarantee.
+
+**`ApiClient` now has a timeout** (20s, 90s for uploads and downloads). There was none, and the
+failure it left open is the likeliest one here: a phone that has drifted out of range of the
+salon wifi holds the socket open rather than refusing, so the future never completed — and every
+screen is `_loading = true` until its fetch returns. A spinner that never resolves, with no way
+out but force-quitting. A timeout surfaces as `NoConnectionException`, the same as an outright
+refusal, because from the user's side they are the same thing.
+
+`MojoNetworkImage` in `widgets/common.dart` wraps `cached_network_image`, which had been in
+`pubspec.yaml` the whole time and was imported by nothing. **Only for `MEDIA_URL` images** —
+dog photos, served by Caddy directly. Scanned paperwork goes through the gated download view and
+`ApiClient.getBytes`, and must never be pointed at it.
 
 ## A nails visit is not priced off the breed grid
 

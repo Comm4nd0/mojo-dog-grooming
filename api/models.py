@@ -23,7 +23,7 @@ from django.contrib.auth.models import User
 from django.core.cache import cache
 from django.core.files.storage import FileSystemStorage
 from django.core.validators import MinValueValidator
-from django.db import models
+from django.db import IntegrityError, models, transaction
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.utils import timezone
@@ -1402,7 +1402,7 @@ class Invoice(models.Model):
         VOID = 'VOID', 'Void'
 
     client = models.ForeignKey(Client, on_delete=models.PROTECT, related_name='invoices')
-    number = models.CharField(max_length=32, unique=True)
+    number = models.CharField(max_length=32, unique=True, blank=True)
     issue_date = models.DateField(default=timezone.localdate)
     due_date = models.DateField(null=True, blank=True)
     status = models.CharField(max_length=6, choices=Status.choices, default=Status.DRAFT)
@@ -1439,6 +1439,68 @@ class Invoice(models.Model):
 
     def __str__(self):
         return f'{self.number} — {self.client.full_name}'
+
+    #: Prefix for generated numbers. Kept short because it is read down the
+    #: phone and copied onto a bank transfer.
+    NUMBER_PREFIX = 'INV-'
+
+    @classmethod
+    def next_number(cls):
+        """The next sequential invoice number, e.g. ``INV-0007``.
+
+        Numbering belonged on the server rather than the app, which filled it
+        with ``INV-${millisecondsSinceEpoch % 100000}``. That is not a number
+        anybody can read down a phone, it does not sort, it tells a client
+        nothing, and modulo a timestamp it can collide — two invoices raised in
+        the same millisecond-mod-100000 window would hit the unique constraint
+        and fail in front of Jess with nothing useful to say.
+
+        Only ``NUMBER_PREFIX``-shaped numbers count towards the sequence, so a
+        hand-typed one ("2026-04-CASH") sits alongside without shifting it.
+
+        Not a global counter row: a one-groomer business raises a few invoices
+        a week, and MAX+1 over an indexed unique column costs nothing next to
+        another table to keep in step. The unique constraint is the real
+        guarantee either way — see ``save``.
+        """
+        numbers = cls.objects.filter(
+            number__startswith=cls.NUMBER_PREFIX,
+        ).values_list('number', flat=True)
+
+        highest = 0
+        for number in numbers:
+            tail = number[len(cls.NUMBER_PREFIX):]
+            if tail.isdigit():
+                highest = max(highest, int(tail))
+        return f'{cls.NUMBER_PREFIX}{highest + 1:04d}'
+
+    def save(self, *args, **kwargs):
+        """Fill in a blank number, retrying if someone got there first.
+
+        ``next_number`` reads then writes, so two invoices raised at once can
+        pick the same one. The unique index catches that — this turns the
+        IntegrityError into a second attempt rather than an error page. Bounded,
+        because an unbounded retry on a genuinely duplicate hand-typed number
+        would spin forever.
+        """
+        if self.number:
+            return super().save(*args, **kwargs)
+
+        for _ in range(5):
+            self.number = self.next_number()
+            try:
+                with transaction.atomic():
+                    return super().save(*args, **kwargs)
+            except IntegrityError:
+                # Someone else took it between the read and the write. Only
+                # force_insert can be retried safely; on an update the pk is
+                # already set and re-saving is fine either way.
+                kwargs.pop('force_insert', None)
+                continue
+
+        raise IntegrityError(
+            'Could not allocate an invoice number after several attempts.'
+        )
 
     def can_transition_to(self, new_status):
         """Whether this invoice may move to ``new_status``.

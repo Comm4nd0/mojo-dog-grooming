@@ -71,6 +71,7 @@ from .models import (
     ClientClaimRequest,
     ClosureDay,
     Consent,
+    Consent,
     ConsentKind,
     Dog,
     DogDocument,
@@ -109,6 +110,7 @@ from .serializers import (
     ClientChangeRequestSerializer,
     ClientClaimRequestSerializer,
     ClientSerializer,
+    ConsentWriteSerializer,
     ClosureDaySerializer,
     DogListSerializer,
     DogDocumentSerializer,
@@ -704,6 +706,56 @@ class ClientViewSet(StaffWriteOnlyMixin, viewsets.ModelViewSet):
 
             raise PermissionDenied('Only staff can create client records.')
         serializer.save()
+
+
+class ConsentViewSet(viewsets.ModelViewSet):
+    """Disclaimers recorded against a client.
+
+    Staff only, and create-and-read only. Both halves matter:
+
+    * **Staff only** because this is Jess typing up what somebody signed across
+      the counter. A client agreeing to their own disclaimers unsupervised is
+      the intake form's job, and that has a token and a signature box.
+    * **No update, no delete** because a consent row is evidence of what was
+      agreed on a day. Editing one after the fact makes it worthless, and
+      withdrawing agreement is a *new row* — which is what
+      ``Client.photo_consent`` already assumes when it reads the latest.
+
+    Before this the only route into the table was intake approval, so a
+    walk-in client had no consent record and no way to get one.
+    """
+
+    queryset = Consent.objects.select_related('client')
+    serializer_class = ConsentWriteSerializer
+    permission_classes = [IsAdminUser]
+    http_method_names = ['get', 'post', 'head', 'options']
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        client_id = self.request.query_params.get('client')
+        return queryset.filter(client_id=client_id) if client_id else queryset
+
+    @action(detail=False, methods=['get'])
+    def kinds(self, request):
+        """The six disclaimers and their current wording.
+
+        Served rather than hardcoded in the app for the same reason the
+        temperament labels are: two copies of a string drift, and here the
+        copy that matters is the one stored against a signature. The app needs
+        the list *before* any consent exists, which is exactly the walk-in
+        case, so it cannot read them off existing rows.
+
+        ``required`` mirrors ``REQUIRED_CONSENTS`` — five of the six are
+        conditions of being groomed at all, and PHOTOS is genuinely optional.
+        """
+        return Response([
+            {
+                'kind': kind.value,
+                'label': kind.label,
+                'required': kind in REQUIRED_CONSENTS,
+            }
+            for kind in ConsentKind
+        ])
 
 
 class ClientClaimRequestViewSet(viewsets.ModelViewSet):
@@ -1333,13 +1385,12 @@ class InvoiceViewSet(ClientScopedMixin, viewsets.ModelViewSet):
                 {'detail': 'No such appointment.'}, status=status.HTTP_404_NOT_FOUND,
             )
 
+        # Optional now: blank means the model allocates the next in sequence.
+        # It used to be required, and the app answered with a truncated
+        # timestamp — see Invoice.next_number for why that was worse than
+        # nothing. A number Jess types herself is still honoured.
         number = str(request.data.get('number') or '').strip()
-        if not number:
-            return Response(
-                {'detail': 'Give the invoice a number.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if Invoice.objects.filter(number=number).exists():
+        if number and Invoice.objects.filter(number=number).exists():
             return Response(
                 {'detail': f'Invoice "{number}" already exists.'},
                 status=status.HTTP_409_CONFLICT,
