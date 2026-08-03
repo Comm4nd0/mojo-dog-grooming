@@ -52,48 +52,50 @@ void main() {
     //
     // This file was green here and red on macOS for days, and the reason it
     // took so long to see is that "a slide that goes nowhere" *passed* on the
-    // broken runner: it expects no callback, so a gesture swallowed by the
-    // route-transition barrier gave exactly the right answer for entirely the
-    // wrong reason. A test that cannot fail for the right reason hides the
-    // ones that can.
+    // broken runner: it expects no callback, so a gesture that hit nothing
+    // gave exactly the right answer for entirely the wrong reason. A test that
+    // cannot fail for the right reason hides the ones that can.
     //
     // With this set, a pointer that misses its target stops the test where it
     // happens instead of leaving a warning in the log nobody reads.
     WidgetController.hitTestWarningShouldBeFatal = true;
   });
 
+  /// Pump a timeline on a surface tall enough that it does not scroll.
+  ///
+  /// The window is 07:00–19:00, which at 72dp an hour is **864dp of content**.
+  /// The default 800x600 test surface cannot show that, so the timeline
+  /// scrolls and everything past 600dp is clipped — and a clipped block is
+  /// still *laid out* where the finder says it is, so `getCenter` happily
+  /// returns a point that paints nothing. Hit testing there finds the
+  /// Scaffold's Material instead of the block, which is exactly what the macOS
+  /// log showed: no RenderOpacity in the chain and a bare Material on top.
+  ///
+  /// Whether that bites depends on the viewport, which is why this file was
+  /// green here and red on Apple's runners. A surface taller than the content
+  /// takes the viewport out of the question rather than leaving it to chance.
+  ///
+  /// `setSurfaceSize` has to be called inside the test body — it goes through
+  /// the binding's async guard, so setUp/tearDown is too early.
+  Future<void> pumpTimeline(WidgetTester tester, Widget timeline) async {
+    await tester.binding.setSurfaceSize(const Size(800, 1000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: timeline)));
+    await tester.pumpAndSettle();
+  }
+
   testWidgets('long-pressing and sliding reports the new time', (tester) async {
     final moves = <(int, DateTime)>[];
     final appointment = _appointment(start: DateTime(2026, 8, 3, 10, 0));
 
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: DayTimeline(
-            day: day,
-            appointments: [appointment],
-            metrics: const TimelineMetrics(),
-            onOpen: (_) {},
-            onCreateAt: (_) {},
-            onMove: (a, newStart) => moves.add((a.id, newStart)),
-          ),
-        ),
-      ),
-    );
-    // Let the route transition finish before touching anything.
-    //
-    // MaterialApp animates its first route in, and while that runs an
-    // AbsorbPointer over the Overlay swallows pointer events. Interacting
-    // straight after pumpWidget is therefore a race: on this machine it
-    // settled in time, on Xcode Cloud's macOS runners it did not, and the
-    // gesture went to the barrier instead of the block. `flutter test` was
-    // green here and red there for days.
-    //
-    // The tell was which test survived: "a slide that goes nowhere" expects
-    // no callback, so a swallowed gesture passed it vacuously, while every
-    // test that expected an action failed.
-    await tester.pumpAndSettle();
-
+    await pumpTimeline(tester, DayTimeline(
+        day: day,
+        appointments: [appointment],
+        metrics: const TimelineMetrics(),
+        onOpen: (_) {},
+        onCreateAt: (_) {},
+        onMove: (a, newStart) => moves.add((a.id, newStart)),
+      ));
     // 72dp is one hour at scale 1.0.
     // The block, not the text inside it: a block's geometry comes from
     // TimelineMetrics (72dp an hour, computed) while the Text's comes from
@@ -115,21 +117,14 @@ void main() {
 
   testWidgets('a slide that goes nowhere reports nothing', (tester) async {
     final moves = <DateTime>[];
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: DayTimeline(
-            day: day,
-            appointments: [_appointment(start: DateTime(2026, 8, 3, 10, 0))],
-            metrics: const TimelineMetrics(),
-            onOpen: (_) {},
-            onCreateAt: (_) {},
-            onMove: (_, newStart) => moves.add(newStart),
-          ),
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
+    await pumpTimeline(tester, DayTimeline(
+        day: day,
+        appointments: [_appointment(start: DateTime(2026, 8, 3, 10, 0))],
+        metrics: const TimelineMetrics(),
+        onOpen: (_) {},
+        onCreateAt: (_) {},
+        onMove: (_, newStart) => moves.add(newStart),
+      ));
 
     final gesture = await tester.startGesture(tester.getCenter(find.byType(AppointmentBlock)));
     await tester.pump(const Duration(milliseconds: 600));
@@ -144,22 +139,14 @@ void main() {
 
   testWidgets('tapping a block opens it rather than moving it', (tester) async {
     var opened = 0;
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: DayTimeline(
-            day: day,
-            appointments: [_appointment(start: DateTime(2026, 8, 3, 10, 0))],
-            metrics: const TimelineMetrics(),
-            onOpen: (_) => opened++,
-            onCreateAt: (_) {},
-            onMove: (_, _) {},
-          ),
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
-
+    await pumpTimeline(tester, DayTimeline(
+        day: day,
+        appointments: [_appointment(start: DateTime(2026, 8, 3, 10, 0))],
+        metrics: const TimelineMetrics(),
+        onOpen: (_) => opened++,
+        onCreateAt: (_) {},
+        onMove: (_, _) {},
+      ));
     await tester.tap(find.byType(AppointmentBlock));
     await tester.pumpAndSettle();
     expect(opened, 1);
@@ -167,21 +154,14 @@ void main() {
 
   testWidgets('tapping empty space starts a booking at that time', (tester) async {
     final created = <DateTime>[];
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: DayTimeline(
-            day: day,
-            appointments: const [],
-            metrics: const TimelineMetrics(),
-            onOpen: (_) {},
-            onCreateAt: created.add,
-            onMove: (_, _) {},
-          ),
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
+    await pumpTimeline(tester, DayTimeline(
+        day: day,
+        appointments: const [],
+        metrics: const TimelineMetrics(),
+        onOpen: (_) {},
+        onCreateAt: created.add,
+        onMove: (_, _) {},
+      ));
 
     // The window opens at 07:00, so 144dp down is two hours in.
     final lane = tester.getTopLeft(find.byType(DayTimeline));
