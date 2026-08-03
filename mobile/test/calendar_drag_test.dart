@@ -14,6 +14,7 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mojo_app/models/models.dart';
+import 'package:mojo_app/widgets/calendar/appointment_block.dart';
 import 'package:mojo_app/widgets/calendar/day_timeline.dart';
 import 'package:mojo_app/widgets/calendar/timeline_metrics.dart';
 import 'package:mojo_app/widgets/common.dart';
@@ -46,6 +47,21 @@ BookingCheck _check(List<String> codes) => BookingCheck(
 void main() {
   final day = DateTime(2026, 8, 3, 0, 0);
 
+  setUpAll(() {
+    // Make a gesture that lands on nothing a failure rather than a warning.
+    //
+    // This file was green here and red on macOS for days, and the reason it
+    // took so long to see is that "a slide that goes nowhere" *passed* on the
+    // broken runner: it expects no callback, so a gesture swallowed by the
+    // route-transition barrier gave exactly the right answer for entirely the
+    // wrong reason. A test that cannot fail for the right reason hides the
+    // ones that can.
+    //
+    // With this set, a pointer that misses its target stops the test where it
+    // happens instead of leaving a warning in the log nobody reads.
+    WidgetController.hitTestWarningShouldBeFatal = true;
+  });
+
   testWidgets('long-pressing and sliding reports the new time', (tester) async {
     final moves = <(int, DateTime)>[];
     final appointment = _appointment(start: DateTime(2026, 8, 3, 10, 0));
@@ -64,9 +80,27 @@ void main() {
         ),
       ),
     );
+    // Let the route transition finish before touching anything.
+    //
+    // MaterialApp animates its first route in, and while that runs an
+    // AbsorbPointer over the Overlay swallows pointer events. Interacting
+    // straight after pumpWidget is therefore a race: on this machine it
+    // settled in time, on Xcode Cloud's macOS runners it did not, and the
+    // gesture went to the barrier instead of the block. `flutter test` was
+    // green here and red there for days.
+    //
+    // The tell was which test survived: "a slide that goes nowhere" expects
+    // no callback, so a swallowed gesture passed it vacuously, while every
+    // test that expected an action failed.
+    await tester.pumpAndSettle();
 
     // 72dp is one hour at scale 1.0.
-    final block = find.text('Biscuit');
+    // The block, not the text inside it: a block's geometry comes from
+    // TimelineMetrics (72dp an hour, computed) while the Text's comes from
+    // font metrics, which are not the same on every platform. Aiming at
+    // the text made the gesture's landing point depend on how 'Biscuit'
+    // happened to render.
+    final block = find.byType(AppointmentBlock);
     final gesture = await tester.startGesture(tester.getCenter(block));
     await tester.pump(const Duration(milliseconds: 600)); // past the long press
     await gesture.moveBy(const Offset(0, 72));
@@ -95,8 +129,9 @@ void main() {
         ),
       ),
     );
+    await tester.pumpAndSettle();
 
-    final gesture = await tester.startGesture(tester.getCenter(find.text('Biscuit')));
+    final gesture = await tester.startGesture(tester.getCenter(find.byType(AppointmentBlock)));
     await tester.pump(const Duration(milliseconds: 600));
     // Under half a snap increment, so it settles back where it started.
     await gesture.moveBy(const Offset(0, 2));
@@ -123,8 +158,9 @@ void main() {
         ),
       ),
     );
+    await tester.pumpAndSettle();
 
-    await tester.tap(find.text('Biscuit'));
+    await tester.tap(find.byType(AppointmentBlock));
     await tester.pumpAndSettle();
     expect(opened, 1);
   });
@@ -145,6 +181,7 @@ void main() {
         ),
       ),
     );
+    await tester.pumpAndSettle();
 
     // The window opens at 07:00, so 144dp down is two hours in.
     final lane = tester.getTopLeft(find.byType(DayTimeline));
@@ -179,6 +216,7 @@ void main() {
           ),
         ),
       );
+      await tester.pumpAndSettle();
       await tester.tap(find.text('go'));
       await tester.pumpAndSettle();
       return answer;
