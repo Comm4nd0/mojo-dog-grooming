@@ -9,6 +9,7 @@ import '../../services/service_locator.dart';
 import '../../widgets/common.dart';
 import '../../widgets/contact_actions.dart';
 import '../../widgets/dog_silhouette.dart';
+import 'booking_form_screen.dart';
 
 /// Review what comes in from the outside: intake forms and profile claims.
 ///
@@ -30,6 +31,7 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
   List<ClaimRequest> _claims = const [];
   List<ChangeRequest> _changes = const [];
   List<AppointmentChangeRequest> _bookingChanges = const [];
+  List<Appointment> _requests = const [];
   bool _loading = true;
   Object? _error;
 
@@ -47,12 +49,19 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
       final changes = await _data.getChangeRequests(status: 'PENDING');
       final bookingChanges =
           await _data.getAppointmentChangeRequests(status: 'PENDING');
+      // A client's booking request. This screen is what the More badge points
+      // at, and PendingView has always counted these towards it — but there
+      // was no tab for them, so a request showed as "2 waiting" against a
+      // screen with nothing on it. They only ever surfaced as blocks in the
+      // diary, which is exactly where a new one is easiest to miss.
+      final requests = await _data.getAppointmentRequests();
       if (!mounted) return;
       setState(() {
         _submissions = submissions;
         _claims = claims;
         _changes = changes;
         _bookingChanges = bookingChanges;
+        _requests = requests;
         _loading = false;
         _error = null;
       });
@@ -72,20 +81,30 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
     final pendingClaims = _claims.where((c) => c.status == 'PENDING').toList();
 
     return DefaultTabController(
-      // Bookings first: a cancellation nobody has seen is a slot that could
-      // have been refilled and now cannot. The others keep.
-      initialIndex: _bookingChanges.isNotEmpty ? 3 : 0,
-      length: 4,
+      // Land on whatever is actually waiting, most time-critical first. A
+      // booking request or a cancellation nobody has seen is a slot Jess could
+      // have filled; an intake form keeps.
+      initialIndex: _requests.isNotEmpty
+          ? 0
+          : _bookingChanges.isNotEmpty
+              ? 1
+              : pendingSubmissions.isNotEmpty
+                  ? 2
+                  : pendingClaims.isNotEmpty
+                      ? 3
+                      : 0,
+      length: 5,
       child: Scaffold(
         appBar: AppBar(
           title: const Text('Waiting for you'),
           bottom: TabBar(
             isScrollable: true,
             tabs: [
+              Tab(text: 'Requests (${_requests.length})'),
+              Tab(text: 'Bookings (${_bookingChanges.length})'),
               Tab(text: 'Forms (${pendingSubmissions.length})'),
               Tab(text: 'Claims (${pendingClaims.length})'),
               Tab(text: 'Changes (${_changes.length})'),
-              Tab(text: 'Bookings (${_bookingChanges.length})'),
             ],
           ),
         ),
@@ -95,10 +114,11 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
                 ? ErrorRetry(error: _error!, onRetry: _load)
                 : TabBarView(
                     children: [
+                      _requestList(),
+                      _bookingChangeList(),
                       _submissionList(pendingSubmissions),
                       _claimList(pendingClaims),
                       _changeList(),
-                      _bookingChangeList(),
                     ],
                   ),
       ),
@@ -144,6 +164,164 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
         },
       ),
     );
+  }
+
+  /// Bookings a client has asked for, still sitting at REQUESTED.
+  ///
+  /// These have always counted towards the More badge but had nowhere to be
+  /// dealt with — the badge said "2 waiting" and this screen was empty, and the
+  /// only place a request appeared was as a block in the diary.
+  Widget _requestList() {
+    if (_requests.isEmpty) {
+      return const EmptyState(
+        icon: Icons.event_available_outlined,
+        title: 'No requests',
+        message: 'When a client asks for an appointment it lands here.',
+      );
+    }
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: ListView.separated(
+        itemCount: _requests.length,
+        separatorBuilder: (_, _) => const Divider(height: 1),
+        itemBuilder: (context, index) {
+          final request = _requests[index];
+          final past = request.startAt.isBefore(DateTime.now());
+          return ListTile(
+            isThreeLine: true,
+            leading: Icon(Icons.hourglass_empty, color: AppColors.warning),
+            title: Text('${request.dogName} — ${request.clientName}'),
+            subtitle: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('${formatDate(request.startAt)} · ${request.timeRange}'),
+                if (past)
+                  Text(
+                    'This time has already passed',
+                    style: TextStyle(
+                      color: AppColors.error, fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                if (request.notes.isNotEmpty)
+                  Text(
+                    '“${request.notes}”',
+                    style: TextStyle(
+                      fontStyle: FontStyle.italic, color: context.mojo.muted,
+                    ),
+                  ),
+              ],
+            ),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (request.clientPhone.isNotEmpty)
+                  IconButton(
+                    icon: const Icon(Icons.phone_outlined),
+                    tooltip: 'Ring ${request.clientName}',
+                    onPressed: () => callNumber(context, request.clientPhone),
+                  ),
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  tooltip: 'Turn it down',
+                  onPressed: () => _declineRequest(request),
+                ),
+                IconButton(
+                  icon: Icon(Icons.check, color: context.mojo.accent),
+                  tooltip: 'Put it in the diary',
+                  onPressed: () => _acceptRequest(request),
+                ),
+              ],
+            ),
+            // Opening it goes to the booking form, which is where a different
+            // time gets picked — accepting here takes the time as asked.
+            onTap: () => _openRequest(request),
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _acceptRequest(Appointment request) async {
+    // Check before confirming, not to refuse it — the diary never refuses —
+    // but because a request arrives without anyone having looked at the day,
+    // so this is the first moment a clash or an out-of-hours slot is visible.
+    try {
+      final check = await _data.checkBooking(
+        dogId: request.dogId,
+        startAt: request.startAt,
+        endAt: request.endAt,
+        excludeAppointmentId: request.id,
+        serviceType: request.serviceType,
+      );
+      if (!mounted) return;
+      final go = await showWarningsDialog(
+        context,
+        check,
+        title: 'Before you book them in',
+        confirmLabel: 'BOOK ANYWAY',
+      );
+      if (!go || !mounted) return;
+
+      await _data.updateAppointment(request.id, {'status': 'BOOKED'});
+    } catch (error) {
+      if (mounted) showSnack(context, error.toString(), isError: true);
+      return;
+    }
+    if (!mounted) return;
+    showSnack(context, 'Booked in.');
+    _load();
+    unawaited(_data.getPending());
+  }
+
+  Future<void> _declineRequest(Appointment request) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Turn down ${request.dogName}?'),
+        content: const Text(
+          'The booking is cancelled. Ring them if you want to offer another '
+          'time — there are no notifications, so nothing tells them by itself.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('KEEP IT'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('TURN IT DOWN',
+                style: TextStyle(color: AppColors.error)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    try {
+      await _data.updateAppointment(request.id, {'status': 'CANCELLED'});
+    } catch (error) {
+      if (mounted) showSnack(context, error.toString(), isError: true);
+      return;
+    }
+    if (!mounted) return;
+    showSnack(context, 'Turned down.');
+    _load();
+    unawaited(_data.getPending());
+  }
+
+  Future<void> _openRequest(Appointment request) async {
+    final saved = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => BookingFormScreen(
+          appointment: request,
+          initialDate: request.startAt,
+        ),
+      ),
+    );
+    if (saved == true) {
+      _load();
+      unawaited(_data.getPending());
+    }
   }
 
   /// Clients asking to cancel or move a booking.

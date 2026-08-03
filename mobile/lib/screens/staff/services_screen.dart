@@ -26,6 +26,7 @@ class _ServicesScreenState extends State<ServicesScreen> {
   final _data = getIt<DataService>();
 
   List<ServiceItem> _services = const [];
+  AppSettings? _settings;
   bool _loading = true;
   Object? _error;
 
@@ -39,9 +40,11 @@ class _ServicesScreenState extends State<ServicesScreen> {
     setState(() => _error = null);
     try {
       final services = await _data.getServices();
+      final settings = await _data.getSettings();
       if (!mounted) return;
       setState(() {
         _services = services;
+        _settings = settings;
         _loading = false;
       });
     } catch (error) {
@@ -90,11 +93,111 @@ class _ServicesScreenState extends State<ServicesScreen> {
                                   size: 18, color: AppColors.warning),
                           onTap: () => _edit(service),
                         ),
+                      if (_settings != null) ..._nailFallback(),
                       const SizedBox(height: 24),
                     ],
                   ),
                 ),
     );
+  }
+
+  /// The figures a nails booking falls back on when **no service is ticked**.
+  ///
+  /// These used to be a "Nails, fleas and ticks" section at the top level of
+  /// Settings, which read as a second answer to the question this whole screen
+  /// asks — two places to set one thing, and no way to tell which a booking had
+  /// used. They belong here, next to Nail Clipping and Tick / Flea Removal.
+  ///
+  /// Not merged into those rows, though, and not deleted: a nails appointment
+  /// with no services on it resolves from these and only these. That is the
+  /// compatibility guarantee that let the service catalogue ship ahead of the
+  /// app build — a booking made before services existed still resolves
+  /// identically — and there is a test on it in `resolve_slot`.
+  List<Widget> _nailFallback() {
+    final settings = _settings!;
+    return [
+      const Divider(height: 32),
+      const SectionHeader(title: 'When no service is ticked'),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+        child: Text(
+          'A nails, fleas or ticks booking with nothing ticked above falls back '
+          'to these. Your price list covers grooms only, so nothing is set until '
+          'you set it — the booking still goes through either way.',
+          style: TextStyle(fontSize: 12.5, color: context.mojo.muted),
+        ),
+      ),
+      ListTile(
+        dense: true,
+        title: const Text('How long to block out'),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              settings.nailVisitMinutes == null
+                  ? 'Not set'
+                  : formatDuration(settings.nailVisitMinutes!),
+              style: TextStyle(color: context.mojo.muted),
+            ),
+            const SizedBox(width: 10),
+            const Icon(Icons.edit_outlined, size: 18),
+          ],
+        ),
+        onTap: _editNailMinutes,
+      ),
+      ListTile(
+        dense: true,
+        title: const Text('What it costs'),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              settings.nailVisitPrice == null
+                  ? 'Not set'
+                  : formatMoney(settings.nailVisitPrice!),
+              style: TextStyle(color: context.mojo.muted),
+            ),
+            const SizedBox(width: 10),
+            const Icon(Icons.edit_outlined, size: 18),
+          ],
+        ),
+        onTap: _editNailPrice,
+      ),
+    ];
+  }
+
+  Future<void> _editNailMinutes() async {
+    final result = await promptForText(
+      context,
+      title: 'When no service is ticked',
+      initialValue: _settings!.nailVisitMinutes?.toString() ?? '',
+      labelText: 'Minutes to block out',
+      helperText: 'Leave blank if you have not decided yet',
+      keyboardType: TextInputType.number,
+    );
+    if (result == null) return;
+    // Blank clears it back to "not set" rather than being ignored — she may
+    // have entered a guess and want it gone again.
+    final minutes = int.tryParse(result.trim());
+    if (result.trim().isNotEmpty && (minutes == null || minutes <= 0)) return;
+    await _data.updateSettings({'nail_visit_minutes': minutes});
+    _load();
+  }
+
+  Future<void> _editNailPrice() async {
+    final result = await promptForText(
+      context,
+      title: 'When no service is ticked',
+      initialValue: _settings!.nailVisitPrice?.toString() ?? '',
+      labelText: 'Price',
+      helperText: 'Leave blank if you have not decided yet',
+      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+    );
+    if (result == null) return;
+    final price = double.tryParse(result.trim());
+    if (result.trim().isNotEmpty && (price == null || price < 0)) return;
+    await _data.updateSettings({'nail_visit_price': price?.toStringAsFixed(2)});
+    _load();
   }
 
   Future<void> _edit(ServiceItem service) async {

@@ -1990,6 +1990,64 @@ class AppointmentChangeRequestTests(BaseAPITestCase):
         self.assertGreaterEqual(pending.data['total'], 1)
 
 
+class AppointmentStatusFilterTests(BaseAPITestCase):
+    """`?status=` on the appointment list.
+
+    "Waiting for you" needs every outstanding request regardless of date. The
+    More badge has always counted REQUESTED appointments towards its total, but
+    nothing could list them — so the badge said "2 waiting" against a screen
+    with no tab for them, and a request only ever showed up as a block in the
+    diary.
+    """
+
+    def setUp(self):
+        super().setUp()
+        soon = timezone.now() + timedelta(days=4)
+        self.requested = Appointment.objects.create(
+            dog=self.alice_dog, start_at=soon, end_at=soon + timedelta(hours=2),
+            status=AppointmentStatus.REQUESTED,
+        )
+        self.booked = Appointment.objects.create(
+            dog=self.bob_dog, start_at=soon, end_at=soon + timedelta(hours=2),
+            status=AppointmentStatus.BOOKED,
+        )
+
+    def test_filtering_by_status_returns_only_that_status(self):
+        response = self.staff_client.get('/api/appointments/?status=REQUESTED')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [row['id'] for row in response.data['results']]
+        self.assertIn(self.requested.pk, ids)
+        self.assertNotIn(self.booked.pk, ids)
+
+    def test_a_request_whose_date_has_passed_is_still_listed(self):
+        """No date window on this call, deliberately — a request Jess never
+        answered is the worst one to drop off the list."""
+        past = timezone.now() - timedelta(days=5)
+        stale = Appointment.objects.create(
+            dog=self.alice_dog, start_at=past, end_at=past + timedelta(hours=2),
+            status=AppointmentStatus.REQUESTED,
+        )
+        ids = [
+            row['id']
+            for row in self.staff_client.get('/api/appointments/?status=REQUESTED').data['results']
+        ]
+        self.assertIn(stale.pk, ids)
+
+    def test_the_badge_count_and_the_list_agree(self):
+        """The bug this was written for: the two disagreeing is what made the
+        badge point at an empty screen."""
+        pending = self.staff_client.get('/api/pending/')
+        listed = self.staff_client.get('/api/appointments/?status=REQUESTED')
+        self.assertEqual(pending.data['appointment_requests'], listed.data['count'])
+
+    def test_a_client_still_only_sees_their_own(self):
+        ids = [
+            row['id']
+            for row in self.bob_client.get('/api/appointments/?status=REQUESTED').data['results']
+        ]
+        self.assertNotIn(self.requested.pk, ids)
+
+
 class DogsDueTests(BaseAPITestCase):
     """Who needs booking in.
 

@@ -99,6 +99,10 @@ class WeekTimeline extends StatelessWidget {
                         ),
                       for (var index = 0; index < 7; index++)
                         ..._blocksFor(context, index, window, laneWidth),
+                      // Drawn over the blocks so it stays visible across a
+                      // booking that is running right now — which is the one
+                      // time you most want to see where the line falls.
+                      ..._nowLine(context, window, laneWidth),
                     ],
                   );
                 },
@@ -134,6 +138,52 @@ class WeekTimeline extends StatelessWidget {
             ),
           ),
         ),
+    ];
+  }
+
+  /// The current time, drawn across **today's column only**.
+  ///
+  /// Full width would be wrong rather than merely untidy: on a Thursday it
+  /// would cut through Monday's and Friday's blocks at the same height and
+  /// read as though it applied to all of them. The marker in the gutter gives
+  /// the height of the line at a glance, which a 49dp column cannot.
+  ///
+  /// Returns a list so it contributes nothing at all when today is not in this
+  /// week — a `SizedBox.shrink()` inside a `Stack` is still a child to lay out.
+  List<Widget> _nowLine(
+    BuildContext context,
+    DayWindow window,
+    double laneWidth,
+  ) {
+    final now = DateTime.now();
+    final index = _days.indexWhere((day) => _isSameDay(day, now));
+    if (index < 0) return const [];
+
+    final minutes = now.hour * 60 + now.minute - window.startMinutes;
+    // Outside the drawn window — before the first booking of the week or after
+    // the last. Drawing it clamped to the edge would claim a time that is not
+    // where the line is.
+    if (minutes < 0 || minutes > window.totalMinutes) return const [];
+
+    final top = metrics.yForMinutes(minutes);
+    return [
+      Positioned(
+        left: 0,
+        width: metrics.gutterWidth - 2,
+        top: top - 4,
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            Container(width: 6, height: 8, color: AppColors.error),
+          ],
+        ),
+      ),
+      Positioned(
+        left: metrics.gutterWidth + index * laneWidth,
+        width: laneWidth,
+        top: top,
+        child: Container(height: 1.5, color: AppColors.error),
+      ),
     ];
   }
 

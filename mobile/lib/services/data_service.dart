@@ -230,6 +230,16 @@ class DataService {
     return Appointment.fromJson(payload as Map<String, dynamic>);
   }
 
+  /// Bookings a client has asked for and Jess has not answered yet.
+  ///
+  /// PendingView counts these towards the More badge, so there has to be a
+  /// way to list them — without one the badge pointed at a screen that could
+  /// not show them.
+  Future<List<Appointment>> getAppointmentRequests() async {
+    final payload = await _api.get('/appointments/', query: {'status': 'REQUESTED'});
+    return ApiClient.resultsOf(payload).map(Appointment.fromJson).toList();
+  }
+
   Future<Appointment> updateAppointment(int id, Map<String, dynamic> changes) async =>
       Appointment.fromJson(await _api.patch('/appointments/$id/', changes) as Map<String, dynamic>);
 

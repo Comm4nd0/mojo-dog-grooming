@@ -1131,6 +1131,14 @@ class AppointmentViewSet(ClientScopedMixin, viewsets.ModelViewSet):
         dog_id = self.request.query_params.get('dog')
         if dog_id:
             queryset = queryset.filter(dog_id=dog_id)
+
+        # Without a date window this is unbounded, which is fine for the one
+        # caller that needs it: "Waiting for you" wants every outstanding
+        # request regardless of when it is for, including ones whose date has
+        # already gone by — those are the worst to miss.
+        status_filter = self.request.query_params.get('status')
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
         return queryset
 
     def perform_create(self, serializer):

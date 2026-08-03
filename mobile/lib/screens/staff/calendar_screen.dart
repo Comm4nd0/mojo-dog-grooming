@@ -387,6 +387,41 @@ class _CalendarScreenState extends State<CalendarScreen> {
             titleCentered: true,
             titleTextStyle: AppColors.display(20),
           ),
+          // "Now" at month scale is a day, not a time — there is no hour to
+          // put a line at. This is the same red rule the day and week views
+          // draw, moved to the top edge of today's cell.
+          //
+          // `prioritizedBuilder` rather than `todayBuilder` because the
+          // builders are tried in order and `selectedBuilder` wins first: with
+          // todayBuilder, selecting today made it stop looking like today,
+          // which is exactly when you are most likely to be looking at it.
+          // Returning null for every other day falls through to the normal
+          // styling, and markers still draw on top either way.
+          calendarBuilders: CalendarBuilders(
+            prioritizedBuilder: (context, day, focusedDay) {
+              if (!isSameDay(day, DateTime.now())) return null;
+              final selected = isSameDay(_selectedDay, day);
+              return Container(
+                margin: const EdgeInsets.all(6),
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: selected ? AppColors.primaryBright : context.mojo.tint,
+                  border: const Border(
+                    top: BorderSide(color: AppColors.error, width: 2.5),
+                  ),
+                ),
+                child: Text(
+                  '${day.day}',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w700,
+                    // Black on the bright green, never white — it fails
+                    // contrast badly. Same rule as selectedTextStyle below.
+                    color: selected ? Colors.black : context.mojo.onTint,
+                  ),
+                ),
+              );
+            },
+          ),
           calendarStyle: CalendarStyle(
             todayDecoration: BoxDecoration(
               color: context.mojo.tint,
