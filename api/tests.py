@@ -32,7 +32,12 @@ from .models import (
     Appointment,
     AppointmentChangeRequest,
     AppointmentStatus,
+    ActivityLevel,
     Breed,
+    CoatType,
+    KennelClubGroup,
+    MedicalNote,
+    SizeBand,
     Client,
     ClientChangeRequest,
     ClientClaimRequest,
@@ -1604,6 +1609,200 @@ class NeuterUnknownTests(BaseAPITestCase):
             format='json',
         )
         self.assertIs(Dog.objects.get(name='Bramble').is_neutered, True)
+
+
+class BreedStandardsTests(BaseAPITestCase):
+    """Jess's breed record — "a little snippet of the whole dog"."""
+
+    def test_the_seeded_breeds_know_their_size_band(self):
+        """The band was in seed_breeds.BREEDS all along — PRICING is keyed by
+        it — but was never stored. Migration 0016 backfills it, and it must not
+        have disturbed the prices Jess may have edited."""
+        call_command('seed_breeds', verbosity=0)
+
+        # Breeds the base test case does not pre-create, so these come from the
+        # seeder itself rather than from a row that already existed.
+        self.assertEqual(Breed.objects.get(name='Great Dane').size_band, SizeBand.COLOSSAL)
+        self.assertEqual(Breed.objects.get(name='Shih Tzu').size_band, SizeBand.SMALL)
+
+        wire = Breed.objects.get(name='Airedale Terrier')
+        self.assertEqual(wire.coat_type, CoatType.WIRE)
+        self.assertTrue(wire.is_priced_by_the_grid)
+
+        # And every seeded breed has one — a blank band means a breed whose
+        # price cannot be traced back to the grid it came from.
+        self.assertFalse(
+            Breed.objects.filter(size_band='').exclude(name='Cockapoo (small)').exists(),
+        )
+
+    def test_the_price_grid_covers_five_coats_and_not_the_other_three(self):
+        """Her price list prices the original five. Hairless, corded and silky
+        are hers and are not on it — nothing is guessed for them."""
+        priced = Breed.objects.create(
+            name='Test Wire', coat_type=CoatType.WIRE, size_band=SizeBand.MEDIUM,
+            avg_groom_minutes=120, avg_price=Decimal('72.50'), avg_schedule_weeks=8,
+        )
+        unpriced = Breed.objects.create(
+            name='Test Corded', coat_type=CoatType.CORDED, size_band=SizeBand.MEDIUM,
+            avg_groom_minutes=120, avg_price=Decimal('0.00'), avg_schedule_weeks=8,
+        )
+        self.assertTrue(priced.is_priced_by_the_grid)
+        self.assertFalse(unpriced.is_priced_by_the_grid)
+
+    def test_the_whole_record_round_trips(self):
+        breed = Breed.objects.create(
+            name='Test Setter', avg_groom_minutes=120,
+            avg_price=Decimal('70.00'), avg_schedule_weeks=8,
+        )
+        response = self.staff_client.patch(f'/api/breeds/{breed.pk}/', {
+            'kennel_club_group': KennelClubGroup.GUNDOG,
+            'activity_level': ActivityLevel.HIGH,
+            'size_band': SizeBand.LARGE,
+            'coat_type': CoatType.SILKY,
+            'life_span_min_years': 12,
+            'life_span_max_years': 15,
+            'height_min_cm': 58,
+            'height_max_cm': 67,
+            'weight_min_kg': '25.0',
+            'weight_max_kg': '32.5',
+            'original_purpose': 'Finding and setting game birds',
+            'chest_shape': 'Deep, oval',
+            'head_type': 'Dolichocephalic',
+            'ear_shape': 'Drop',
+            'coat_colours': 'Red, red and white',
+            'grooming_technique': 'Feathering scissored, body hand-stripped',
+            'groom_style_ears': 'Thinned underneath, left long',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['kennel_club_group_display'], 'Gundog')
+        self.assertEqual(response.data['coat_type_display'], 'Silky / drop')
+        self.assertFalse(
+            response.data['is_priced_by_the_grid'],
+            'silky is not on her price grid, and the app should say so',
+        )
+
+    def test_a_range_that_runs_backwards_is_refused(self):
+        """Cheap to check, and the alternative is a breed sheet claiming a dog
+        stands 40cm to 25cm tall."""
+        breed = Breed.objects.create(
+            name='Test Backwards', avg_groom_minutes=90,
+            avg_price=Decimal('50.00'), avg_schedule_weeks=8,
+        )
+        response = self.staff_client.patch(
+            f'/api/breeds/{breed.pk}/',
+            {'height_min_cm': 40, 'height_max_cm': 25}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('height_max_cm', response.data)
+
+    def test_groom_styles_become_a_dog_s_starting_preferences(self):
+        """Saves retyping the same styling for every Cockapoo. Head maps to the
+        dog's `pref_face` — the breed record says head, a dog's preferences say
+        face, and a groomer means the same area."""
+        breed = Breed.objects.create(
+            name='Test Poodle', avg_groom_minutes=120,
+            avg_price=Decimal('70.00'), avg_schedule_weeks=6,
+            groom_style_body='Lamb trim, one inch',
+            groom_style_head='Rounded teddy bear',
+            groom_style_feet='Clean feet',
+        )
+        defaults = breed.preference_defaults()
+        self.assertEqual(defaults['pref_body'], 'Lamb trim, one inch')
+        self.assertEqual(defaults['pref_face'], 'Rounded teddy bear')
+        self.assertEqual(defaults['pref_feet'], 'Clean feet')
+        # Blank styles are not offered at all, and skirt has no breed
+        # counterpart, so neither appears.
+        self.assertNotIn('pref_tail', defaults)
+        self.assertNotIn('pref_skirt', defaults)
+
+    def test_a_client_can_read_breeds_but_not_edit_them(self):
+        breed = Breed.objects.create(
+            name='Test Readonly', avg_groom_minutes=90,
+            avg_price=Decimal('50.00'), avg_schedule_weeks=8,
+        )
+        self.assertEqual(
+            self.alice_client.get(f'/api/breeds/{breed.pk}/').status_code, status.HTTP_200_OK,
+        )
+        self.assertEqual(
+            self.alice_client.patch(
+                f'/api/breeds/{breed.pk}/', {'head_type': 'x'}, format='json',
+            ).status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+
+class MedicalNoteTests(BaseAPITestCase):
+    """The reference Jess looks a condition up in.
+
+    Nothing is seeded and nothing is authored by this codebase — it is
+    veterinary information, and an entry that merely sounds right is worse than
+    an empty table because somebody would act on it.
+    """
+
+    def test_nothing_is_seeded(self):
+        call_command('seed_breeds', verbosity=0)
+        self.assertEqual(
+            MedicalNote.objects.count(), 0,
+            'medical content must come from Jess or her vet, not from a seed file',
+        )
+
+    def test_jess_can_write_one_up_against_a_breed(self):
+        breed = Breed.objects.create(
+            name='Test Dachshund', avg_groom_minutes=45,
+            avg_price=Decimal('37.50'), avg_schedule_weeks=10,
+        )
+        response = self.staff_client.post('/api/medical-notes/', {
+            'title': 'Intervertebral disc disease',
+            'kind': MedicalNote.Kind.AILMENT,
+            'what_it_means': 'Long-backed breeds can suffer disc problems.',
+            'grooming_care': 'Support the back on and off the table.',
+            'source': 'Jess — her own vet',
+            'breeds': [breed.pk],
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['breed_names'], ['Test Dachshund'])
+        self.assertEqual(response.data['kind_display'], 'Condition or ailment')
+
+    def test_it_shows_up_on_the_breed_it_belongs_to(self):
+        breed = Breed.objects.create(
+            name='Test Spaniel', avg_groom_minutes=90,
+            avg_price=Decimal('57.50'), avg_schedule_weeks=8,
+        )
+        note = MedicalNote.objects.create(title='Ear infections', source='vet')
+        note.breeds.add(breed)
+
+        response = self.staff_client.get(f'/api/breeds/{breed.pk}/')
+        titles = [row['title'] for row in response.data['medical_notes']]
+        self.assertEqual(titles, ['Ear infections'])
+
+    def test_it_can_be_searched_and_filtered(self):
+        MedicalNote.objects.create(
+            title='Heatstroke', kind=MedicalNote.Kind.FIRST_AID,
+            first_aid='Cool the dog and ring a vet.', source='course notes',
+        )
+        MedicalNote.objects.create(title='Hip dysplasia', kind=MedicalNote.Kind.AILMENT)
+
+        by_kind = self.staff_client.get(
+            f'/api/medical-notes/?kind={MedicalNote.Kind.FIRST_AID}',
+        )
+        self.assertEqual([row['title'] for row in by_kind.data['results']], ['Heatstroke'])
+
+        by_text = self.staff_client.get('/api/medical-notes/?search=cool the dog')
+        self.assertEqual([row['title'] for row in by_text.data['results']], ['Heatstroke'])
+
+    def test_a_client_can_read_it_but_not_write_it(self):
+        """General reference, not anybody's record — a dog's own conditions
+        live on the dog and stay staff-gated with the rest of that profile."""
+        MedicalNote.objects.create(title='Matting', kind=MedicalNote.Kind.GROOMING_CARE)
+        self.assertEqual(
+            self.alice_client.get('/api/medical-notes/').status_code, status.HTTP_200_OK,
+        )
+        self.assertEqual(
+            self.alice_client.post(
+                '/api/medical-notes/', {'title': 'Made up'}, format='json',
+            ).status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
 
 
 class RestraintsRequiredTests(BaseAPITestCase):

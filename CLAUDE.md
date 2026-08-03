@@ -53,7 +53,7 @@ mobile/lib/
 Backend:
 ```bash
 python manage.py migrate && python manage.py seed_breeds
-python manage.py test api        # 357 tests
+python manage.py test api        # 368 tests
 python manage.py runserver 0.0.0.0:8000
 python manage.py accounts        # who can sign in — usernames live only in the DB
 python manage.py reset_link jess # a way back in when the superuser is locked out
@@ -62,7 +62,7 @@ python manage.py reset_link jess # a way back in when the superuser is locked ou
 Mobile:
 ```bash
 cd mobile && flutter pub get
-flutter analyze && flutter test  # 160 tests
+flutter analyze && flutter test  # 165 tests
 flutter run --dart-define=MOJO_API_BASE=http://192.168.1.20:8000/api
 ```
 
@@ -233,6 +233,51 @@ does not go round it.
   re-price a slot Jess may have adjusted by hand.
 - The app says "request sent", never "cancelled" or "moved". Nothing has changed until she
   approves it, and saying otherwise is how somebody doesn't turn up to a groom that is still on.
+
+## The breed record is a reference sheet that also prices
+
+`Breed` began as three numbers and is now Jess's breed standards record — *"a little snippet of
+the whole dog"*: KC group, life span, activity, size, height, weight, what it was bred for,
+chest/head/ear shape, colours, technique, and five groom styles.
+
+**Two of those fields are not decoration.** `size_band` and `coat_type` are the two axes of
+`PRICING` in `seed_breeds`. The band was in `BREEDS` all along and was never stored, so the
+grid knew it and the model did not; `0016` backfills it for the 224 seeded rows. That is a
+one-off in the shape of `0006` and for the same reason — `seed_breeds --overwrite` would fill
+it in too, but it also resets price, time and interval, discarding every figure Jess has
+edited. Never reach for `--overwrite` to add a column.
+
+**Three of the eight coats are not on the grid.** Hairless, corded and silky/drop are Jess's
+additions; her price list covers the other five. They price at whatever she sets and nothing is
+guessed — `is_priced_by_the_grid` is false for them and the app says so on the record rather
+than showing a figure nobody worked out. Same rule as `nail_visit_price`: an invented price is
+indistinguishable from a real one once it is in the table.
+
+Everything descriptive is **free text on purpose**. She is still working out what belongs on
+this record, and a fixed option list would be something to work around. The four she did
+enumerate — group, activity, size, coat — are choices.
+
+`groom_style_*` pre-fills a new dog's `pref_*` in the dog form via `preference_defaults()`.
+**Head maps to face** — the breed record says head, a dog's preferences say face, and a groomer
+means the same area; `pref_skirt` has no breed counterpart. It only ever fills *blanks*: picking
+a breed must not wipe what a client actually asked for, and a mis-tap on the picker must not
+rewrite it. The form says what it filled in, so the words are never mysterious.
+
+## Medical notes are Jess's, not ours
+
+`MedicalNote` is the reference she looks a condition up in — what it means, what to watch for
+when grooming, what to do if it happens in the salon. Her idea: *"if medical issue with the dog
+you can look up what it means or if you need to take care when grooming"*.
+
+**Nothing is seeded and nothing is written by this codebase, deliberately.** This is veterinary
+information, and text that merely sounds right is worse than an empty table because somebody
+would act on it. There is a test asserting the table is empty after `seed_breeds`. Every entry
+carries a `source`, and one without a source is shown as unattributed rather than as fact —
+`isAttributed` in `models.dart`, flagged in amber on the screen and in the admin's list display.
+
+Not on `Dog`: a particular dog's conditions are `Dog.medical_issues` and `Dog.medical_notes`,
+staff-gated with the rest of that profile. This is the dictionary, not the record.
+`IsStaffOrReadOnly`, because a client reading a general reference harms nothing.
 
 ## Breeds price off a grid, not per breed
 

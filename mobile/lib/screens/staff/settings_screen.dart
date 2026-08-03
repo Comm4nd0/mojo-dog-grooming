@@ -6,6 +6,8 @@ import '../../services/api_client.dart';
 import '../../services/data_service.dart';
 import '../../services/service_locator.dart';
 import '../../widgets/common.dart';
+import 'breed_detail_screen.dart';
+import 'medical_notes_screen.dart';
 import 'services_screen.dart';
 
 /// Business settings: client-facing invoicing, temperament limits, breeds.
@@ -167,6 +169,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       trailing: const Icon(Icons.chevron_right),
                       onTap: () => Navigator.of(context).push(
                         MaterialPageRoute(builder: (_) => const ServicesScreen()),
+                      ),
+                    ),
+
+                    const SectionHeader(title: 'Reference'),
+                    ListTile(
+                      leading: Icon(Icons.medical_information_outlined,
+                          color: context.mojo.accent),
+                      title: const Text('Medical notes'),
+                      subtitle: const Text(
+                        'What an ailment means, and what it means for a groom',
+                      ),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const MedicalNotesScreen()),
                       ),
                     ),
 
@@ -470,8 +486,17 @@ class _BreedListScreenState extends State<_BreedListScreen> {
                           '${formatMoney(breed.avgPrice)} · '
                           'every ${breed.avgScheduleWeeks}w',
                         ),
-                        trailing: const Icon(Icons.edit_outlined, size: 18),
-                        onTap: () => _edit(breed),
+                        trailing: const Icon(Icons.chevron_right),
+                        // The whole standards record, not just the three
+                        // numbers the old dialog edited.
+                        onTap: () async {
+                          await Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => BreedDetailScreen(breedId: breed.id),
+                            ),
+                          );
+                          if (mounted) _load();
+                        },
                       );
                     },
                   ),
@@ -481,54 +506,4 @@ class _BreedListScreenState extends State<_BreedListScreen> {
     );
   }
 
-  Future<void> _edit(Breed breed) async {
-    final minutes = TextEditingController(text: breed.avgGroomMinutes.toString());
-    final price = TextEditingController(text: breed.avgPrice.toStringAsFixed(2));
-    final weeks = TextEditingController(text: breed.avgScheduleWeeks.toString());
-
-    final saved = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(breed.name),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            MojoTextField(
-              controller: minutes,
-              decoration: const InputDecoration(labelText: 'Groom time (minutes)'),
-              keyboardType: TextInputType.number,
-            ),
-            const SizedBox(height: 12),
-            MojoTextField(
-              controller: price,
-              decoration: const InputDecoration(labelText: 'Price (£)'),
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            ),
-            const SizedBox(height: 12),
-            MojoTextField(
-              controller: weeks,
-              decoration: const InputDecoration(labelText: 'Groom every (weeks)'),
-              keyboardType: TextInputType.number,
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('CANCEL')),
-          ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text('SAVE')),
-        ],
-      ),
-    );
-
-    if (saved == true) {
-      await _data.updateBreed(breed.id, {
-        'avg_groom_minutes': int.tryParse(minutes.text) ?? breed.avgGroomMinutes,
-        'avg_price': price.text.trim(),
-        'avg_schedule_weeks': int.tryParse(weeks.text) ?? breed.avgScheduleWeeks,
-      });
-      _load();
-    }
-    minutes.dispose();
-    price.dispose();
-    weeks.dispose();
-  }
 }

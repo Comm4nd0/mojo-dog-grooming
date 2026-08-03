@@ -83,6 +83,7 @@ from .models import (
     IntakeSubmission,
     Invoice,
     InvoiceLine,
+    MedicalNote,
     OpeningHours,
     PasswordResetRequest,
     PasswordResetToken,
@@ -121,6 +122,7 @@ from .serializers import (
     IntakeInviteSerializer,
     IntakeSubmissionSerializer,
     InvoiceSerializer,
+    MedicalNoteSerializer,
     OpeningHoursSerializer,
     PasswordResetRequestSerializer,
     PasswordResetTokenSerializer,
@@ -273,6 +275,42 @@ class BreedViewSet(viewsets.ModelViewSet):
         if search:
             queryset = queryset.filter(name__icontains=search)
         return queryset
+
+
+class MedicalNoteViewSet(viewsets.ModelViewSet):
+    """The reference Jess looks a condition up in.
+
+    ``IsStaffOrReadOnly`` rather than staff-only: this is general reference
+    material, not anybody's record. A dog's *own* conditions live in
+    ``Dog.medical_issues`` and ``Dog.medical_notes``, which are staff-gated
+    with the rest of that profile.
+
+    Nothing is seeded here on purpose — see the model. It is veterinary
+    information, and an entry that merely sounds right is worse than an empty
+    table, because somebody would act on it.
+    """
+
+    queryset = MedicalNote.objects.prefetch_related('breeds')
+    serializer_class = MedicalNoteSerializer
+    permission_classes = [IsStaffOrReadOnly]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        kind = self.request.query_params.get('kind')
+        if kind:
+            queryset = queryset.filter(kind=kind)
+        breed = self.request.query_params.get('breed')
+        if breed:
+            queryset = queryset.filter(breeds__id=breed)
+        search = self.request.query_params.get('search')
+        if search:
+            queryset = queryset.filter(
+                Q(title__icontains=search)
+                | Q(what_it_means__icontains=search)
+                | Q(grooming_care__icontains=search)
+                | Q(first_aid__icontains=search)
+            )
+        return queryset.distinct()
 
 
 class ServiceViewSet(viewsets.ModelViewSet):

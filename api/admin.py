@@ -4,6 +4,7 @@ from .models import (
     AppSettings,
     Appointment,
     Breed,
+    MedicalNote,
     BookingSeries,
     Client,
     ClientClaimRequest,
@@ -73,9 +74,65 @@ class DogAdmin(admin.ModelAdmin):
 
 @admin.register(Breed)
 class BreedAdmin(admin.ModelAdmin):
-    list_display = ['name', 'coat_type', 'avg_groom_minutes', 'avg_price', 'avg_schedule_weeks']
+    list_display = [
+        'name', 'size_band', 'coat_type',
+        'avg_groom_minutes', 'avg_price', 'avg_schedule_weeks',
+    ]
+    list_filter = ['size_band', 'coat_type', 'kennel_club_group', 'activity_level']
     search_fields = ['name']
     list_editable = ['avg_groom_minutes', 'avg_price', 'avg_schedule_weeks']
+    fieldsets = [
+        ('Groom', {
+            'fields': [
+                'name', ('size_band', 'coat_type'),
+                'avg_groom_minutes', 'avg_price', 'avg_schedule_weeks',
+            ],
+            'description': (
+                'Size band and coat type are the two axes of the price grid in '
+                'seed_breeds. Hairless, corded and silky are not on it — those '
+                'carry whatever price is set here and nothing is guessed.'
+            ),
+        }),
+        ('The breed', {
+            'fields': [
+                'kennel_club_group', 'activity_level',
+                ('life_span_min_years', 'life_span_max_years'),
+                ('height_min_cm', 'height_max_cm'),
+                ('weight_min_kg', 'weight_max_kg'),
+                'original_purpose',
+            ],
+        }),
+        ('Shape', {
+            'fields': ['chest_shape', 'head_type', 'head_shape', 'ear_shape', 'coat_colours'],
+        }),
+        ('How it is groomed', {
+            'fields': [
+                'grooming_technique',
+                'groom_style_body', 'groom_style_head', 'groom_style_feet',
+                'groom_style_tail', 'groom_style_ears',
+            ],
+            'description': (
+                'These pre-fill a new dog’s grooming preferences in the app. '
+                'A starting point per breed, not an override — once a dog has '
+                'its own, the dog’s win.'
+            ),
+        }),
+        ('Health', {'fields': ['common_ailments', 'notes']}),
+    ]
+
+
+@admin.register(MedicalNote)
+class MedicalNoteAdmin(admin.ModelAdmin):
+    """Reference entries. Nothing here is written by the codebase.
+
+    This is veterinary information — see the model. `source` is on the list
+    display on purpose: an entry nobody can attribute is one to be wary of.
+    """
+
+    list_display = ['title', 'kind', 'source', 'updated_at']
+    list_filter = ['kind']
+    search_fields = ['title', 'what_it_means', 'grooming_care', 'first_aid']
+    filter_horizontal = ['breeds']
 
 
 @admin.register(Appointment)

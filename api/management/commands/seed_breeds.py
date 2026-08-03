@@ -436,6 +436,13 @@ class Command(BaseCommand):
             minutes, price = PRICING[(size, coat)]
             defaults = {
                 'coat_type': coat,
+                # The band was implicit in this file until now — PRICING knew
+                # it, the model did not. Storing it makes a breed's price
+                # derivable from the breed rather than from reading this list.
+                # Existing rows are filled in by migration 0016, which touches
+                # nothing else; `--overwrite` would also reset prices Jess has
+                # edited, which is why it is not the route.
+                'size_band': size,
                 'avg_groom_minutes': minutes,
                 'avg_price': Decimal(price),
                 'avg_schedule_weeks': SCHEDULE_WEEKS[coat],

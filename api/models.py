@@ -520,18 +520,142 @@ class PasswordResetRequest(models.Model):
 
 # ── Breeds and dogs ────────────────────────────────────────────────────
 
-class Breed(models.Model):
-    """Reference data: what a typical groom of this breed takes and costs.
+class KennelClubGroup(models.TextChoices):
+    """The UK Kennel Club's seven breed groups."""
 
-    Seeded by ``manage.py seed_breeds`` with general grooming estimates. These
-    are starting points — Jess edits them to match her own pricing.
+    GUNDOG = 'GUNDOG', 'Gundog'
+    HOUND = 'HOUND', 'Hound'
+    PASTORAL = 'PASTORAL', 'Pastoral'
+    TERRIER = 'TERRIER', 'Terrier'
+    TOY = 'TOY', 'Toy'
+    UTILITY = 'UTILITY', 'Utility'
+    WORKING = 'WORKING', 'Working'
+
+
+class ActivityLevel(models.TextChoices):
+    HIGH = 'HIGH', 'High'
+    MEDIUM = 'MEDIUM', 'Medium'
+    LOW = 'LOW', 'Low'
+
+
+class SizeBand(models.TextChoices):
+    """Jess's five size bands.
+
+    **The values are the keys of ``PRICING`` in ``seed_breeds``**, lower case
+    and spelled exactly as they are there. That grid is size band × coat type,
+    so a mismatch here silently loses a breed its price.
+    """
+
+    TOY = 'toy', 'Toy'
+    SMALL = 'small', 'Small'
+    MEDIUM = 'medium', 'Medium'
+    LARGE = 'large', 'Large'
+    COLOSSAL = 'colossal', 'Colossal (45kg and over)'
+
+
+class CoatType(models.TextChoices):
+    """Coat types, as Jess lists them on her breed standards record.
+
+    The first five are the ``PRICING`` grid's coat axis and their values are
+    spelled to match it exactly — changing one of those strings unprices every
+    breed that carries it.
+
+    **The last three are hers and are not on the grid.** Her price list covers
+    the original five, so a breed in a hairless, corded or silky coat gets no
+    price until she sets one, and the booking check says so. Mapping them onto
+    a neighbouring coat would price three of them as something they are not,
+    and an invented price is indistinguishable from a real one once it is in
+    the table — the same reasoning as ``nail_visit_price``.
+    """
+
+    SMOOTH = 'smooth', 'Smooth'
+    SHORT_DOUBLE = 'short double', 'Short double'
+    LONG_DOUBLE = 'long double', 'Long double'
+    CURLY = 'curly', 'Curly'
+    WIRE = 'wire', 'Wire'
+    # Not on the price grid — see above.
+    HAIRLESS = 'hairless', 'Hairless'
+    CORDED = 'corded', 'Corded'
+    SILKY = 'silky', 'Silky / drop'
+
+
+class Breed(models.Model):
+    """Jess's breed standards record — "a little snippet of the whole dog".
+
+    Started life as three numbers (time, price, interval) seeded by
+    ``manage.py seed_breeds``. It is now also the reference sheet she looks a
+    breed up in, so most of what follows is descriptive rather than
+    operational.
+
+    Two fields are **not** merely descriptive and need care:
+
+    * ``size_band`` and ``coat_type`` are the two axes of ``PRICING`` in
+      ``seed_breeds``. The band was implicit in the seed data until now — the
+      grid knew it, the model did not — so storing it makes the pricing
+      derivable rather than a thing you have to go and read the seed file for.
+    * The ``groom_style_*`` fields pre-fill a new dog's ``pref_*`` preferences
+      in the dog form. They are a starting point that Jess edits per dog, never
+      an override: once a dog has its own, the dog's win.
+
+    Everything descriptive is free text on purpose. Jess is still working out
+    what belongs on this record, and a choice list fixed now would be a set of
+    options she has to work around rather than with. The four fields she *did*
+    enumerate — group, activity, size, coat — are choices.
     """
 
     name = models.CharField(max_length=120, unique=True)
-    coat_type = models.CharField(max_length=60, blank=True, help_text='e.g. double, curly, wire, smooth.')
+
+    # ── The operational three, and the two that price them ─────────────
+    coat_type = models.CharField(
+        max_length=60, blank=True, choices=CoatType.choices,
+        help_text='One axis of the price grid. The last three are not on it.',
+    )
+    size_band = models.CharField(
+        max_length=10, blank=True, choices=SizeBand.choices,
+        help_text='The other axis of the price grid.',
+    )
     avg_groom_minutes = models.PositiveIntegerField(help_text='Typical full groom time in minutes.')
     avg_price = models.DecimalField(max_digits=7, decimal_places=2, help_text='Typical full groom price in GBP.')
     avg_schedule_weeks = models.PositiveIntegerField(help_text='Typical interval between grooms, in weeks.')
+
+    # ── The breed itself ───────────────────────────────────────────────
+    kennel_club_group = models.CharField(
+        max_length=10, blank=True, choices=KennelClubGroup.choices,
+        verbose_name='UK Kennel Club group',
+    )
+    activity_level = models.CharField(max_length=6, blank=True, choices=ActivityLevel.choices)
+    # Ranges, because that is how every one of these is actually quoted — "12
+    # to 15 years", "a 4-6kg dog". Both halves optional so a half-known figure
+    # can still be written down.
+    life_span_min_years = models.PositiveSmallIntegerField(null=True, blank=True)
+    life_span_max_years = models.PositiveSmallIntegerField(null=True, blank=True)
+    # Centimetres. Jess's list says "Height (kg)", which is a slip for cm —
+    # weight is the line below it.
+    height_min_cm = models.PositiveSmallIntegerField(null=True, blank=True, verbose_name='Height from (cm)')
+    height_max_cm = models.PositiveSmallIntegerField(null=True, blank=True, verbose_name='Height to (cm)')
+    weight_min_kg = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
+    weight_max_kg = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
+    original_purpose = models.TextField(blank=True, help_text='What the breed was originally bred to do.')
+
+    # ── Shape, which is what a groomer is actually looking at ──────────
+    chest_shape = models.CharField(max_length=120, blank=True)
+    head_type = models.CharField(max_length=120, blank=True)
+    head_shape = models.CharField(max_length=120, blank=True)
+    ear_shape = models.CharField(max_length=120, blank=True)
+    coat_colours = models.TextField(blank=True, verbose_name='Colours of coat')
+
+    # ── How it is groomed ──────────────────────────────────────────────
+    grooming_technique = models.TextField(blank=True)
+    groom_style_body = models.TextField(blank=True, verbose_name='Groom style — body')
+    groom_style_head = models.TextField(blank=True, verbose_name='Groom style — head')
+    groom_style_feet = models.TextField(blank=True, verbose_name='Groom style — feet')
+    groom_style_tail = models.TextField(blank=True, verbose_name='Groom style — tail')
+    groom_style_ears = models.TextField(blank=True, verbose_name='Groom style — ears')
+
+    common_ailments = models.TextField(
+        blank=True,
+        help_text='What this breed tends to suffer from. Link the detail under Medical notes.',
+    )
     notes = models.TextField(blank=True)
 
     class Meta:
@@ -539,6 +663,95 @@ class Breed(models.Model):
 
     def __str__(self):
         return self.name
+
+    @property
+    def is_priced_by_the_grid(self):
+        """Whether this breed's coat is one the price list actually covers.
+
+        False for hairless, corded and silky: Jess's list prices the other
+        five, so these carry whatever she sets and nothing is guessed.
+        """
+        return self.coat_type in {
+            CoatType.SMOOTH, CoatType.SHORT_DOUBLE,
+            CoatType.LONG_DOUBLE, CoatType.CURLY, CoatType.WIRE,
+        }
+
+    #: Breed groom style -> the dog preference it seeds.
+    #:
+    #: Head to face is the one that is not a rename: the breed record says
+    #: "head", a dog's preferences say "face", and for styling purposes a
+    #: groomer means the same area. `pref_skirt` has no breed counterpart and
+    #: is left alone.
+    GROOM_STYLE_TO_PREFERENCE = {
+        'groom_style_body': 'pref_body',
+        'groom_style_head': 'pref_face',
+        'groom_style_feet': 'pref_feet',
+        'groom_style_tail': 'pref_tail',
+        'groom_style_ears': 'pref_ears',
+    }
+
+    def preference_defaults(self):
+        """The dog preferences this breed suggests, skipping the blanks.
+
+        Used to pre-fill the dog form so Jess is not retyping the same styling
+        for every Cockapoo. Only ever a starting point — see the class
+        docstring.
+        """
+        return {
+            preference: getattr(self, style)
+            for style, preference in self.GROOM_STYLE_TO_PREFERENCE.items()
+            if getattr(self, style)
+        }
+
+
+class MedicalNote(models.Model):
+    """A thing that can be wrong with a dog, and what it means when grooming.
+
+    Jess's idea: *"if medical issue with the dog you can look up what it means
+    or if you need to take care when grooming"*.
+
+    **Nothing here is seeded and nothing is written by this codebase.** This is
+    veterinary information, and text that merely sounds right is worse than an
+    empty field — somebody would act on it. Every entry carries a ``source`` so
+    what is in the table is attributable to whoever or whatever said it.
+
+    Deliberately not on ``Dog``: a dog's own conditions live in
+    ``Dog.medical_issues`` and ``Dog.medical_notes``, which are that dog's
+    record. This is the reference you look the term up in.
+    """
+
+    class Kind(models.TextChoices):
+        AILMENT = 'AILMENT', 'Condition or ailment'
+        FIRST_AID = 'FIRST_AID', 'First aid'
+        GROOMING_CARE = 'GROOMING_CARE', 'Care when grooming'
+
+    title = models.CharField(max_length=120, unique=True)
+    kind = models.CharField(max_length=15, choices=Kind.choices, default=Kind.AILMENT)
+    what_it_means = models.TextField(
+        blank=True, help_text='Plain-English explanation of the term.',
+    )
+    grooming_care = models.TextField(
+        blank=True, help_text='What to watch for, or do differently, when grooming a dog with this.',
+    )
+    first_aid = models.TextField(
+        blank=True, help_text='What to do if it happens in the salon.',
+    )
+    source = models.CharField(
+        max_length=200, blank=True,
+        help_text='Where this came from — your vet, a course, a book. Left blank it is nobody in particular.',
+    )
+    breeds = models.ManyToManyField(
+        Breed, blank=True, related_name='medical_notes',
+        help_text='Breeds this is common in. Optional — plenty of these are not breed-specific.',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['title']
+
+    def __str__(self):
+        return self.title
 
 
 class Dog(models.Model):

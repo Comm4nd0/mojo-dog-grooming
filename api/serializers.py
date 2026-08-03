@@ -45,6 +45,7 @@ from .models import (
     IntakeSubmission,
     Invoice,
     InvoiceLine,
+    MedicalNote,
     OpeningHours,
     PasswordResetRequest,
     PasswordResetToken,
@@ -338,10 +339,74 @@ class SetPasswordSerializer(serializers.Serializer):
 
 # ── Reference data ─────────────────────────────────────────────────────
 
+class MedicalNoteSerializer(serializers.ModelSerializer):
+    kind_display = serializers.CharField(source='get_kind_display', read_only=True)
+    breed_names = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MedicalNote
+        fields = [
+            'id', 'title', 'kind', 'kind_display',
+            'what_it_means', 'grooming_care', 'first_aid', 'source',
+            'breeds', 'breed_names', 'created_at', 'updated_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def get_breed_names(self, obj):
+        return [breed.name for breed in obj.breeds.all()]
+
+
 class BreedSerializer(serializers.ModelSerializer):
+    coat_type_display = serializers.CharField(source='get_coat_type_display', read_only=True)
+    size_band_display = serializers.CharField(source='get_size_band_display', read_only=True)
+    kennel_club_group_display = serializers.CharField(
+        source='get_kennel_club_group_display', read_only=True,
+    )
+    activity_level_display = serializers.CharField(source='get_activity_level_display', read_only=True)
+    #: False for hairless, corded and silky — the three coats Jess's price list
+    #: does not cover. The app says so rather than showing a figure nobody set.
+    is_priced_by_the_grid = serializers.BooleanField(read_only=True)
+    medical_notes = MedicalNoteSerializer(many=True, read_only=True)
+
     class Meta:
         model = Breed
-        fields = ['id', 'name', 'coat_type', 'avg_groom_minutes', 'avg_price', 'avg_schedule_weeks', 'notes']
+        fields = [
+            'id', 'name',
+            'coat_type', 'coat_type_display', 'size_band', 'size_band_display',
+            'is_priced_by_the_grid',
+            'avg_groom_minutes', 'avg_price', 'avg_schedule_weeks',
+            'kennel_club_group', 'kennel_club_group_display',
+            'activity_level', 'activity_level_display',
+            'life_span_min_years', 'life_span_max_years',
+            'height_min_cm', 'height_max_cm',
+            'weight_min_kg', 'weight_max_kg',
+            'original_purpose',
+            'chest_shape', 'head_type', 'head_shape', 'ear_shape', 'coat_colours',
+            'grooming_technique',
+            'groom_style_body', 'groom_style_head', 'groom_style_feet',
+            'groom_style_tail', 'groom_style_ears',
+            'common_ailments', 'medical_notes', 'notes',
+        ]
+
+    def validate(self, attrs):
+        """Refuse a range that runs backwards.
+
+        Cheap, and the alternative is a breed sheet quietly claiming a dog
+        stands 40cm to 25cm tall.
+        """
+        pairs = [
+            ('life_span_min_years', 'life_span_max_years', 'life span'),
+            ('height_min_cm', 'height_max_cm', 'height'),
+            ('weight_min_kg', 'weight_max_kg', 'weight'),
+        ]
+        for low_field, high_field, label in pairs:
+            low = attrs.get(low_field, getattr(self.instance, low_field, None))
+            high = attrs.get(high_field, getattr(self.instance, high_field, None))
+            if low is not None and high is not None and low > high:
+                raise serializers.ValidationError(
+                    {high_field: f'The {label} range starts higher than it ends.'}
+                )
+        return attrs
 
 
 class ServiceSerializer(serializers.ModelSerializer):

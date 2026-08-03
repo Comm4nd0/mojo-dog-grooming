@@ -94,8 +94,36 @@ class DataService {
     return ApiClient.resultsOf(payload).map(Breed.fromJson).toList();
   }
 
+  Future<Breed> getBreed(int id) async =>
+      Breed.fromJson(await _api.get('/breeds/$id/') as Map<String, dynamic>);
+
   Future<void> updateBreed(int id, Map<String, dynamic> changes) =>
       _api.patch('/breeds/$id/', changes);
+
+  // ── Medical notes ──────────────────────────────────────────────────
+  //
+  // Reference material, not anybody's record — a dog's own conditions live on
+  // the dog and stay staff-gated with the rest of that profile. Nothing here
+  // is seeded or written by the app: it is veterinary information.
+
+  Future<List<MedicalNote>> getMedicalNotes({String? search, String? kind, int? breedId}) async {
+    final payload = await _api.get('/medical-notes/', query: {
+      'search': ?search,
+      'kind': ?kind,
+      if (breedId != null) 'breed': '$breedId',
+      'page_size': '200',
+    });
+    return ApiClient.resultsOf(payload).map(MedicalNote.fromJson).toList();
+  }
+
+  Future<MedicalNote> saveMedicalNote(Map<String, dynamic> body, {int? id}) async {
+    final payload = id == null
+        ? await _api.post('/medical-notes/', body)
+        : await _api.patch('/medical-notes/$id/', body);
+    return MedicalNote.fromJson(payload as Map<String, dynamic>);
+  }
+
+  Future<void> deleteMedicalNote(int id) => _api.delete('/medical-notes/$id/');
 
   // ── Problem areas ──────────────────────────────────────────────────
 

@@ -550,6 +550,82 @@ void main() {
     });
   });
 
+  group('Breed standards record', () {
+    Map<String, dynamic> breedJson(Map<String, dynamic> extra) => {
+          'id': 1, 'name': 'Cockapoo', 'coat_type': 'curly',
+          'avg_groom_minutes': 105, 'avg_price': '57.50', 'avg_schedule_weeks': 6,
+          ...extra,
+        };
+
+    test('a range reads properly however much of it is known', () {
+      String life(Map<String, dynamic> extra) =>
+          Breed.fromJson(breedJson(extra)).lifeSpanLabel;
+
+      expect(life({'life_span_min_years': 12, 'life_span_max_years': 15}), '12–15 years');
+      expect(life({'life_span_min_years': 12}), 'from 12 years');
+      expect(life({'life_span_max_years': 15}), 'up to 15 years');
+      expect(life({'life_span_min_years': 14, 'life_span_max_years': 14}), '14 years');
+      // Neither half known is blank, not a stray dash or a zero.
+      expect(life({}), '');
+    });
+
+    test('a half-kilo weight keeps its half', () {
+      final breed = Breed.fromJson(breedJson({
+        'weight_min_kg': '5.5', 'weight_max_kg': '8.0',
+      }));
+      expect(breed.weightLabel, '5.5–8 kg');
+    });
+
+    test('the three coats off the price grid are flagged', () {
+      // Jess's list prices smooth, short double, long double, curly and wire.
+      // Hairless, corded and silky are hers and are not on it — the app says
+      // so rather than showing a figure nobody worked out.
+      expect(Breed.fromJson(breedJson({'is_priced_by_the_grid': false})).isPricedByTheGrid,
+          isFalse);
+      // Absent means priced: an older server that does not send the field must
+      // not make every breed look unpriced.
+      expect(Breed.fromJson(breedJson({})).isPricedByTheGrid, isTrue);
+    });
+
+    test('breed groom styles map onto a dog’s preferences, head to face', () {
+      final breed = Breed.fromJson(breedJson({
+        'groom_style_body': 'Lamb trim',
+        'groom_style_head': 'Rounded teddy',
+        'groom_style_ears': '',
+      }));
+      final defaults = breed.preferenceDefaults;
+
+      expect(defaults['pref_body'], 'Lamb trim');
+      // The breed record says head, a dog's preferences say face, and a
+      // groomer means the same area.
+      expect(defaults['pref_face'], 'Rounded teddy');
+      // Blank styles are left out, so nothing overwrites a field with nothing.
+      expect(defaults.containsKey('pref_ears'), isFalse);
+      // Skirt has no breed counterpart at all.
+      expect(defaults.containsKey('pref_skirt'), isFalse);
+    });
+  });
+
+  group('Medical notes', () {
+    test('an entry with no source is not treated as attributed', () {
+      // This is veterinary information. Where it came from decides how much
+      // weight it should be given, so a blank source is shown as blank.
+      expect(
+        MedicalNote.fromJson({'id': 1, 'title': 'Heatstroke'}).isAttributed,
+        isFalse,
+      );
+      expect(
+        MedicalNote.fromJson({'id': 1, 'title': 'Heatstroke', 'source': '   '}).isAttributed,
+        isFalse,
+        reason: 'whitespace is not an attribution',
+      );
+      expect(
+        MedicalNote.fromJson({'id': 1, 'title': 'Heatstroke', 'source': 'my vet'}).isAttributed,
+        isTrue,
+      );
+    });
+  });
+
   group('Booking change requests', () {
     test('a cancellation request is a request, not a cancellation', () {
       // Nothing has happened to the booking yet. Rendering this as "cancelled"

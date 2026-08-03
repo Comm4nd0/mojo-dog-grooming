@@ -363,7 +363,10 @@ class _DogFormScreenState extends State<DogFormScreen> {
               matches: (breed, query) =>
                   breed.name.toLowerCase().contains(query.toLowerCase()),
               emptyLabel: 'Not on the list — leave this blank and use the box below',
-              onSelected: (breed) => setState(() => _breedId = breed?.id),
+              onSelected: (breed) {
+                setState(() => _breedId = breed?.id);
+                if (breed != null) _applyBreedStyles(breed);
+              },
             ),
             if (_breedId == null) ...[
               const SizedBox(height: 14),
@@ -635,6 +638,36 @@ class _DogFormScreenState extends State<DogFormScreen> {
           ],
         ),
       ),
+    );
+  }
+
+  /// Start this dog's grooming preferences off from its breed's usual styles.
+  ///
+  /// **Only fills blanks.** Picking a breed must never wipe something already
+  /// typed — a client's own instructions outrank the breed's usual, and a
+  /// mis-tap on the breed picker should not silently rewrite them. That also
+  /// makes it safe when editing an existing dog.
+  ///
+  /// Nothing happens silently either: if it filled anything in, it says so, so
+  /// Jess knows where the words came from and can change them.
+  void _applyBreedStyles(Breed breed) {
+    final defaults = breed.preferenceDefaults;
+    if (defaults.isEmpty) return;
+
+    final filled = <String>[];
+    for (final entry in defaults.entries) {
+      final controller = _prefs[entry.key];
+      if (controller == null || controller.text.trim().isNotEmpty) continue;
+      controller.text = entry.value;
+      filled.add(_prefLabel(entry.key).toLowerCase());
+    }
+    if (filled.isEmpty || !mounted) return;
+
+    setState(() {});
+    showSnack(
+      context,
+      'Filled in ${filled.join(', ')} from the ${breed.name} record — change '
+      'anything that is different for this dog.',
     );
   }
 

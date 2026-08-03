@@ -84,13 +84,110 @@ class CurrentUser {
   bool get needsToClaimProfile => !isStaff && clientId == null;
 }
 
+/// A reference entry: what an ailment means, and what it means for a groom.
+///
+/// **Nothing here is written by the app.** It is veterinary information, and
+/// [source] exists so an entry is attributable to whoever said it — one with
+/// no source is one to be wary of.
+class MedicalNote {
+  final int id;
+  final String title;
+  final String kind;
+  final String kindDisplay;
+  final String whatItMeans;
+  final String groomingCare;
+  final String firstAid;
+  final String source;
+  final List<int> breedIds;
+  final List<String> breedNames;
+
+  const MedicalNote({
+    required this.id,
+    required this.title,
+    this.kind = 'AILMENT',
+    this.kindDisplay = '',
+    this.whatItMeans = '',
+    this.groomingCare = '',
+    this.firstAid = '',
+    this.source = '',
+    this.breedIds = const [],
+    this.breedNames = const [],
+  });
+
+  factory MedicalNote.fromJson(Map<String, dynamic> json) => MedicalNote(
+        id: json['id'] as int,
+        title: json['title']?.toString() ?? '',
+        kind: json['kind']?.toString() ?? 'AILMENT',
+        kindDisplay: json['kind_display']?.toString() ?? '',
+        whatItMeans: json['what_it_means']?.toString() ?? '',
+        groomingCare: json['grooming_care']?.toString() ?? '',
+        firstAid: json['first_aid']?.toString() ?? '',
+        source: json['source']?.toString() ?? '',
+        breedIds: ((json['breeds'] as List?) ?? const [])
+            .map((b) => (b as num).toInt())
+            .toList(),
+        breedNames: ((json['breed_names'] as List?) ?? const [])
+            .map((b) => b.toString())
+            .toList(),
+      );
+
+  bool get isAttributed => source.trim().isNotEmpty;
+}
+
+/// Jess's breed standards record — "a little snippet of the whole dog".
+///
+/// Started as three numbers (time, price, interval) and is now the reference
+/// sheet she looks a breed up in. Everything descriptive is free text: she is
+/// still working out what belongs here, and a fixed option list would be
+/// something to work around rather than with.
+///
+/// [sizeBand] and [coatType] are the two axes of the price grid, so they are
+/// the two that are not merely descriptive.
 class Breed {
   final int id;
   final String name;
   final String coatType;
+  final String coatTypeDisplay;
+  final String sizeBand;
+  final String sizeBandDisplay;
+
+  /// False for hairless, corded and silky — the three coats Jess's price list
+  /// does not cover. Say "not on the price list" rather than showing a figure
+  /// nobody set.
+  final bool isPricedByTheGrid;
+
   final int avgGroomMinutes;
   final num avgPrice;
   final int avgScheduleWeeks;
+
+  final String kennelClubGroup;
+  final String kennelClubGroupDisplay;
+  final String activityLevel;
+  final String activityLevelDisplay;
+  final int? lifeSpanMinYears;
+  final int? lifeSpanMaxYears;
+  final int? heightMinCm;
+  final int? heightMaxCm;
+  final num? weightMinKg;
+  final num? weightMaxKg;
+  final String originalPurpose;
+
+  final String chestShape;
+  final String headType;
+  final String headShape;
+  final String earShape;
+  final String coatColours;
+
+  final String groomingTechnique;
+  final String groomStyleBody;
+  final String groomStyleHead;
+  final String groomStyleFeet;
+  final String groomStyleTail;
+  final String groomStyleEars;
+
+  final String commonAilments;
+  final String notes;
+  final List<MedicalNote> medicalNotes;
 
   const Breed({
     required this.id,
@@ -99,16 +196,113 @@ class Breed {
     required this.avgGroomMinutes,
     required this.avgPrice,
     required this.avgScheduleWeeks,
+    this.coatTypeDisplay = '',
+    this.sizeBand = '',
+    this.sizeBandDisplay = '',
+    this.isPricedByTheGrid = true,
+    this.kennelClubGroup = '',
+    this.kennelClubGroupDisplay = '',
+    this.activityLevel = '',
+    this.activityLevelDisplay = '',
+    this.lifeSpanMinYears,
+    this.lifeSpanMaxYears,
+    this.heightMinCm,
+    this.heightMaxCm,
+    this.weightMinKg,
+    this.weightMaxKg,
+    this.originalPurpose = '',
+    this.chestShape = '',
+    this.headType = '',
+    this.headShape = '',
+    this.earShape = '',
+    this.coatColours = '',
+    this.groomingTechnique = '',
+    this.groomStyleBody = '',
+    this.groomStyleHead = '',
+    this.groomStyleFeet = '',
+    this.groomStyleTail = '',
+    this.groomStyleEars = '',
+    this.commonAilments = '',
+    this.notes = '',
+    this.medicalNotes = const [],
   });
 
   factory Breed.fromJson(Map<String, dynamic> json) => Breed(
         id: json['id'] as int,
         name: json['name']?.toString() ?? '',
         coatType: json['coat_type']?.toString() ?? '',
+        coatTypeDisplay: json['coat_type_display']?.toString() ?? '',
+        sizeBand: json['size_band']?.toString() ?? '',
+        sizeBandDisplay: json['size_band_display']?.toString() ?? '',
+        isPricedByTheGrid: json['is_priced_by_the_grid'] != false,
         avgGroomMinutes: (json['avg_groom_minutes'] as num?)?.toInt() ?? 0,
         avgPrice: _num(json['avg_price']),
         avgScheduleWeeks: (json['avg_schedule_weeks'] as num?)?.toInt() ?? 0,
+        kennelClubGroup: json['kennel_club_group']?.toString() ?? '',
+        kennelClubGroupDisplay: json['kennel_club_group_display']?.toString() ?? '',
+        activityLevel: json['activity_level']?.toString() ?? '',
+        activityLevelDisplay: json['activity_level_display']?.toString() ?? '',
+        lifeSpanMinYears: (json['life_span_min_years'] as num?)?.toInt(),
+        lifeSpanMaxYears: (json['life_span_max_years'] as num?)?.toInt(),
+        heightMinCm: (json['height_min_cm'] as num?)?.toInt(),
+        heightMaxCm: (json['height_max_cm'] as num?)?.toInt(),
+        weightMinKg: json['weight_min_kg'] == null ? null : _num(json['weight_min_kg']),
+        weightMaxKg: json['weight_max_kg'] == null ? null : _num(json['weight_max_kg']),
+        originalPurpose: json['original_purpose']?.toString() ?? '',
+        chestShape: json['chest_shape']?.toString() ?? '',
+        headType: json['head_type']?.toString() ?? '',
+        headShape: json['head_shape']?.toString() ?? '',
+        earShape: json['ear_shape']?.toString() ?? '',
+        coatColours: json['coat_colours']?.toString() ?? '',
+        groomingTechnique: json['grooming_technique']?.toString() ?? '',
+        groomStyleBody: json['groom_style_body']?.toString() ?? '',
+        groomStyleHead: json['groom_style_head']?.toString() ?? '',
+        groomStyleFeet: json['groom_style_feet']?.toString() ?? '',
+        groomStyleTail: json['groom_style_tail']?.toString() ?? '',
+        groomStyleEars: json['groom_style_ears']?.toString() ?? '',
+        commonAilments: json['common_ailments']?.toString() ?? '',
+        notes: json['notes']?.toString() ?? '',
+        medicalNotes: ((json['medical_notes'] as List?) ?? const [])
+            .map((n) => MedicalNote.fromJson(n as Map<String, dynamic>))
+            .toList(),
       );
+
+  /// "12–15 years", "from 12 years", or blank. Never a half-written range.
+  String get lifeSpanLabel => _range(lifeSpanMinYears, lifeSpanMaxYears, 'years');
+  String get heightLabel => _range(heightMinCm, heightMaxCm, 'cm');
+  String get weightLabel => _range(weightMinKg, weightMaxKg, 'kg');
+
+  static String _range(num? low, num? high, String unit) {
+    String n(num value) =>
+        value == value.roundToDouble() ? value.toStringAsFixed(0) : '$value';
+    if (low != null && high != null) {
+      return low == high ? '${n(low)} $unit' : '${n(low)}–${n(high)} $unit';
+    }
+    if (low != null) return 'from ${n(low)} $unit';
+    if (high != null) return 'up to ${n(high)} $unit';
+    return '';
+  }
+
+  /// What this breed suggests a new dog's preferences should start as.
+  ///
+  /// Head maps to the dog's *face*: the breed record says head, a dog's
+  /// preferences say face, and a groomer means the same area. Skirt has no
+  /// breed counterpart. Blank styles are left out, so nothing is overwritten
+  /// with emptiness.
+  Map<String, String> get preferenceDefaults => {
+        if (groomStyleBody.isNotEmpty) 'pref_body': groomStyleBody,
+        if (groomStyleHead.isNotEmpty) 'pref_face': groomStyleHead,
+        if (groomStyleFeet.isNotEmpty) 'pref_feet': groomStyleFeet,
+        if (groomStyleTail.isNotEmpty) 'pref_tail': groomStyleTail,
+        if (groomStyleEars.isNotEmpty) 'pref_ears': groomStyleEars,
+      };
+
+  /// Whether anyone has filled in the descriptive half yet.
+  bool get hasStandardsRecord =>
+      kennelClubGroupDisplay.isNotEmpty ||
+      originalPurpose.isNotEmpty ||
+      groomingTechnique.isNotEmpty ||
+      coatColours.isNotEmpty;
 }
 
 /// One thing Jess does — Full Groom, Nail Clipping, Hand Stripping.
