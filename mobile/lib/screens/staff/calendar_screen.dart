@@ -264,12 +264,24 @@ class _CalendarScreenState extends State<CalendarScreen> {
 
   Widget _dayChip(DateTime day) {
     final selected = _dayKey(day) == _dayKey(_selectedDay);
+    final isToday = _dayKey(day) == _dayKey(DateTime.now());
     final count = _eventsFor(day).length;
     return InkWell(
       onTap: () => _selectDay(day),
       child: Container(
         margin: const EdgeInsets.symmetric(horizontal: 1, vertical: 6),
-        color: selected ? context.mojo.tint : null,
+        decoration: BoxDecoration(
+          color: selected ? context.mojo.tint : null,
+          // Jess's request: something on the date strip that says which one is
+          // today. It has to be a *border* rather than a fill, because the
+          // fill already means "the day you are looking at" — and the two are
+          // different questions. Red for the same reason the now-line is red:
+          // one colour for "this is now", used nowhere else on this screen.
+          //
+          // Drawn on today whether or not it is selected, so tapping ahead a
+          // few days never leaves the strip with no anchor on it.
+          border: isToday ? Border.all(color: AppColors.error, width: 1.5) : null,
+        ),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [

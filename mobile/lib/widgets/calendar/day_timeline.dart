@@ -36,6 +36,7 @@ class DayTimeline extends StatefulWidget {
     this.closeMinutes,
     this.isClosedDay = false,
     this.movingId,
+    this.now,
   });
 
   final DateTime day;
@@ -58,6 +59,14 @@ class DayTimeline extends StatefulWidget {
 
   /// Drawn at reduced opacity while its move is in flight.
   final int? movingId;
+
+  /// The current time, for the "now" line. Injectable **for tests only** —
+  /// everything else here takes the real clock.
+  ///
+  /// It is a seam because the interesting case is the one that only happens
+  /// after closing time, and a test that can only fail in the evening is a
+  /// test that passes all morning while the bug is still there.
+  final DateTime? now;
 
   @override
   State<DayTimeline> createState() => _DayTimelineState();
@@ -92,6 +101,14 @@ class _DayTimelineState extends State<DayTimeline> {
       controller: _scroll,
       child: SizedBox(
         height: totalHeight,
+        // `double.infinity` is load-bearing, not tidiness. The width arrives
+        // loose — a `Column` gives its children loose cross-axis constraints
+        // unless told to stretch — and a `Stack` of only-positioned children
+        // takes `constraints.biggest`, so it worked right up until one child
+        // was not positioned and it took that child's width instead. Making
+        // the width tight here means the Stack fills the row whatever its
+        // children turn out to be.
+        width: double.infinity,
         child: LayoutBuilder(
           builder: (context, constraints) {
             final laneWidth = constraints.maxWidth - metrics.gutterWidth;
@@ -129,7 +146,7 @@ class _DayTimelineState extends State<DayTimeline> {
                 ),
                 for (final item in placed)
                   _positioned(context, item, window, laneWidth, metrics),
-                if (_isToday) _nowLine(context, window, metrics),
+                ..._nowLine(context, window, metrics),
               ],
             );
           },
@@ -138,8 +155,10 @@ class _DayTimelineState extends State<DayTimeline> {
     );
   }
 
+  DateTime get _now => widget.now ?? DateTime.now();
+
   bool get _isToday {
-    final now = DateTime.now();
+    final now = _now;
     return now.year == widget.day.year &&
         now.month == widget.day.month &&
         now.day == widget.day.day;
@@ -165,23 +184,43 @@ class _DayTimelineState extends State<DayTimeline> {
     ];
   }
 
-  Widget _nowLine(BuildContext context, DayWindow window, TimelineMetrics metrics) {
-    final now = DateTime.now();
+  /// The red line across today, or nothing.
+  ///
+  /// **Returns a list, and every element is `Positioned`.** This used to hand
+  /// back a `SizedBox.shrink()` when the time was outside the drawn window,
+  /// which is a *non-positioned* child — and a `Stack` sizes itself to its
+  /// non-positioned children, falling back to `constraints.biggest` only when
+  /// it has none. The width arrives loose (a `Column` centres its children by
+  /// default), so the Stack collapsed to **zero width** and the grid, the
+  /// shading and every hour line painted into nothing.
+  ///
+  /// It only bit after closing time, and only on today: the window ends at
+  /// 19:00, so from 19:00 to midnight the day Jess was actually looking at was
+  /// the one blank day in the diary. Every other date was fine, which is
+  /// exactly what made it look like bad data rather than layout.
+  ///
+  /// `week_timeline.dart` had already worked this out and says so in its own
+  /// `_nowLine`. This is the same fix.
+  List<Widget> _nowLine(BuildContext context, DayWindow window, TimelineMetrics metrics) {
+    if (!_isToday) return const [];
+    final now = _now;
     final minutes = now.hour * 60 + now.minute - window.startMinutes;
-    if (minutes < 0 || minutes > window.totalMinutes) {
-      return const SizedBox.shrink();
-    }
-    return Positioned(
-      left: metrics.gutterWidth - 4,
-      right: 0,
-      top: metrics.yForMinutes(minutes),
-      child: Row(
-        children: [
-          Container(width: 8, height: 8, color: AppColors.error),
-          Expanded(child: Container(height: 1.5, color: AppColors.error)),
-        ],
+    // Outside the drawn window. Clamping it to an edge would claim a time that
+    // is not where the line is.
+    if (minutes < 0 || minutes > window.totalMinutes) return const [];
+    return [
+      Positioned(
+        left: metrics.gutterWidth - 4,
+        right: 0,
+        top: metrics.yForMinutes(minutes),
+        child: Row(
+          children: [
+            Container(width: 8, height: 8, color: AppColors.error),
+            Expanded(child: Container(height: 1.5, color: AppColors.error)),
+          ],
+        ),
       ),
-    );
+    ];
   }
 
   Widget _positioned(

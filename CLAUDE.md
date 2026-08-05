@@ -63,7 +63,7 @@ python manage.py reset_link jess # a way back in when the superuser is locked ou
 Mobile:
 ```bash
 cd mobile && flutter pub get
-flutter analyze && flutter test  # 192 tests
+flutter analyze && flutter test  # 202 tests
 flutter run --dart-define=MOJO_API_BASE=http://192.168.1.20:8000/api
 ```
 
@@ -410,8 +410,23 @@ title were invisible in dark mode — near-black on near-black. Never give it a 
 the neutrals, for exactly the same reason. Every server-rendered page extends it — the intake
 form and the password-reset pages both — so a role fixed there is fixed for all of them.
 
+**A selected chip must state its own colours.** `ChipThemeData` set a label colour and no
+`selectedColor`, so Material fell back to `colorScheme.secondaryContainer` — a role this scheme
+never sets, whose getter then returns `secondary`, i.e. `primaryBright`. In dark mode `onTint`
+*is* `primaryBright`, so the label was drawn in exactly the colour of the background behind it:
+a contrast ratio of **1.0**, and Jess's *"you can't see the text because the background changes
+to the same colour as the text"*. Light mode was 2.5:1, no better. Both states are now stated
+outright — unselected is an outline, selected is a filled `tint` block, one label colour reads
+on both — and the checkmark stays on, because colour alone should not be what tells you a chip
+is selected. The lesson generalises: an unset M3 colour role does not fall back to nothing, it
+falls back to *another role*, and that is how two perfectly good palette values end up on top
+of each other.
+
 `test/theme_test.dart` holds the line: display text must resolve to the theme's colour, and
-every role must clear WCAG AA against the surface it is used on.
+every role must clear WCAG AA against the surface it is used on. The chip checks resolve
+Material's fallbacks rather than asserting the fields are non-null — the bug was a green chip,
+not a missing config value, and a null check would have failed with "null" instead of the
+ratio that explains it.
 
 ### The admin wears the same palette
 
@@ -705,6 +720,24 @@ accept-or-revert, which cannot express *show the server's warnings and move it a
   free by the time it starts. Get that wrong and 09:00–10:00 / 09:30–10:30 / 10:15–11:00 looks
   three deep when it is only ever two. ≤3 lanes cascade at 18dp so the earlier block's leading
   edge stays visible (Jess's "still able to overlap a bit"); beyond that they split evenly.
+- **Every child of the day's `Stack` must be `Positioned`.** A `Stack` sizes itself to its
+  non-positioned children and only falls back to `constraints.biggest` when it has none — and
+  the width arrives *loose*, because a `Column` gives its children loose cross-axis constraints
+  unless told to stretch. `_nowLine` used to return a `SizedBox.shrink()` when the time fell
+  outside the drawn window; that one 0x0 child took the Stack to **zero width**, so the grid,
+  the shading and every hour line painted into nothing. The window ends at 19:00, so this was
+  the whole day view going blank on **today only, every evening** — every other date rendered,
+  which is exactly what made it read as bad data rather than layout. `week_timeline.dart` had
+  already worked this out and says so in its own `_nowLine`; the day view now returns a list
+  the same way, and `SizedBox(width: double.infinity)` makes the Stack's width tight so no
+  future stray child can do it again.
+- **`DayTimeline` takes an injectable `now`, for tests only.** The failing case only existed
+  after closing time, and a test that can only fail in the evening passes all morning while the
+  bug is still there. `timeline_layout.dart` stays clock-free — the widget is where the clock
+  gets in, so that is where the seam is.
+- **Today is marked on the date strip with a red border**, Jess's request. A border and not a
+  fill, because the fill already means "the day you are looking at" and those are two different
+  questions; red because that is what the now-line uses and nothing else on the screen does.
 - Dragging is **not** `LongPressDraggable` — its feedback follows the finger in two dimensions
   and cannot snap, so the block floats free then teleports. `Positioned.top` is driven from
   state instead.

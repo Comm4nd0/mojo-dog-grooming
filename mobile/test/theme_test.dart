@@ -127,6 +127,77 @@ void main() {
       });
     }
 
+    // Jess: "whichever tab is highlighted, you can't see the text because the
+    // background changes to the same colour as the text."
+    //
+    // It did, exactly. The chip theme set a label colour and no `selectedColor`,
+    // so a selected chip fell back to `colorScheme.secondaryContainer` — a role
+    // this scheme never sets, whose getter then returns `secondary`, which is
+    // `primaryBright`. In dark mode `onTint` *is* `primaryBright`: the label was
+    // painted in the colour of the background behind it, ratio 1.0. Light mode
+    // was deep green on bright green, barely better.
+    //
+    // These read the theme rather than the palette on purpose. The bug was not
+    // a bad colour — every value in the palette was fine — it was two of them
+    // meeting through a default nobody had looked at, and only the assembled
+    // ChipThemeData shows that.
+    // The theme is built *inside* each test, never in the loop header:
+    // `AppColors.lightTheme()` goes through google_fonts, and calling it during
+    // collection is outside a test zone — the whole file fails to load.
+    for (final (label, buildTheme, scaffold) in [
+      ('light', AppColors.lightTheme, AppColors.background),
+      ('dark', AppColors.darkTheme, AppColors.darkBackground),
+    ]) {
+      // Resolved the way Material resolves them, rather than asserted to be
+      // non-null. Leaving `selectedColor` unset is not a config omission you
+      // can spot by reading it back — it is a *green chip*, because the
+      // fallback is `secondaryContainer`, and the point of the test is the
+      // colour that ends up on screen. A null check here would have failed
+      // with "null", which says nothing about why Jess could not read it.
+      Color selectedFill(ThemeData theme) =>
+          theme.chipTheme.selectedColor ?? theme.colorScheme.secondaryContainer;
+      Color unselectedFill(ThemeData theme) => Color.alphaBlend(
+            theme.chipTheme.backgroundColor ?? Colors.transparent,
+            scaffold,
+          );
+
+      test('$label: a selected chip label reads on its own background', () {
+        final theme = buildTheme();
+        final fill = selectedFill(theme);
+        // Both styles: which one a selected chip uses varies by chip type, so
+        // neither is allowed to be the invisible one.
+        for (final (state, style) in [
+          ('secondary', theme.chipTheme.secondaryLabelStyle),
+          ('primary', theme.chipTheme.labelStyle),
+        ]) {
+          final colour = style?.color ?? theme.colorScheme.onSurface;
+          expect(
+            contrastRatio(colour, fill),
+            greaterThanOrEqualTo(body),
+            reason: '$state label on the selected fill',
+          );
+        }
+      });
+
+      test('$label: an unselected chip label reads on the page', () {
+        final theme = buildTheme();
+        final colour = theme.chipTheme.labelStyle?.color ?? theme.colorScheme.onSurface;
+        expect(
+          contrastRatio(colour, unselectedFill(theme)),
+          greaterThanOrEqualTo(body),
+        );
+      });
+
+      test('$label: selected and unselected chips do not look alike', () {
+        final theme = buildTheme();
+        expect(
+          contrastRatio(selectedFill(theme), unselectedFill(theme)),
+          greaterThan(1.05),
+          reason: 'selection has to be visible as well as legible',
+        );
+      });
+    }
+
     // The scale went from three grades to five, so two new colours had to be
     // found between amber and red. A temperament badge is the one thing on a
     // dog's row that decides whether Jess braces before picking it up, and it

@@ -369,14 +369,32 @@ class AppColors {
         ),
         labelStyle: GoogleFonts.montserrat(color: palette.muted),
       ),
+      // **`selectedColor` is not optional here.** Without it a selected chip
+      // falls back to `colorScheme.secondaryContainer`, and this scheme never
+      // sets that role — Flutter's getter then returns `secondary`, which is
+      // `primaryBright`. In dark mode `onTint` is *also* `primaryBright`, so
+      // the label was drawn in exactly the colour of the background behind it
+      // and every selected filter chip went blank. Light mode was no better:
+      // deep green on bright green is about 2:1.
+      //
+      // So both states are stated outright rather than inherited. Unselected
+      // is an outline on the page, selected is a filled `tint` block, and one
+      // label colour reads on both — `onTint` is the documented foreground for
+      // `tint`, and it is the accent on the surface. The checkmark stays on:
+      // colour alone should not be what tells you a chip is selected.
       chipTheme: ChipThemeData(
-        backgroundColor: palette.tint,
+        backgroundColor: Colors.transparent,
+        selectedColor: palette.tint,
+        checkmarkColor: palette.onTint,
         labelStyle: GoogleFonts.montserrat(
           fontSize: 12, fontWeight: FontWeight.w600, color: palette.onTint,
         ),
+        secondaryLabelStyle: GoogleFonts.montserrat(
+          fontSize: 12, fontWeight: FontWeight.w700, color: palette.onTint,
+        ),
         iconTheme: IconThemeData(color: palette.onTint, size: 18),
         shape: const RoundedRectangleBorder(),
-        side: BorderSide.none,
+        side: BorderSide(color: palette.hairline),
       ),
       dividerTheme: DividerThemeData(
         color: palette.hairline,
