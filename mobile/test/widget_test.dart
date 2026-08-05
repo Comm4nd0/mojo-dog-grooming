@@ -2,9 +2,11 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mojo_app/constants/app_colors.dart';
 import 'package:mojo_app/models/models.dart';
 import 'package:mojo_app/widgets/common.dart';
 import 'package:mojo_app/widgets/dog_silhouette.dart';
+import 'package:mojo_app/widgets/weekday_picker.dart';
 
 /// Mutable holder so a StatefulBuilder harness can own the selection the way
 /// ProblemAreaEditor does.
@@ -378,6 +380,7 @@ void main() {
       });
       expect(asClient.chatty, isNull);
       expect(asClient.leafletReceived, isNull);
+      expect(asClient.particularAboutStandard, isNull);
       expect(asClient.notes, isNull);
 
       final asStaff = ClientRecord.fromJson({
@@ -385,9 +388,11 @@ void main() {
         'full_name': 'Alice Adams', 'email': '', 'phone': '', 'address': '',
         'postcode': '', 'dog_count': 1, 'has_login': true,
         'chatty': false, 'leaflet_received': true, 'notes': 'Always late.',
+        'particular_about_standard': true,
       });
       expect(asStaff.chatty, isFalse);
       expect(asStaff.leafletReceived, isTrue);
+      expect(asStaff.particularAboutStandard, isTrue);
       expect(asStaff.notes, 'Always late.');
     });
 
@@ -499,6 +504,68 @@ void main() {
       );
     });
 
+    test('the dryer not recorded is null, not "not used"', () {
+      // Jess asked for it "like the bathed". It was a switch defaulting to
+      // off, so a groom nobody had written it down for looked identical to
+      // one where the dryer was deliberately kept away from the dog.
+      expect(GroomSession.fromJson(visitJson({})).highVelocityDryer, isNull);
+      expect(
+        GroomSession.fromJson(visitJson({'high_velocity_dryer': false})).highVelocityDryer,
+        isFalse,
+      );
+      expect(
+        GroomSession.fromJson(visitJson({'high_velocity_dryer': true})).highVelocityDryer,
+        isTrue,
+      );
+    });
+
+    test('a visit says which booking it was filed against', () {
+      // Jess: "managed to add the session but wasn't automatically assigned to
+      // the appointment?" — the server matches it now, and this is how the
+      // app says so without her opening the diary.
+      final matched = GroomSession.fromJson(visitJson({
+        'appointment': 12,
+        'appointment_start_at': '2026-07-28T09:00:00Z',
+        'appointment_status': 'COMPLETED',
+      }));
+      expect(matched.appointmentId, 12);
+      expect(matched.closedTheBooking, isTrue);
+      expect(matched.bookingNote, contains('as done in the diary'));
+
+      final stillOpen = GroomSession.fromJson(visitJson({
+        'appointment': 12,
+        'appointment_start_at': '2026-07-28T15:00:00Z',
+        'appointment_status': 'BOOKED',
+      }));
+      expect(stillOpen.closedTheBooking, isFalse);
+      expect(stillOpen.bookingNote, contains('Filed against'));
+
+      // Nothing in the diary to match is not a failure — plenty of grooms
+      // happen without a booking, and there is nothing to say about those.
+      expect(GroomSession.fromJson(visitJson({})).bookingNote, isNull);
+    });
+
+    test('only the save that closed a booking offers to undo it', () {
+      // The status it replaced, so the undo puts back what was there rather
+      // than a sensible-looking guess.
+      final closed = GroomSession.fromJson(visitJson({
+        'appointment': 12,
+        'appointment_status': 'COMPLETED',
+        'appointment_status_before': 'CONFIRMED',
+      }));
+      expect(closed.closedTheBookingNow, isTrue);
+      expect(closed.appointmentStatusBefore, 'CONFIRMED');
+
+      // Already done before this visit was written up: there is nothing this
+      // save changed, so there is nothing to offer to put back.
+      final wasAlreadyDone = GroomSession.fromJson(visitJson({
+        'appointment': 12,
+        'appointment_status': 'COMPLETED',
+      }));
+      expect(wasAlreadyDone.closedTheBooking, isTrue);
+      expect(wasAlreadyDone.closedTheBookingNow, isFalse);
+    });
+
     test('a groom card comes through whole', () {
       final visit = GroomSession.fromJson(visitJson({
         'visit_type': 'GROOM',
@@ -585,6 +652,22 @@ void main() {
       // Absent means priced: an older server that does not send the field must
       // not make every breed look unpriced.
       expect(Breed.fromJson(breedJson({})).isPricedByTheGrid, isTrue);
+    });
+
+    test('the tail has a shape now, and the breed a temperament', () {
+      // "can we change head shape to tail shape ... can we also add typical
+      // temperament". head_type still covers the head.
+      final breed = Breed.fromJson(breedJson({
+        'head_type': 'Dolichocephalic',
+        'tail_shape': 'Feathered, carried level',
+        'typical_temperament': 'Dignified and aloof',
+      }));
+      expect(breed.headType, 'Dolichocephalic');
+      expect(breed.tailShape, 'Feathered, carried level');
+      expect(breed.typicalTemperament, 'Dignified and aloof');
+      // A record with only a temperament on it still counts as filled in.
+      expect(breed.hasStandardsRecord, isTrue);
+      expect(Breed.fromJson(breedJson({})).hasStandardsRecord, isFalse);
     });
 
     test('breed groom styles map onto a dog’s preferences, head to face', () {
@@ -682,6 +765,82 @@ void main() {
       expect(DueDog.fromJson(dueJson({'days_overdue': 3})).isOverdue, isTrue);
       expect(DueDog.fromJson(dueJson({'days_overdue': 0})).isOverdue, isFalse);
       expect(DueDog.fromJson(dueJson({'days_overdue': -3})).isOverdue, isFalse);
+    });
+  });
+
+  group('Daycare and ad hoc', () {
+    Map<String, dynamic> dogJson(Map<String, dynamic> extra) => {
+          'id': 1, 'client': 1, 'name': 'Bunny', 'breed_label': 'Cockapoo',
+          'breed_other': '', 'sex': '', 'is_neutered': null,
+          'groom_minutes_effective': 105, 'price_effective': '50.00',
+          'schedule_weeks_effective': 6, 'pref_body': '', 'pref_feet': '',
+          'pref_tail': '', 'pref_face': '', 'pref_ears': '', 'pref_skirt': '',
+          'allergies': '', 'medications': '', 'medical_issues': '',
+          'vaccinations': '', 'medical_notes': '', 'vet': '', 'last_vet_visit': '',
+          'owner_grooming': '', 'general_notes': '', 'is_active': true,
+          'colour': '', 'microchip_number': '', ...extra,
+        };
+
+    test('the days come through as numbers and as words', () {
+      final dog = Dog.fromJson(dogJson({
+        'is_daycare': true,
+        'daycare_days': [0, 2, 4],
+        'daycare_days_label': 'Mon, Wed, Fri',
+      }));
+      expect(dog.isDaycare, isTrue);
+      expect(dog.daycareDays, [0, 2, 4]);
+      // The label is the server's, so the app and the admin cannot end up
+      // calling the same day different things.
+      expect(dog.daycareDaysLabel, 'Mon, Wed, Fri');
+    });
+
+    test('an older server sending neither leaves the dog out of daycare', () {
+      final dog = Dog.fromJson(dogJson({}));
+      expect(dog.isDaycare, isFalse);
+      expect(dog.daycareDays, isEmpty);
+      expect(dog.daycareDaysLabel, '');
+      expect(dog.isAdHoc, isFalse);
+    });
+
+    test('ad hoc does not touch the interval', () {
+      // Bunny. The flag stops the overdue list volunteering a deadline nobody
+      // agreed to; it does not mean the dog has no interval on file.
+      final dog = Dog.fromJson(dogJson({'is_ad_hoc': true}));
+      expect(dog.isAdHoc, isTrue);
+      expect(dog.scheduleWeeks, 6);
+    });
+  });
+
+  group('Weekday picker', () {
+    testWidgets('hands back Monday as 0, matching the API', (tester) async {
+      // Dart's own DateTime.weekday starts at 1. Getting this wrong lands
+      // every daycare day one to the left.
+      Set<int>? emitted;
+      await tester.pumpWidget(MaterialApp(
+        theme: AppColors.lightTheme(),
+        home: Scaffold(
+          body: WeekdayPicker(selected: const {}, onChanged: (days) => emitted = days),
+        ),
+      ));
+
+      await tester.tap(find.text('Mon'));
+      expect(emitted, {0});
+
+      await tester.tap(find.text('Sun'));
+      expect(emitted, {6});
+    });
+
+    testWidgets('tapping a chosen day takes it off again', (tester) async {
+      Set<int>? emitted;
+      await tester.pumpWidget(MaterialApp(
+        theme: AppColors.lightTheme(),
+        home: Scaffold(
+          body: WeekdayPicker(selected: const {1, 3}, onChanged: (days) => emitted = days),
+        ),
+      ));
+
+      await tester.tap(find.text('Thu'));
+      expect(emitted, {1});
     });
   });
 }

@@ -21,6 +21,7 @@ from pathlib import Path
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.cache import cache
+from django.core.exceptions import ValidationError
 from django.core.files.storage import FileSystemStorage
 from django.core.validators import MinValueValidator
 from django.db import IntegrityError, models, transaction
@@ -154,6 +155,32 @@ WEEKDAY_CHOICES = [
     (6, 'Sunday'),
 ]
 
+#: Monday-first labels, indexed by the same number ``date.weekday()`` returns.
+WEEKDAY_LABELS = [label for _, label in WEEKDAY_CHOICES]
+
+
+def validate_weekdays(value):
+    """A list of weekday numbers, 0 = Monday, no duplicates.
+
+    A ``JSONField`` accepts anything JSON will carry, so this is the only thing
+    between the column and a string, a null in the middle of a list, or a 7
+    that would render as nothing at all on the app side. It runs on both sides:
+    Django calls it from ``full_clean`` for the admin form, and DRF copies
+    model-field validators onto the serializer field.
+    """
+    if not isinstance(value, list):
+        raise ValidationError('Expected a list of weekday numbers.')
+    seen = set()
+    for entry in value:
+        # bools are ints in Python, and `True` would quietly mean Tuesday.
+        if isinstance(entry, bool) or not isinstance(entry, int):
+            raise ValidationError(f'{entry!r} is not a weekday number.')
+        if not 0 <= entry <= 6:
+            raise ValidationError(f'{entry} is not a weekday — 0 is Monday, 6 is Sunday.')
+        if entry in seen:
+            raise ValidationError(f'{WEEKDAY_LABELS[entry]} is listed twice.')
+        seen.add(entry)
+
 
 # ── Staff ──────────────────────────────────────────────────────────────
 
@@ -223,6 +250,16 @@ class Client(models.Model):
         help_text='This owner likes a chat — allow extra time at drop-off/collection. Hidden from clients.',
     )
     leaflet_received = models.BooleanField(default=False, help_text='Has been given the welcome leaflet.')
+    # Jess's request, and it belongs with chatty rather than on the dog: it is
+    # a fact about the *owner*, and it applies to every dog they bring. What it
+    # is for is knowing before the groom starts that this one gets checked over
+    # at the door — which is not something to tell the owner you have written
+    # down, hence staff-only with the rest of this block.
+    particular_about_standard = models.BooleanField(
+        default=False,
+        verbose_name='Particular about groom standard',
+        help_text='This owner is particular about the finish. Hidden from clients.',
+    )
     notes = models.TextField(blank=True, help_text='Private staff notes about this client. Hidden from clients.')
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -636,12 +673,26 @@ class Breed(models.Model):
     weight_min_kg = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
     weight_max_kg = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
     original_purpose = models.TextField(blank=True, help_text='What the breed was originally bred to do.')
+    # Free text, and nothing seeds it — Jess types these in herself off the UK
+    # Kennel Club's breed pages. Same rule as MedicalNote: this is somebody
+    # else's description of a breed, and text that merely sounds right is worse
+    # than a blank, because the blank is honest about not knowing.
+    #
+    # It is about the *breed*, not the dog in front of you: a dog's own
+    # handling grade is Dog.temperament, which drives the booking limits, and
+    # this must never be read as a substitute for it.
+    typical_temperament = models.TextField(
+        blank=True,
+        help_text='What the breed is generally like. Not this dog — see the dog record for that.',
+    )
 
     # ── Shape, which is what a groomer is actually looking at ──────────
     chest_shape = models.CharField(max_length=120, blank=True)
     head_type = models.CharField(max_length=120, blank=True)
-    head_shape = models.CharField(max_length=120, blank=True)
     ear_shape = models.CharField(max_length=120, blank=True)
+    # Was `head_shape`, renamed at Jess's request — `head_type` was already
+    # covering the head and the tail was the thing with nowhere to go.
+    tail_shape = models.CharField(max_length=120, blank=True)
     coat_colours = models.TextField(blank=True, verbose_name='Colours of coat')
 
     # ── How it is groomed ──────────────────────────────────────────────
@@ -808,6 +859,24 @@ class Dog(models.Model):
         null=True, blank=True,
         help_text='Overrides the breed average grooming interval. Blank = use the breed default.',
     )
+    #: No regular interval — this one comes when the owner rings.
+    #:
+    #: Jess found a dog on her overdue list the evening of the day she groomed
+    #: it. The list is "last groom + interval", and *every* dog has an interval
+    #: whether or not one was ever agreed, so an ad hoc dog is permanently
+    #: about to be late for a groom nobody booked. It is left off ``dogs_due``
+    #: rather than given an invented date — the same call as a never-groomed
+    #: dog getting a null due date instead of today's.
+    #:
+    #: It deliberately does **not** change ``effective_schedule_weeks``.
+    #: ``suggested_next_groom`` still answers for this dog when Jess asks about
+    #: it directly, which is a fair question about any dog; what changes is
+    #: that nothing volunteers the answer.
+    is_ad_hoc = models.BooleanField(
+        default=False,
+        verbose_name='Ad hoc — no regular interval',
+        help_text='Comes when the owner asks. Kept off the "who is due" list.',
+    )
     #: What this dog's grooms have actually taken — Jess's "once sessions added
     #: can the average groom time be the approximate dog groom time?".
     #:
@@ -859,6 +928,31 @@ class Dog(models.Model):
         'Service', blank=True, related_name='dogs',
         help_text='What this dog normally has. Pre-fills a new booking.',
     )
+
+    # ── Daycare ────────────────────────────────────────────────────────
+    # Jess: "can there be a daycare dog tickbox and be able to put what days
+    # they're in?"
+    #
+    # NOT staff-only, deliberately. This is the arrangement the owner made and
+    # already knows about — unlike the handling notes above, which are Jess's
+    # private reading of their dog. Same reasoning as `default_services`.
+    #
+    # A flag *and* a list of days, rather than the empty list standing in for
+    # "not a daycare dog": a dog can be signed up for daycare before the days
+    # are settled, and a tickbox that silently unticks itself when you clear
+    # the days is a tickbox that argues with you.
+    is_daycare = models.BooleanField(
+        default=False,
+        verbose_name='Daycare dog',
+        help_text='Comes in for daycare as well as grooming.',
+    )
+    daycare_days = models.JSONField(
+        default=list, blank=True,
+        validators=[validate_weekdays],
+        verbose_name='Daycare days',
+        help_text='Which days, 0 = Monday. Kept sorted, no repeats.',
+    )
+
     is_active = models.BooleanField(default=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -870,6 +964,23 @@ class Dog(models.Model):
 
     def __str__(self):
         return f'{self.name} ({self.client.full_name})'
+
+    def save(self, *args, **kwargs):
+        # Sorted on the way in so nothing downstream has to. The validator
+        # rejects duplicates and out-of-range days; this only fixes the order,
+        # which neither the admin form nor a PATCH has any reason to get right.
+        if isinstance(self.daycare_days, list):
+            self.daycare_days = sorted(
+                day for day in self.daycare_days if isinstance(day, int) and not isinstance(day, bool)
+            )
+        super().save(*args, **kwargs)
+
+    @property
+    def daycare_days_label(self):
+        """The daycare days as words, e.g. "Mon, Wed, Fri". Blank if none."""
+        return ', '.join(
+            WEEKDAY_LABELS[day][:3] for day in self.daycare_days or [] if 0 <= day <= 6
+        )
 
     # The three ``effective_*`` properties are the only correct way to read
     # these values — a bare ``dog.price`` is null whenever the breed default
@@ -1582,7 +1693,11 @@ class GroomSession(models.Model):
     # Null, not False: "not bathed" and "bathed and hated it" are different
     # things, and defaulting to False would claim the second.
     bathed_well_behaved = models.BooleanField(null=True, blank=True)
-    high_velocity_dryer = models.BooleanField(default=False)
+    # Nullable for the same reason, at Jess's request — "can we change to well
+    # behaved like the bathed". A switch that starts off cannot tell "the dryer
+    # was not used" from "nobody wrote it down", and on a dog that will not
+    # tolerate one that is the fact worth having.
+    high_velocity_dryer = models.BooleanField(null=True, blank=True)
     shampoo_used = models.CharField(max_length=120, blank=True)
     equipment_used = models.ManyToManyField(
         'Equipment', blank=True, related_name='groom_sessions',
@@ -1671,6 +1786,77 @@ class GroomSession(models.Model):
         self.applied_to_dog_at = timezone.now()
         self.save(update_fields=['applied_to_dog_at'])
         return True
+
+    #: The status a booking held before this visit marked it completed, set by
+    #: :meth:`link_to_appointment` and read straight back out by the serializer.
+    #: Not a column: it is true of one save, not of the row.
+    appointment_status_before = None
+
+    def link_to_appointment(self):
+        """Attach this visit to the booking it was worked against, and close it.
+
+        Jess: *"did a 'groom for teddy', set an appointment and then did the
+        timer and managed to add the session but wasn't automatically assigned
+        to the appointment?"*. It wasn't. ``GroomTimerScreen`` took an
+        ``appointmentId`` and the one place that opened it never passed one, so
+        every session Jess has recorded came in unlinked.
+
+        The second half matters more than the first. ``dogs_due`` counts
+        *completed* appointments, so a groom that was worked but never marked
+        off does not exist as far as the call list is concerned — which is how
+        a dog groomed this morning is overdue by this evening.
+
+        Narrow on purpose:
+
+        * it only fills a **blank** appointment. An explicit one is Jess
+          answering the question; this is a guess, and a guess does not get to
+          overrule her.
+        * only the **same local day**. That is what "today's booking" means in
+          a diary, and a groom written up on Thursday must not close Tuesday's
+          slot.
+        * only a booking with **no session on it already**, so a nails visit
+          and a groom on the same day don't both claim the one appointment.
+        * only **active** bookings, so a cancelled one is never resurrected.
+        * it only marks one done once it has actually **started**, so writing
+          up this morning's groom cannot close this afternoon's booking.
+
+        Returns the appointment now linked, or None. When it marked one
+        completed it also leaves the status it replaced on
+        ``appointment_status_before``, which the serializer hands to the app so
+        the snack can offer to put it back. Marking a booking off the back of a
+        different action is a fair thing to do and a poor thing to do silently
+        — the app both says which booking it was and gives Jess one tap to
+        undo it, which is what makes it reasonable to do automatically.
+        """
+        if self.appointment_id is None:
+            day = timezone.localtime(self.started_at).date()
+            candidates = (
+                Appointment.objects
+                .filter(
+                    dog_id=self.dog_id,
+                    start_at__date=day,
+                    status__in=Appointment.ACTIVE_STATUSES,
+                )
+                .exclude(groom_sessions__isnull=False)
+            )
+            # Nearest to when the timer ran, for the rare day with two.
+            match = min(
+                candidates, key=lambda appt: abs(appt.start_at - self.started_at), default=None,
+            )
+            if match is None:
+                return None
+            self.appointment = match
+            self.save(update_fields=['appointment'])
+
+        appointment = self.appointment
+        if (
+            appointment.status != AppointmentStatus.COMPLETED
+            and appointment.start_at <= timezone.now()
+        ):
+            self.appointment_status_before = appointment.status
+            appointment.status = AppointmentStatus.COMPLETED
+            appointment.save(update_fields=['status', 'updated_at'])
+        return appointment
 
     def save(self, *args, **kwargs):
         """Save, then re-derive the dog's average groom time.

@@ -9,6 +9,7 @@ single-use intake links, groom timings feeding back into the diary.
 
 import re
 from datetime import date, time, timedelta
+from importlib import import_module
 from decimal import Decimal
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from django.contrib.staticfiles import finders
 from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
+from django.apps import apps
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework import status
@@ -90,7 +92,8 @@ class BaseAPITestCase(APITestCase):
         self.alice = Client.objects.create(
             uid='MOJO-001', first_name='Alice', last_name='Adams',
             email='alice@example.com', phone='07700900001', postcode='RG1 1AA',
-            user=self.alice_user, chatty=True, leaflet_received=True, notes='Always late.',
+            user=self.alice_user, chatty=True, leaflet_received=True,
+            particular_about_standard=True, notes='Always late.',
         )
         self.alice_dog = Dog.objects.create(
             client=self.alice, name='Biscuit', breed=self.breed,
@@ -155,7 +158,9 @@ class StaffOnlyFieldTests(BaseAPITestCase):
     """Jess's private notes must not appear in any client-facing payload."""
 
     HIDDEN_DOG_FIELDS = ['temperament', 'temperament_display', 'temperament_notes', 'problem_areas']
-    HIDDEN_CLIENT_FIELDS = ['chatty', 'leaflet_received', 'notes']
+    HIDDEN_CLIENT_FIELDS = [
+        'chatty', 'leaflet_received', 'particular_about_standard', 'notes',
+    ]
 
     def test_dog_detail_hides_temperament_from_client(self):
         response = self.alice_client.get(f'/api/dogs/{self.alice_dog.pk}/')
@@ -197,6 +202,7 @@ class StaffOnlyFieldTests(BaseAPITestCase):
 
         client_response = self.staff_client.get(f'/api/clients/{self.alice.pk}/')
         self.assertTrue(client_response.data['chatty'])
+        self.assertTrue(client_response.data['particular_about_standard'])
         self.assertEqual(client_response.data['notes'], 'Always late.')
 
     def test_client_cannot_write_a_gated_field(self):
@@ -1666,9 +1672,11 @@ class BreedStandardsTests(BaseAPITestCase):
             'weight_min_kg': '25.0',
             'weight_max_kg': '32.5',
             'original_purpose': 'Finding and setting game birds',
+            'typical_temperament': 'Affectionate and boisterous',
             'chest_shape': 'Deep, oval',
             'head_type': 'Dolichocephalic',
             'ear_shape': 'Drop',
+            'tail_shape': 'Feathered, carried level',
             'coat_colours': 'Red, red and white',
             'grooming_technique': 'Feathering scissored, body hand-stripped',
             'groom_style_ears': 'Thinned underneath, left long',
@@ -1679,6 +1687,70 @@ class BreedStandardsTests(BaseAPITestCase):
         self.assertFalse(
             response.data['is_priced_by_the_grid'],
             'silky is not on her price grid, and the app should say so',
+        )
+        self.assertEqual(response.data['tail_shape'], 'Feathered, carried level')
+        self.assertEqual(response.data['typical_temperament'], 'Affectionate and boisterous')
+        # Renamed at Jess's request — head_type already covered the head.
+        self.assertNotIn('head_shape', response.data)
+
+    def test_the_old_head_shape_text_is_moved_off_the_tail(self):
+        """Migration 0017 renames the column, so anything Jess had typed about
+        a head would otherwise read as a description of a tail.
+
+        A breed sheet confidently describing the wrong end is worse than a
+        blank one — the blank is honest. So the text moves to the field that
+        does mean the head, and the tail starts empty for her to fill in.
+        """
+        migration = import_module(
+            'api.migrations.0017_daycare_ad_hoc_and_breed_tail_shape',
+        )
+
+        # Post-rename state: tail_shape still holds the old head_shape text.
+        free = Breed.objects.create(
+            name='Test Rehome Free', avg_groom_minutes=90,
+            avg_price=Decimal('50.00'), avg_schedule_weeks=8,
+            head_type='', tail_shape='Broad, blocky skull',
+        )
+        taken = Breed.objects.create(
+            name='Test Rehome Taken', avg_groom_minutes=90,
+            avg_price=Decimal('50.00'), avg_schedule_weeks=8,
+            head_type='Brachycephalic', tail_shape='Domed', notes='Nervous.',
+        )
+        untouched = Breed.objects.create(
+            name='Test Rehome Empty', avg_groom_minutes=90,
+            avg_price=Decimal('50.00'), avg_schedule_weeks=8,
+            head_type='Mesocephalic',
+        )
+
+        migration.rehome_head_shape(apps, None)
+
+        free.refresh_from_db()
+        self.assertEqual(free.head_type, 'Broad, blocky skull')
+        self.assertEqual(free.tail_shape, '', 'the tail must not inherit head text')
+
+        # Where the head field was already spoken for, it goes to the notes
+        # under its own heading rather than being dropped or crammed in.
+        taken.refresh_from_db()
+        self.assertEqual(taken.head_type, 'Brachycephalic')
+        self.assertEqual(taken.tail_shape, '')
+        self.assertIn('Head shape: Domed', taken.notes)
+        self.assertIn('Nervous.', taken.notes)
+
+        untouched.refresh_from_db()
+        self.assertEqual(untouched.head_type, 'Mesocephalic')
+        self.assertEqual(untouched.notes, '')
+
+    def test_nothing_seeds_a_typical_temperament(self):
+        """Her words, off the Kennel Club's pages, and nobody else's.
+
+        Same rule as MedicalNote: this is a description of a breed written by
+        someone with standing to write it, and generated text that merely reads
+        plausibly is worse than the blank, because the blank is honest.
+        """
+        call_command('seed_breeds', verbosity=0)
+        self.assertFalse(
+            Breed.objects.exclude(typical_temperament='').exists(),
+            'seed_breeds wrote a breed temperament — nothing here may invent one',
         )
 
     def test_a_range_that_runs_backwards_is_refused(self):
@@ -2521,6 +2593,62 @@ class DogsDueTests(BaseAPITestCase):
         response = self.staff_client.get('/api/dogs/due/')
         self.assertEqual(response.data['overdue_count'], 1)
         self.assertGreaterEqual(response.data['count'], 2)
+
+    def test_a_dog_seen_earlier_today_is_not_on_the_call_list(self):
+        """The bug Jess hit: groomed this morning, overdue by the evening.
+
+        "In the diary" used to mean ``start_at >= now``, so a booking dropped
+        out of the reckoning the moment it started — and the visit is not
+        marked completed until she writes it up, which may be days later.
+        Between those two the dog looked like one nobody had booked.
+        """
+        self._complete_groom(self.alice_dog, weeks_ago=10)
+        # Midnight this morning, local: today by any reckoning, and behind us.
+        this_morning = timezone.localtime().replace(hour=0, minute=0, second=0, microsecond=0)
+        Appointment.objects.create(
+            dog=self.alice_dog,
+            start_at=this_morning, end_at=this_morning + timedelta(hours=2),
+            status=AppointmentStatus.BOOKED,
+        )
+        self.assertNotIn(self.alice_dog.name, self._names(self.staff_client.get('/api/dogs/due/')))
+
+    def test_yesterdays_booking_still_leaves_the_dog_on_the_list(self):
+        """The window is today onwards, not "any booking ever". A groom last
+        week that was never marked off is exactly what the list is for."""
+        self._complete_groom(self.alice_dog, weeks_ago=10)
+        yesterday = timezone.now() - timedelta(days=1)
+        Appointment.objects.create(
+            dog=self.alice_dog, start_at=yesterday, end_at=yesterday + timedelta(hours=2),
+            status=AppointmentStatus.BOOKED,
+        )
+        self.assertIn(self.alice_dog.name, self._names(self.staff_client.get('/api/dogs/due/')))
+
+    def test_an_ad_hoc_dog_is_not_chased(self):
+        """Bunny. She comes when her owner rings, so "six weeks after the last
+        one" is a deadline nobody agreed to and she would sit near the top of
+        the list for good."""
+        self._complete_groom(self.alice_dog, weeks_ago=20)
+        self.alice_dog.is_ad_hoc = True
+        self.alice_dog.save(update_fields=['is_ad_hoc'])
+
+        self.assertNotIn(self.alice_dog.name, self._names(self.staff_client.get('/api/dogs/due/')))
+        # Still answerable when the question really is "everyone".
+        self.assertIn(
+            self.alice_dog.name,
+            self._names(self.staff_client.get('/api/dogs/due/?include_ad_hoc=1')),
+        )
+
+    def test_an_ad_hoc_dog_can_still_be_asked_about_directly(self):
+        """The flag stops the list volunteering an answer; it does not refuse
+        the question, and it does not touch the interval."""
+        self._complete_groom(self.alice_dog, weeks_ago=20)
+        self.alice_dog.is_ad_hoc = True
+        self.alice_dog.save(update_fields=['is_ad_hoc'])
+
+        response = self.staff_client.get(f'/api/dogs/{self.alice_dog.pk}/suggested_next_groom/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsNotNone(response.data['due_date'])
+        self.assertEqual(self.alice_dog.effective_schedule_weeks, 6)
 
     def test_a_client_cannot_read_the_whole_books_worklist(self):
         self.assertEqual(
@@ -4210,6 +4338,24 @@ class VisitRecordTests(BaseAPITestCase):
         session = GroomSession.objects.create(dog=self.alice_dog)
         self.assertIsNone(session.bathed_well_behaved)
 
+    def test_the_dryer_can_say_nobody_wrote_it_down(self):
+        """Jess: "High velocity dryer, can we change to well behaved like the
+        bathed". It was a switch defaulting to off, so "not used" and "not
+        recorded" were the same stored value — and on a dog that will not
+        tolerate one, which of the two it was is the whole point."""
+        session = GroomSession.objects.create(dog=self.alice_dog)
+        self.assertIsNone(session.high_velocity_dryer)
+
+        for sent, expected in ((True, True), (False, False), (None, None)):
+            response = self.staff_client.patch(
+                f'/api/groom-sessions/{session.pk}/',
+                {'high_velocity_dryer': sent}, format='json',
+            )
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+            self.assertIs(response.data['high_velocity_dryer'], expected)
+            session.refresh_from_db()
+            self.assertIs(session.high_velocity_dryer, expected)
+
     def test_a_nails_visit_must_say_which_of_the_three(self):
         response = self.staff_client.post('/api/groom-sessions/', {
             'dog': self.alice_dog.id,
@@ -4280,6 +4426,226 @@ class VisitRecordTests(BaseAPITestCase):
             self.alice_client.get('/api/groom-sessions/').status_code,
             status.HTTP_403_FORBIDDEN,
         )
+
+
+class SessionAppointmentLinkTests(BaseAPITestCase):
+    """A written-up visit finds the booking it was worked against, and closes it.
+
+    Jess: *"did a 'groom for teddy', set an appointment and then did the timer
+    and managed to add the session but wasn't automatically assigned to the
+    appointment?"* It wasn't — the timer screen took an appointment id and the
+    one place that opened it never passed one.
+
+    The booking staying open is the more expensive half: ``dogs_due`` counts
+    completed appointments, so a groom that is never marked off is a dog on the
+    overdue list the same evening.
+    """
+
+    def _today_at(self, hour):
+        return timezone.localtime().replace(hour=hour, minute=0, second=0, microsecond=0)
+
+    def _booking(self, dog, start, **kwargs):
+        return Appointment.objects.create(
+            dog=dog, start_at=start, end_at=start + timedelta(hours=2), **kwargs,
+        )
+
+    def _post_session(self, **extra):
+        payload = {'dog': self.alice_dog.id, 'visit_type': 'GROOM', 'recorded_minutes': 90}
+        payload.update(extra)
+        return self.staff_client.post('/api/groom-sessions/', payload, format='json')
+
+    def test_a_session_finds_todays_booking_and_marks_it_done(self):
+        booking = self._booking(self.alice_dog, self._today_at(0), status=AppointmentStatus.BOOKED)
+
+        response = self._post_session()
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['appointment'], booking.pk)
+        self.assertEqual(response.data['appointment_status'], AppointmentStatus.COMPLETED)
+
+        booking.refresh_from_db()
+        self.assertEqual(booking.status, AppointmentStatus.COMPLETED)
+
+    def test_closing_a_booking_says_what_it_replaced(self):
+        """Marking a booking off the back of writing a visit up is a fair
+        inference and a poor thing to do silently. The app offers an undo, and
+        this is what it needs to put the status back."""
+        booking = self._booking(
+            self.alice_dog, self._today_at(0), status=AppointmentStatus.CONFIRMED,
+        )
+        response = self._post_session()
+
+        self.assertEqual(response.data['appointment_status'], AppointmentStatus.COMPLETED)
+        # The status it replaced, not a guess at a sensible one — putting a
+        # CONFIRMED booking back as BOOKED would quietly lose the confirmation.
+        self.assertEqual(
+            response.data['appointment_status_before'], AppointmentStatus.CONFIRMED,
+        )
+
+        # And that is enough to undo it, which is what the app does.
+        self.staff_client.patch(
+            f'/api/appointments/{booking.pk}/',
+            {'status': response.data['appointment_status_before']}, format='json',
+        )
+        booking.refresh_from_db()
+        self.assertEqual(booking.status, AppointmentStatus.CONFIRMED)
+
+    def test_a_visit_that_changed_nothing_offers_no_undo(self):
+        """Null unless *this* save closed the booking. An undo offered for a
+        booking that was already done would put back a status nobody set."""
+        self._booking(self.alice_dog, self._today_at(0), status=AppointmentStatus.COMPLETED)
+        response = self._post_session()
+        self.assertEqual(response.data['appointment_status'], AppointmentStatus.COMPLETED)
+        self.assertIsNone(response.data['appointment_status_before'])
+
+        # Nor when nothing matched at all.
+        other = self._post_session()
+        self.assertIsNone(other.data['appointment_status_before'])
+
+    def test_marking_it_done_takes_the_dog_off_the_overdue_list(self):
+        """The whole point of the exercise, end to end."""
+        old = timezone.now() - timedelta(weeks=10)
+        self._booking(self.alice_dog, old, status=AppointmentStatus.COMPLETED)
+        self._booking(self.alice_dog, self._today_at(0), status=AppointmentStatus.BOOKED)
+
+        self._post_session()
+
+        due = self.staff_client.get('/api/dogs/due/')
+        self.assertNotIn(
+            self.alice_dog.name, [row['dog_name'] for row in due.data['results']],
+        )
+
+    def test_an_appointment_jess_named_is_never_overruled(self):
+        """The search is a guess. An id she sent is an answer."""
+        hers = self._booking(self.alice_dog, self._today_at(0), status=AppointmentStatus.BOOKED)
+        nearer = self._booking(self.alice_dog, timezone.now(), status=AppointmentStatus.BOOKED)
+
+        response = self._post_session(appointment=hers.pk)
+        self.assertEqual(response.data['appointment'], hers.pk)
+
+        nearer.refresh_from_db()
+        self.assertEqual(nearer.status, AppointmentStatus.BOOKED)
+
+    def test_it_does_not_reach_into_another_day(self):
+        """A groom written up on Thursday must not close Tuesday's slot."""
+        tuesday = timezone.now() - timedelta(days=2)
+        booking = self._booking(self.alice_dog, tuesday, status=AppointmentStatus.BOOKED)
+
+        response = self._post_session()
+        self.assertIsNone(response.data['appointment'])
+        # And the payload still carries the keys, rather than dropping them —
+        # "nothing matched" is an answer the app renders.
+        self.assertIsNone(response.data['appointment_start_at'])
+        self.assertIsNone(response.data['appointment_status'])
+        booking.refresh_from_db()
+        self.assertEqual(booking.status, AppointmentStatus.BOOKED)
+
+    def test_a_booking_later_today_is_linked_but_left_open(self):
+        """Writing this morning's groom up must not close this afternoon's."""
+        # The last minute of today, so this holds whatever time the suite runs
+        # at — a fixed "now + 3 hours" spends the evening skipping itself.
+        later = self._today_at(23).replace(minute=59)
+        self.assertGreater(later, timezone.now(), 'run this before 23:59')
+        booking = self._booking(self.alice_dog, later, status=AppointmentStatus.BOOKED)
+
+        response = self._post_session()
+        self.assertEqual(response.data['appointment'], booking.pk)
+        booking.refresh_from_db()
+        self.assertEqual(booking.status, AppointmentStatus.BOOKED)
+
+    def test_a_second_visit_the_same_day_does_not_claim_the_same_booking(self):
+        """A nail trim after a groom is two records against one dog. The second
+        must not re-file itself under the first one's appointment."""
+        booking = self._booking(self.alice_dog, self._today_at(0), status=AppointmentStatus.BOOKED)
+
+        first = self._post_session()
+        self.assertEqual(first.data['appointment'], booking.pk)
+
+        second = self._post_session(visit_type='NAILS', nails_done=True)
+        self.assertEqual(second.status_code, status.HTTP_201_CREATED)
+        self.assertIsNone(second.data['appointment'])
+
+    def test_a_cancelled_booking_is_not_resurrected(self):
+        booking = self._booking(
+            self.alice_dog, self._today_at(0), status=AppointmentStatus.CANCELLED,
+        )
+        response = self._post_session()
+        self.assertIsNone(response.data['appointment'])
+        booking.refresh_from_db()
+        self.assertEqual(booking.status, AppointmentStatus.CANCELLED)
+
+    def test_another_dogs_booking_is_not_touched(self):
+        theirs = self._booking(self.bob_dog, self._today_at(0), status=AppointmentStatus.BOOKED)
+        response = self._post_session()
+        self.assertIsNone(response.data['appointment'])
+        theirs.refresh_from_db()
+        self.assertEqual(theirs.status, AppointmentStatus.BOOKED)
+
+
+class DaycareAndAdHocTests(BaseAPITestCase):
+    """Jess's two new things on the dog record.
+
+    *"can there be a daycare dog tickbox and be able to put what days they're
+    in?"*, and the flag that answers *"bunny is in my overdue ... shes ad
+    hock"*.
+    """
+
+    def test_the_days_round_trip_and_come_back_as_words(self):
+        response = self.staff_client.patch(f'/api/dogs/{self.alice_dog.pk}/', {
+            'is_daycare': True,
+            'daycare_days': [2, 0, 4],
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        # Sorted on the way in, so nothing downstream has to.
+        self.assertEqual(response.data['daycare_days'], [0, 2, 4])
+        self.assertEqual(response.data['daycare_days_label'], 'Mon, Wed, Fri')
+
+    def test_the_tickbox_and_the_days_are_separate(self):
+        """A dog can be signed up before the days are settled. A tickbox that
+        unticks itself when you clear the days is a tickbox that argues."""
+        self.staff_client.patch(
+            f'/api/dogs/{self.alice_dog.pk}/', {'is_daycare': True}, format='json',
+        )
+        self.alice_dog.refresh_from_db()
+        self.assertTrue(self.alice_dog.is_daycare)
+        self.assertEqual(self.alice_dog.daycare_days, [])
+
+    def test_a_day_that_is_not_a_day_is_refused(self):
+        """A JSONField will carry anything JSON will. `True` is an int in
+        Python and would quietly mean Tuesday."""
+        for bad in ([7], [-1], [0, 0], ['Monday'], [True], 'Monday', [None]):
+            response = self.staff_client.patch(
+                f'/api/dogs/{self.alice_dog.pk}/', {'daycare_days': bad}, format='json',
+            )
+            self.assertEqual(
+                response.status_code, status.HTTP_400_BAD_REQUEST, f'{bad!r} was accepted',
+            )
+
+    def test_daycare_is_not_a_staff_only_field(self):
+        """Unlike the handling notes beside it, this is an arrangement the
+        owner made and already knows about. Same call as default_services."""
+        self.alice_dog.is_daycare = True
+        self.alice_dog.daycare_days = [1, 3]
+        self.alice_dog.save()
+
+        response = self.alice_client.get(f'/api/dogs/{self.alice_dog.pk}/')
+        self.assertTrue(response.data['is_daycare'])
+        self.assertEqual(response.data['daycare_days_label'], 'Tue, Thu')
+
+    def test_a_client_still_cannot_write_it(self):
+        """Read scoping is not write permission — StaffWriteOnlyMixin."""
+        response = self.alice_client.patch(
+            f'/api/dogs/{self.alice_dog.pk}/', {'is_daycare': True}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.alice_dog.refresh_from_db()
+        self.assertFalse(self.alice_dog.is_daycare)
+
+    def test_ad_hoc_round_trips(self):
+        response = self.staff_client.patch(
+            f'/api/dogs/{self.alice_dog.pk}/', {'is_ad_hoc': True}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data['is_ad_hoc'])
 
 
 class NailVisitBookingTests(BaseAPITestCase):

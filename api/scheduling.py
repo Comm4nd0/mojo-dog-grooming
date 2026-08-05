@@ -381,7 +381,7 @@ def booking_warnings(dog, start_at, end_at=None, exclude_appointment=None,
 
 # ── Who is due ─────────────────────────────────────────────────────────
 
-def dogs_due(within_days=14, include_booked=False, include_never_groomed=True):
+def dogs_due(within_days=14, include_booked=False, include_never_groomed=True, include_ad_hoc=False):
     """Dogs whose next groom is due, most overdue first.
 
     ``suggested_next_groom`` answers this for one dog on request, which means
@@ -402,12 +402,21 @@ def dogs_due(within_days=14, include_booked=False, include_never_groomed=True):
     sort to the end, since "overdue by 40 days" is a firmer claim than "never
     been in".
 
+    **Ad hoc dogs are left out** (``Dog.is_ad_hoc``, ``include_ad_hoc`` to put
+    them back). They have no agreed interval, so "last groom + interval" is a
+    deadline nobody set, and they would sit near the top of the list for good.
+
+    **"In the diary" means anything from midnight this morning**, not from this
+    second. It used to be ``start_at >= now``, which quietly dropped a dog the
+    moment its own appointment started: Jess groomed a dog at ten and found it
+    on her overdue list that evening, because the booking was behind her and
+    the visit was not marked off yet. A dog seen today is not one to ring.
+
     Returns plain dicts, not model instances: the caller needs the derived
     figures more than the ORM object, and the queryset already carries
     everything through annotations.
     """
     today = timezone.localdate()
-    now = timezone.now()
 
     # Subqueries rather than a per-dog query — this walks the whole book, and
     # the N+1 would be two extra queries per dog.
@@ -419,7 +428,11 @@ def dogs_due(within_days=14, include_booked=False, include_never_groomed=True):
     )
     next_booking = (
         Appointment.objects
-        .filter(dog=OuterRef('pk'), start_at__gte=now, status__in=Appointment.ACTIVE_STATUSES)
+        .filter(
+            dog=OuterRef('pk'),
+            start_at__date__gte=today,
+            status__in=Appointment.ACTIVE_STATUSES,
+        )
         .order_by('start_at')
         .values('start_at')[:1]
     )
@@ -432,6 +445,9 @@ def dogs_due(within_days=14, include_booked=False, include_never_groomed=True):
             next_booking_at=Subquery(next_booking),
         )
     )
+
+    if not include_ad_hoc:
+        dogs = dogs.filter(is_ad_hoc=False)
 
     rows = []
     for dog in dogs:

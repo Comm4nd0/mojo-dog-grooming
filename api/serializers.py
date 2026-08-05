@@ -380,8 +380,8 @@ class BreedSerializer(serializers.ModelSerializer):
             'life_span_min_years', 'life_span_max_years',
             'height_min_cm', 'height_max_cm',
             'weight_min_kg', 'weight_max_kg',
-            'original_purpose',
-            'chest_shape', 'head_type', 'head_shape', 'ear_shape', 'coat_colours',
+            'original_purpose', 'typical_temperament',
+            'chest_shape', 'head_type', 'ear_shape', 'tail_shape', 'coat_colours',
             'grooming_technique',
             'groom_style_body', 'groom_style_head', 'groom_style_feet',
             'groom_style_tail', 'groom_style_ears',
@@ -546,7 +546,9 @@ class ClientSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
     #
     # It reaches a client by four separate routes, so gating it here alone
     # would be cosmetic. See DogListSerializer and InvoiceSerializer.
-    staff_only_fields = ('uid', 'chatty', 'leaflet_received', 'notes')
+    staff_only_fields = (
+        'uid', 'chatty', 'leaflet_received', 'particular_about_standard', 'notes',
+    )
 
     full_name = serializers.CharField(read_only=True)
     dog_count = serializers.SerializerMethodField()
@@ -560,7 +562,7 @@ class ClientSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
         fields = [
             'id', 'uid', 'first_name', 'last_name', 'full_name', 'email', 'phone',
             'address', 'postcode', 'emergency_contact_name', 'emergency_contact_phone',
-            'chatty', 'leaflet_received', 'notes',
+            'chatty', 'leaflet_received', 'particular_about_standard', 'notes',
             'photo_consent', 'consents', 'dog_count', 'has_login', 'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
@@ -918,6 +920,9 @@ class DogSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
         source='effective_price', max_digits=7, decimal_places=2, read_only=True,
     )
     schedule_weeks_effective = serializers.IntegerField(source='effective_schedule_weeks', read_only=True)
+    #: "Mon, Wed, Fri" — so the app and the admin agree on the wording without
+    #: each keeping their own copy of the weekday names.
+    daycare_days_label = serializers.CharField(read_only=True)
 
     class Meta:
         model = Dog
@@ -926,8 +931,9 @@ class DogSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
             'date_of_birth', 'sex', 'is_neutered', 'colour', 'microchip_number', 'profile_image',
             'temperament', 'temperament_display', 'temperament_notes',
             'requires_restraint',
-            'groom_minutes', 'price', 'schedule_weeks', 'average_groom_minutes',
+            'groom_minutes', 'price', 'schedule_weeks', 'is_ad_hoc', 'average_groom_minutes',
             'groom_minutes_effective', 'price_effective', 'schedule_weeks_effective',
+            'is_daycare', 'daycare_days', 'daycare_days_label',
             'pref_body', 'pref_feet', 'pref_tail', 'pref_face', 'pref_ears', 'pref_skirt',
             'default_services', 'default_services_detail',
             'allergies', 'medications', 'medical_issues', 'vaccinations',
@@ -1081,11 +1087,29 @@ class GroomSessionSerializer(serializers.ModelSerializer):
     )
     matting_found = serializers.BooleanField(read_only=True)
     equipment_used_detail = EquipmentSerializer(source='equipment_used', many=True, read_only=True)
+    # So the app can say *which* booking a session was matched to, and that it
+    # has been marked off. A create that resolved the appointment by itself is
+    # otherwise indistinguishable from one that found nothing.
+    #
+    # Method fields rather than `source='appointment.status'`: DRF walks a
+    # dotted source with getattr, and a null appointment makes that raise —
+    # after which the key is dropped from the payload altogether rather than
+    # coming back null. A missing key and a null read the same here, but only
+    # by luck, and this is the endpoint where "no booking matched" is a real
+    # answer worth stating.
+    appointment_start_at = serializers.SerializerMethodField()
+    appointment_status = serializers.SerializerMethodField()
+    # What the booking's status was before this visit closed it, so the app can
+    # offer to put it back. Null unless this save is what changed it — marking
+    # a booking done off the back of writing a visit up is a fair inference,
+    # and one tap from being undone is what makes it fair to do unasked.
+    appointment_status_before = serializers.SerializerMethodField()
 
     class Meta:
         model = GroomSession
         fields = [
             'id', 'dog', 'dog_name', 'appointment', 'visit_type', 'visit_type_display',
+            'appointment_start_at', 'appointment_status', 'appointment_status_before',
             'started_at', 'finished_at', 'recorded_minutes',
             'health_check_notes',
             'matting_paws', 'matting_armpits', 'matting_ears', 'matting_elsewhere',
@@ -1099,6 +1123,15 @@ class GroomSessionSerializer(serializers.ModelSerializer):
             'timings', 'total_seconds', 'total_minutes', 'applied_to_dog_at', 'created_at',
         ]
         read_only_fields = ['id', 'applied_to_dog_at', 'created_at']
+
+    def get_appointment_start_at(self, obj):
+        return obj.appointment.start_at if obj.appointment_id else None
+
+    def get_appointment_status(self, obj):
+        return obj.appointment.status if obj.appointment_id else None
+
+    def get_appointment_status_before(self, obj):
+        return obj.appointment_status_before
 
     def validate(self, attrs):
         """A nails visit has to say which of the three it was for.
@@ -1133,6 +1166,11 @@ class GroomSessionSerializer(serializers.ModelSerializer):
         # average GroomSession.save() worked out a moment ago was computed
         # against a session that had none yet.
         session.dog.recalculate_average_groom_minutes()
+        # Find the booking this was worked against, if the caller didn't say,
+        # and mark it done. See GroomSession.link_to_appointment — a groom that
+        # is never marked off is a dog that turns up on the overdue list the
+        # same evening.
+        session.link_to_appointment()
         return session
 
     def update(self, instance, validated_data):

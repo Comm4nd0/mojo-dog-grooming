@@ -3,6 +3,7 @@ import 'package:get_it/get_it.dart';
 import 'api_client.dart';
 import 'auth_service.dart';
 import 'data_service.dart';
+import 'groom_timer_service.dart';
 
 final GetIt getIt = GetIt.instance;
 
@@ -34,4 +35,7 @@ void setupLocator({String? baseUrl}) {
   getIt.registerSingleton<ApiClient>(api);
   getIt.registerSingleton<AuthService>(AuthService(api));
   getIt.registerSingleton<DataService>(DataService(api));
+  // A singleton because that is the whole point of it: the groom timer has to
+  // outlive the screen so Jess can go and read the dog's notes mid-clip.
+  getIt.registerSingleton<GroomTimerService>(GroomTimerService());
 }

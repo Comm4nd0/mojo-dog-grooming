@@ -1008,6 +1008,7 @@ class DogViewSet(StaffWriteOnlyMixin, ClientScopedMixin, viewsets.ModelViewSet):
             include_never_groomed=(
                 request.query_params.get('include_never_groomed', '1') in ('1', 'true', 'True')
             ),
+            include_ad_hoc=request.query_params.get('include_ad_hoc') in ('1', 'true', 'True'),
         )
         return Response({
             'count': len(rows),

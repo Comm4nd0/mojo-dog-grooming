@@ -5,6 +5,7 @@ import '../../constants/app_colors.dart';
 import '../../models/models.dart';
 import '../../services/auth_service.dart';
 import '../../services/data_service.dart';
+import '../../services/groom_timer_service.dart';
 import '../../services/service_locator.dart';
 import '../../widgets/common.dart';
 import '../../widgets/contact_actions.dart';
@@ -29,6 +30,7 @@ class DogProfileScreen extends StatefulWidget {
 
 class _DogProfileScreenState extends State<DogProfileScreen> {
   final _data = getIt<DataService>();
+  final _timer = getIt<GroomTimerService>();
   final _isStaff = getIt<AuthService>().isStaff;
 
   Dog? _dog;
@@ -113,16 +115,30 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
             ),
         ],
       ),
+      // The notes are on this screen, and the timer is what Jess leaves to
+      // read them — so the button says what the clock is on, not just "time a
+      // groom". Without it the only sign a timer is still going is the tab bar
+      // she can't see from a pushed route.
       floatingActionButton: (_isStaff && dog != null)
-          ? FloatingActionButton.extended(
-              onPressed: () async {
-                await Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => GroomTimerScreen(dog: dog)),
+          ? ListenableBuilder(
+              listenable: _timer,
+              builder: (context, _) {
+                final timing = _timer.hasSession && _timer.dogId == dog.id;
+                return FloatingActionButton.extended(
+                  onPressed: () async {
+                    await Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => GroomTimerScreen.forDog(dog)),
+                    );
+                    if (mounted) _load();
+                  },
+                  icon: Icon(timing ? Icons.timer : Icons.timer_outlined),
+                  label: Text(
+                    timing
+                        ? 'TIMING · ${formatClock(_timer.totalSeconds)}'
+                        : 'TIME A GROOM',
+                  ),
                 );
-                if (mounted) _load();
               },
-              icon: const Icon(Icons.timer_outlined),
-              label: const Text('TIME A GROOM'),
             )
           : null,
       // Bottom-left, so it doesn't fight the timer FAB on the right. Booking
@@ -253,6 +269,18 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
                     if (dog.isNeutered == false)
                       InfoTag(label: 'Intact', color: AppColors.warning),
                     if (dog.colour.isNotEmpty) InfoTag(label: dog.colour),
+                    // Both are why a dog is or isn't on the overdue list, so
+                    // they belong where Jess can see them without opening the
+                    // form to find out.
+                    if (dog.isAdHoc)
+                      InfoTag(label: 'Ad hoc', icon: Icons.event_available_outlined),
+                    if (dog.isDaycare)
+                      InfoTag(
+                        label: dog.daycareDaysLabel.isEmpty
+                            ? 'Daycare'
+                            : 'Daycare · ${dog.daycareDaysLabel}',
+                        icon: Icons.home_outlined,
+                      ),
                     if (!dog.isActive)
                       InfoTag(label: 'Inactive', color: context.mojo.muted),
                   ],
@@ -738,6 +766,10 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
               // Staff-only: chatty is null for a client login.
               if (client.chatty == true)
                 const InfoTag(label: 'Chatty', icon: Icons.chat_bubble_outline),
+              if (client.particularAboutStandard == true) ...[
+                const SizedBox(width: 6),
+                const InfoTag(label: 'Particular', icon: Icons.fact_check_outlined),
+              ],
             ],
           ),
         ),

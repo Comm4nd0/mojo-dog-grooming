@@ -59,7 +59,7 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
   bool _mattingEars = false;
   bool _mattingElsewhere = false;
   bool? _bathedWellBehaved;
-  bool _hvDryer = false;
+  bool? _hvDryer;
   bool _nails = false;
   bool _fleas = false;
   bool _ticks = false;
@@ -95,7 +95,7 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
     _mattingEars = session?.mattingEars ?? false;
     _mattingElsewhere = session?.mattingElsewhere ?? false;
     _bathedWellBehaved = session?.bathedWellBehaved;
-    _hvDryer = session?.highVelocityDryer ?? false;
+    _hvDryer = session?.highVelocityDryer;
     _nails = session?.nailsDone ?? false;
     _fleas = session?.fleasTreated ?? false;
     _ticks = session?.ticksRemoved ?? false;
@@ -185,13 +185,17 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
       if (_isEditing) {
         await _data.updateGroomSession(widget.session!.id, _record);
       } else {
-        await _data.createGroomSession(
+        final session = await _data.createGroomSession(
           dogId: widget.dogId,
           appointmentId: widget.appointmentId,
           timings: widget.timings,
           notes: _notes.text.trim(),
           record: _record,
         );
+        // Which booking this landed on, that it has been marked off, and the
+        // way back. The snack goes to the root messenger, so it outlives this
+        // route popping.
+        if (mounted) reportSavedVisit(context, session, saved: 'Visit record saved.');
       }
       if (mounted) Navigator.of(context).pop(true);
     } catch (error) {
@@ -303,12 +307,21 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
                     ],
                     onChanged: (value) => setState(() => _bathedWellBehaved = value),
                   ),
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    value: _hvDryer,
+                  const SizedBox(height: 12),
+                  // Jess asked for this "like the bathed", and for the same
+                  // reason: a switch that starts off cannot tell "we didn't
+                  // use one" from "nobody wrote it down".
+                  DropdownButtonFormField<bool?>(
+                    initialValue: _hvDryer,
+                    decoration: const InputDecoration(labelText: 'High velocity dryer'),
+                    items: const [
+                      DropdownMenuItem(value: null, child: Text('Not recorded')),
+                      DropdownMenuItem(value: true, child: Text('Used')),
+                      DropdownMenuItem(value: false, child: Text('Not used')),
+                    ],
                     onChanged: (value) => setState(() => _hvDryer = value),
-                    title: const Text('High velocity dryer used'),
                   ),
+                  const SizedBox(height: 12),
                   MojoTextField(
                     controller: _shampoo,
                     decoration: const InputDecoration(labelText: 'Shampoo used'),
@@ -414,4 +427,49 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
             ),
     );
   }
+}
+
+/// Confirm a saved visit: what it did to the dog, which booking it landed on,
+/// and the way back.
+///
+/// Jess asked why a session she recorded "wasn't automatically assigned to the
+/// appointment". It is now — and because that also marks the booking off in
+/// the diary, this says so out loud rather than leaving her to find it. A
+/// status changed on the back of a different action is a fair inference and a
+/// poor thing to do silently; one tap from reversible is what squares it.
+///
+/// One snackbar, not two. [saved] is the caller's own line about the save, and
+/// showing it separately would mean two bars in a row — the second hides the
+/// first, so the first may as well not have been shown.
+void reportSavedVisit(BuildContext context, GroomSession session, {String? saved}) {
+  final message = [saved, session.bookingNote].whereType<String>().join(' ');
+  if (message.isEmpty) return;
+
+  final bookingId = session.appointmentId;
+  final before = session.appointmentStatusBefore;
+  if (bookingId == null || before == null) {
+    // No booking, or one filed against without changing it: nothing to undo.
+    showSnack(context, message);
+    return;
+  }
+
+  // Held now rather than inside the callback: the screen that raised this is
+  // usually popping behind the snack, and the messenger belongs to the app
+  // rather than to this route.
+  final messenger = ScaffoldMessenger.of(context);
+  showSnackWithUndo(context, message, onUndo: () async {
+    try {
+      await getIt<DataService>().updateAppointment(bookingId, {'status': before});
+      messenger
+        ..hideCurrentSnackBar()
+        ..showSnackBar(const SnackBar(content: Text('Booking put back.')));
+    } catch (error) {
+      messenger
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(
+          content: Text('Could not put the booking back. $error'),
+          backgroundColor: AppColors.error,
+        ));
+    }
+  });
 }

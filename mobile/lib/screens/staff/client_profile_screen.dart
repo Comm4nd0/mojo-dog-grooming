@@ -146,6 +146,8 @@ class _ClientProfileScreenState extends State<ClientProfileScreen> {
                       InfoTag(label: client.uid!, icon: Icons.tag),
                     if (client.chatty == true)
                       const InfoTag(label: 'Chatty', icon: Icons.chat_bubble_outline),
+                    if (client.particularAboutStandard == true)
+                      const InfoTag(label: 'Particular', icon: Icons.fact_check_outlined),
                     if (client.hasLogin)
                       const InfoTag(label: 'Has login', icon: Icons.person_outline),
                     if (client.leafletReceived == true)
@@ -218,6 +220,12 @@ class _ClientProfileScreenState extends State<ClientProfileScreen> {
             onChanged: (value) => _toggle('chatty', value),
             title: const Text('Chatty'),
             subtitle: const Text('Allow extra time at drop-off and collection'),
+          ),
+          SwitchListTile(
+            value: client.particularAboutStandard ?? false,
+            onChanged: (value) => _toggle('particular_about_standard', value),
+            title: const Text('Particular about groom standard'),
+            subtitle: const Text('Check the finish over before they collect'),
           ),
           SwitchListTile(
             value: client.leafletReceived ?? false,

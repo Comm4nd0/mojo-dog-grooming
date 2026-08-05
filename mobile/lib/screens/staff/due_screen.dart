@@ -145,14 +145,29 @@ class _DueScreenState extends State<DueScreen> {
       width: double.infinity,
       color: context.mojo.tintWash,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      child: Text(
-        text.toUpperCase(),
-        style: TextStyle(
-          fontSize: 11,
-          fontWeight: FontWeight.w700,
-          letterSpacing: 2,
-          color: context.mojo.onTint,
-        ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            text.toUpperCase(),
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 2,
+              color: context.mojo.onTint,
+            ),
+          ),
+          const SizedBox(height: 3),
+          // Says what is *not* here as well as what is. A dog already in the
+          // diary — including one seen earlier today — and any dog marked ad
+          // hoc are deliberately absent. Without saying so, the list looks
+          // like it has simply missed them, which is what sent Jess looking
+          // for what she had done wrong.
+          Text(
+            'Dogs already in the diary and ad hoc dogs are left out.',
+            style: TextStyle(fontSize: 11, color: context.mojo.muted),
+          ),
+        ],
       ),
     );
   }

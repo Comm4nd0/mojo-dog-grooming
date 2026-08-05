@@ -172,10 +172,19 @@ class Breed {
   final num? weightMaxKg;
   final String originalPurpose;
 
+  /// What the breed is generally like, in Jess's words off the Kennel Club's
+  /// pages. Nothing seeds it and nothing here writes it — see the model.
+  ///
+  /// Not a substitute for [Dog.temperament], which is the dog in front of you
+  /// and drives the booking limits.
+  final String typicalTemperament;
+
   final String chestShape;
   final String headType;
-  final String headShape;
   final String earShape;
+  /// Renamed from `headShape` at Jess's request — `headType` already covered
+  /// the head, and the tail had nowhere to go.
+  final String tailShape;
   final String coatColours;
 
   final String groomingTechnique;
@@ -211,10 +220,11 @@ class Breed {
     this.weightMinKg,
     this.weightMaxKg,
     this.originalPurpose = '',
+    this.typicalTemperament = '',
     this.chestShape = '',
     this.headType = '',
-    this.headShape = '',
     this.earShape = '',
+    this.tailShape = '',
     this.coatColours = '',
     this.groomingTechnique = '',
     this.groomStyleBody = '',
@@ -249,10 +259,11 @@ class Breed {
         weightMinKg: json['weight_min_kg'] == null ? null : _num(json['weight_min_kg']),
         weightMaxKg: json['weight_max_kg'] == null ? null : _num(json['weight_max_kg']),
         originalPurpose: json['original_purpose']?.toString() ?? '',
+        typicalTemperament: json['typical_temperament']?.toString() ?? '',
         chestShape: json['chest_shape']?.toString() ?? '',
         headType: json['head_type']?.toString() ?? '',
-        headShape: json['head_shape']?.toString() ?? '',
         earShape: json['ear_shape']?.toString() ?? '',
+        tailShape: json['tail_shape']?.toString() ?? '',
         coatColours: json['coat_colours']?.toString() ?? '',
         groomingTechnique: json['grooming_technique']?.toString() ?? '',
         groomStyleBody: json['groom_style_body']?.toString() ?? '',
@@ -301,6 +312,7 @@ class Breed {
   bool get hasStandardsRecord =>
       kennelClubGroupDisplay.isNotEmpty ||
       originalPurpose.isNotEmpty ||
+      typicalTemperament.isNotEmpty ||
       groomingTechnique.isNotEmpty ||
       coatColours.isNotEmpty;
 }
@@ -603,6 +615,10 @@ class ClientRecord {
   /// Staff-only. Null when the current login is a client.
   final bool? chatty;
   final bool? leafletReceived;
+  /// Jess's reading of an owner, not a fact about them — staff-only with the
+  /// rest of this block, and nullable for the same reason: null means the
+  /// server withheld it, never "no".
+  final bool? particularAboutStandard;
   final String? notes;
 
   const ClientRecord({
@@ -623,6 +639,7 @@ class ClientRecord {
     this.photoConsent,
     this.chatty,
     this.leafletReceived,
+    this.particularAboutStandard,
     this.notes,
   });
 
@@ -649,6 +666,9 @@ class ClientRecord {
         chatty: json.containsKey('chatty') ? json['chatty'] == true : null,
         leafletReceived:
             json.containsKey('leaflet_received') ? json['leaflet_received'] == true : null,
+        particularAboutStandard: json.containsKey('particular_about_standard')
+            ? json['particular_about_standard'] == true
+            : null,
         notes: json['notes']?.toString(),
       );
 
@@ -664,6 +684,8 @@ class ClientRecord {
         'emergency_contact_phone': emergencyContactPhone,
         if (chatty != null) 'chatty': chatty,
         if (leafletReceived != null) 'leaflet_received': leafletReceived,
+        if (particularAboutStandard != null)
+          'particular_about_standard': particularAboutStandard,
         if (notes != null) 'notes': notes,
       };
 }
@@ -915,6 +937,23 @@ class Dog {
   final num price;
   final int scheduleWeeks;
 
+  /// No agreed interval — this one comes when the owner rings.
+  ///
+  /// It does not change [scheduleWeeks]; what it changes is that the "who is
+  /// due" list stops volunteering this dog, because "last groom + interval" is
+  /// a deadline nobody set for it.
+  final bool isAdHoc;
+
+  /// Daycare, and which days. Not staff-only: it is the arrangement the owner
+  /// made, the same call as [defaultServices].
+  ///
+  /// [daycareDays] holds weekday numbers, 0 = Monday, sorted by the server.
+  /// [daycareDaysLabel] is the server's wording of them ("Mon, Wed, Fri"), so
+  /// the app and the admin cannot drift onto different names for a Tuesday.
+  final bool isDaycare;
+  final List<int> daycareDays;
+  final String daycareDaysLabel;
+
   final String prefBody;
   final String prefFeet;
   final String prefTail;
@@ -965,6 +1004,10 @@ class Dog {
     required this.groomMinutes,
     required this.price,
     required this.scheduleWeeks,
+    this.isAdHoc = false,
+    this.isDaycare = false,
+    this.daycareDays = const [],
+    this.daycareDaysLabel = '',
     required this.prefBody,
     required this.prefFeet,
     required this.prefTail,
@@ -1021,6 +1064,13 @@ class Dog {
         groomMinutes: (json['groom_minutes_effective'] as num?)?.toInt() ?? 0,
         price: _num(json['price_effective']),
         scheduleWeeks: (json['schedule_weeks_effective'] as num?)?.toInt() ?? 0,
+        isAdHoc: json['is_ad_hoc'] == true,
+        isDaycare: json['is_daycare'] == true,
+        daycareDays: ((json['daycare_days'] as List?) ?? const [])
+            .whereType<num>()
+            .map((day) => day.toInt())
+            .toList(),
+        daycareDaysLabel: json['daycare_days_label']?.toString() ?? '',
         prefBody: json['pref_body']?.toString() ?? '',
         prefFeet: json['pref_feet']?.toString() ?? '',
         prefTail: json['pref_tail']?.toString() ?? '',
@@ -1293,6 +1343,48 @@ class GroomSession {
   final int? recordedMinutes;
   final DateTime? appliedToDogAt;
 
+  /// The booking this visit belongs to, which the server resolves from the
+  /// diary when the app doesn't name one — and marks off once it has.
+  ///
+  /// Null means nothing matched: no booking for this dog today. That is not an
+  /// error, it is a groom done without one in the diary.
+  final int? appointmentId;
+  final DateTime? appointmentStartAt;
+  final String appointmentStatus;
+
+  /// The status the booking held before saving this visit closed it, or null
+  /// if this save did not change one.
+  ///
+  /// Non-null is the app's cue to offer an undo. Marking a booking done off
+  /// the back of writing a visit up is a fair inference and a poor thing to do
+  /// silently — being one tap from reversible is what makes it fair to do
+  /// without asking first.
+  final String? appointmentStatusBefore;
+
+  /// Whether saving this visit is what closed the booking.
+  bool get closedTheBookingNow => appointmentStatusBefore != null;
+
+  /// Whether the booking has been marked off.
+  bool get closedTheBooking => appointmentStatus == 'COMPLETED';
+
+  /// What to tell Jess about the booking this visit landed on.
+  ///
+  /// Her question was *"managed to add the session but wasn't automatically
+  /// assigned to the appointment? Unless I'm doing it wrong?"* — she wasn't,
+  /// and now that the server matches it, saying so on screen is what makes the
+  /// difference visible without opening the diary to check.
+  ///
+  /// Null when there was nothing to match, which is not a failure: plenty of
+  /// grooms happen with nothing in the diary.
+  String? get bookingNote {
+    if (appointmentId == null) return null;
+    final when =
+        appointmentStartAt == null ? "the day's booking" : formatTime(appointmentStartAt!);
+    return closedTheBooking
+        ? 'Marked $when as done in the diary.'
+        : 'Filed against $when in the diary.';
+  }
+
   final String healthCheckNotes;
   final bool mattingPaws;
   final bool mattingArmpits;
@@ -1303,7 +1395,10 @@ class GroomSession {
 
   /// Null means bathing wasn't recorded — not that the dog behaved badly.
   final bool? bathedWellBehaved;
-  final bool highVelocityDryer;
+  /// Null means nobody wrote it down — not that the dryer went unused. It was
+  /// a plain bool until Jess asked for it "like the bathed", and on a dog that
+  /// will not tolerate one, which of the two it was is the point.
+  final bool? highVelocityDryer;
   final String shampooUsed;
   final List<Equipment> equipmentUsed;
 
@@ -1333,6 +1428,10 @@ class GroomSession {
     this.visitTypeDisplay = '',
     this.recordedMinutes,
     this.appliedToDogAt,
+    this.appointmentId,
+    this.appointmentStartAt,
+    this.appointmentStatus = '',
+    this.appointmentStatusBefore,
     this.healthCheckNotes = '',
     this.mattingPaws = false,
     this.mattingArmpits = false,
@@ -1341,7 +1440,7 @@ class GroomSession {
     this.mattingNotes = '',
     this.mattingFound = false,
     this.bathedWellBehaved,
-    this.highVelocityDryer = false,
+    this.highVelocityDryer,
     this.shampooUsed = '',
     this.equipmentUsed = const [],
     this.finalBody = '',
@@ -1370,6 +1469,10 @@ class GroomSession {
         totalMinutes: (json['total_minutes'] as num?)?.toInt() ?? 0,
         recordedMinutes: (json['recorded_minutes'] as num?)?.toInt(),
         appliedToDogAt: _dateTime(json['applied_to_dog_at']),
+        appointmentId: (json['appointment'] as num?)?.toInt(),
+        appointmentStartAt: _dateTime(json['appointment_start_at']),
+        appointmentStatus: json['appointment_status']?.toString() ?? '',
+        appointmentStatusBefore: json['appointment_status_before']?.toString(),
         healthCheckNotes: json['health_check_notes']?.toString() ?? '',
         mattingPaws: json['matting_paws'] == true,
         mattingArmpits: json['matting_armpits'] == true,
@@ -1380,7 +1483,8 @@ class GroomSession {
         // Deliberately not coerced: a null means it wasn't recorded.
         bathedWellBehaved:
             json['bathed_well_behaved'] is bool ? json['bathed_well_behaved'] as bool : null,
-        highVelocityDryer: json['high_velocity_dryer'] == true,
+        highVelocityDryer:
+            json['high_velocity_dryer'] is bool ? json['high_velocity_dryer'] as bool : null,
         shampooUsed: json['shampoo_used']?.toString() ?? '',
         equipmentUsed: ((json['equipment_used_detail'] as List?) ?? const [])
             .map((e) => Equipment.fromJson(e as Map<String, dynamic>))

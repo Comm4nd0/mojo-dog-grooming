@@ -1,10 +1,9 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 
 import '../../constants/app_colors.dart';
 import '../../models/models.dart' as models;
 import '../../services/data_service.dart';
+import '../../services/groom_timer_service.dart';
 import '../../services/service_locator.dart';
 import '../../widgets/common.dart';
 import 'visit_record_screen.dart';
@@ -15,12 +14,35 @@ import 'visit_record_screen.dart';
 /// strip — so each timer is independent and a phase with no time simply isn't
 /// saved. Any phase can also be typed in, for a groom that wasn't timed live.
 ///
+/// **The counts do not live here.** They live in [GroomTimerService], because
+/// Jess asked to be able to leave: *"just need to be able to check notes as I
+/// figured out today whilst doing bunny"*. This screen is a view over that —
+/// closing it pauses nothing and loses nothing, and the running clock stays on
+/// the staff shell until the groom is written up.
+///
 /// The total can be written back to the dog as its default groom time, which
 /// then sizes the diary block for future bookings.
 class GroomTimerScreen extends StatefulWidget {
-  const GroomTimerScreen({super.key, required this.dog, this.appointmentId});
+  const GroomTimerScreen({
+    super.key,
+    required this.dogId,
+    required this.dogName,
+    this.usualMinutes = 0,
+    this.appointmentId,
+  });
 
-  final models.Dog dog;
+  /// From a dog record, which is how a profile opens it.
+  GroomTimerScreen.forDog(models.Dog dog, {super.key, this.appointmentId})
+      : dogId = dog.id,
+        dogName = dog.name,
+        usualMinutes = dog.groomMinutes;
+
+  final int dogId;
+  final String dogName;
+  final int usualMinutes;
+
+  /// Usually null. The server matches a visit to the day's booking itself —
+  /// this is for opening the timer from a booking, where the answer is known.
   final int? appointmentId;
 
   @override
@@ -29,143 +51,123 @@ class GroomTimerScreen extends StatefulWidget {
 
 class _GroomTimerScreenState extends State<GroomTimerScreen> {
   final _data = getIt<DataService>();
+  final _timer = getIt<GroomTimerService>();
 
-  /// Accumulated seconds per phase.
-  final Map<String, int> _elapsed = {
-    for (final phase in models.PhaseTiming.phaseOrder) phase: 0,
-  };
-  final Set<String> _manual = {};
-
-  String? _running;
-  DateTime? _runningSince;
-  Timer? _ticker;
   bool _busy = false;
 
   @override
-  void dispose() {
-    _ticker?.cancel();
-    super.dispose();
+  void initState() {
+    super.initState();
+    // After the first frame, so a dialog has a Navigator to sit in.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _open());
   }
 
-  int _displaySeconds(String phase) {
-    final base = _elapsed[phase] ?? 0;
-    if (_running != phase || _runningSince == null) return base;
-    return base + DateTime.now().difference(_runningSince!).inSeconds;
-  }
-
-  void _toggle(String phase) {
-    setState(() {
-      if (_running == phase) {
-        _bankRunning();
+  Future<void> _open() async {
+    if (!mounted) return;
+    if (_timer.holdsAnotherDog(widget.dogId)) {
+      // Never silently roll one dog's time into another's, and never throw the
+      // first one away without asking — neither is a guess worth making.
+      final discard = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text('${_timer.dogName} is still being timed'),
+          content: Text(
+            '${formatClock(_timer.totalSeconds)} recorded so far. '
+            'Starting ${widget.dogName} throws it away.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('GO BACK'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('DISCARD AND START'),
+            ),
+          ],
+        ),
+      );
+      if (!mounted) return;
+      if (discard != true) {
+        Navigator.of(context).pop();
         return;
       }
-      // Only one phase runs at a time — starting another banks the current one.
-      if (_running != null) _bankRunning();
-      _running = phase;
-      _runningSince = DateTime.now();
-      _manual.remove(phase);
-      _ticker?.cancel();
-      _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
-        if (mounted) setState(() {});
-      });
-    });
-  }
-
-  void _bankRunning() {
-    final phase = _running;
-    if (phase == null || _runningSince == null) return;
-    _elapsed[phase] =
-        (_elapsed[phase] ?? 0) + DateTime.now().difference(_runningSince!).inSeconds;
-    _running = null;
-    _runningSince = null;
-    _ticker?.cancel();
+      await _timer.clear();
+      if (!mounted) return;
+    }
+    _timer.openFor(
+      dogId: widget.dogId,
+      dogName: widget.dogName,
+      appointmentId: widget.appointmentId,
+      usualMinutes: widget.usualMinutes,
+    );
   }
 
   Future<void> _editManually(String phase) async {
     final entered = await promptForText(
       context,
       title: '${models.PhaseTiming.labelFor(phase)} — enter minutes',
-      initialValue: ((_elapsed[phase] ?? 0) ~/ 60).toString(),
+      initialValue: (_timer.secondsFor(phase) ~/ 60).toString(),
       suffixText: 'minutes',
       keyboardType: TextInputType.number,
       confirmLabel: 'SET',
     );
     if (entered == null) return;
-    final minutes = int.tryParse(entered) ?? 0;
-    setState(() {
-      if (_running == phase) _bankRunning();
-      _elapsed[phase] = minutes * 60;
-      if (minutes > 0) {
-        _manual.add(phase);
-      } else {
-        _manual.remove(phase);
-      }
-    });
+    _timer.setMinutes(phase, int.tryParse(entered) ?? 0);
   }
-
-  int get _totalSeconds => models.PhaseTiming.phaseOrder
-      .fold(0, (sum, phase) => sum + _displaySeconds(phase));
-
-  /// The phases that were actually used. Empty when nothing was timed.
-  List<models.PhaseTiming> get _timings => [
-        for (final phase in models.PhaseTiming.phaseOrder)
-          if ((_elapsed[phase] ?? 0) > 0)
-            models.PhaseTiming(
-              phase: phase,
-              durationSeconds: _elapsed[phase]!,
-              enteredManually: _manual.contains(phase),
-            ),
-      ];
 
   /// Hand the timings to the record card rather than saving here, so the
   /// session is created once with the whole groom written up — matting,
   /// shampoo, equipment and all.
   Future<void> _writeUp() async {
-    setState(_bankRunning);
-    if (_timings.isEmpty) {
+    final timings = _timer.timingsNow;
+    if (timings.isEmpty) {
       showSnack(context, 'No time recorded yet.', isError: true);
       return;
     }
     final saved = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
         builder: (_) => VisitRecordScreen(
-          dogId: widget.dog.id,
-          dogName: widget.dog.name,
-          appointmentId: widget.appointmentId,
-          timings: _timings,
+          dogId: widget.dogId,
+          dogName: widget.dogName,
+          appointmentId: _timer.appointmentId,
+          timings: timings,
         ),
       ),
     );
-    if (saved == true && mounted) Navigator.of(context).pop(true);
+    if (saved != true || !mounted) return;
+    // The card saved the session, so this timing is spent. Leaving it running
+    // is how the next dog inherits this one's clip time.
+    await _timer.clear();
+    if (mounted) Navigator.of(context).pop(true);
   }
 
   Future<void> _save({required bool applyToDog}) async {
-    setState(() {
-      _bankRunning();
-      _busy = true;
-    });
-
-    final timings = _timings;
+    final timings = _timer.timingsNow;
     if (timings.isEmpty) {
-      setState(() => _busy = false);
       showSnack(context, 'No time recorded yet.', isError: true);
       return;
     }
+    setState(() => _busy = true);
 
     try {
       final session = await _data.createGroomSession(
-        dogId: widget.dog.id,
-        appointmentId: widget.appointmentId,
+        dogId: widget.dogId,
+        appointmentId: _timer.appointmentId,
         timings: timings,
       );
       if (applyToDog) {
         await _data.applySessionToDog(session.id);
       }
+      await _timer.clear();
       if (!mounted) return;
-      showSnack(
+      // One bar carrying both halves, and the undo if a booking was closed.
+      reportSavedVisit(
         context,
-        applyToDog
-            ? "Saved. ${widget.dog.name}'s groom time is now ${models.formatDuration(session.totalMinutes)}."
+        session,
+        saved: applyToDog
+            ? "Saved. ${widget.dogName}'s groom time is now "
+                '${models.formatDuration(session.totalMinutes)}.'
             : 'Groom session saved.',
       );
       Navigator.of(context).pop(true);
@@ -176,76 +178,129 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final totalMinutes = (_totalSeconds / 60).round();
-    return Scaffold(
-      appBar: AppBar(title: Text('Timing ${widget.dog.name}')),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
-        children: [
-          Container(
-            padding: const EdgeInsets.symmetric(vertical: 20),
-            color: context.mojo.tintWash,
-            alignment: Alignment.center,
-            child: Column(
-              children: [
-                Text(_formatClock(_totalSeconds), style: AppColors.display(44)),
-                const SizedBox(height: 4),
-                Text(
-                  'Usual: ${models.formatDuration(widget.dog.groomMinutes)}',
-                  style: TextStyle(fontSize: 12, color: context.mojo.muted),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 8),
-          Padding(
-            padding: EdgeInsets.symmetric(vertical: 8),
-            child: Text(
-              'Tap a phase to start or pause it. Skip any you did not do.',
-              style: TextStyle(fontSize: 12.5, color: context.mojo.muted),
-            ),
-          ),
-          for (final phase in models.PhaseTiming.phaseOrder) _phaseTile(phase),
-          const SizedBox(height: 28),
+  Future<void> _discard() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Discard this timing?'),
+        content: Text(
+          '${formatClock(_timer.totalSeconds)} recorded for ${widget.dogName}, '
+          'and not saved to a visit record.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('KEEP')),
           ElevatedButton(
-            onPressed: _busy || totalMinutes == 0 ? null : () => _save(applyToDog: true),
-            child: Text(
-              _busy ? 'SAVING…' : 'SAVE & SET AS DEFAULT (${models.formatDuration(totalMinutes)})',
-              textAlign: TextAlign.center,
-            ),
-          ),
-          const SizedBox(height: 10),
-          OutlinedButton(
-            onPressed: _busy || totalMinutes == 0 ? null : () => _save(applyToDog: false),
-            child: const Text('SAVE WITHOUT CHANGING DEFAULT'),
-          ),
-          const SizedBox(height: 10),
-          OutlinedButton(
-            onPressed: _busy || totalMinutes == 0 ? null : _writeUp,
-            child: const Text('WRITE UP THE GROOM CARD'),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            "Setting the default changes how much diary time this dog's future "
-            'bookings block out.',
-            style: TextStyle(fontSize: 12, color: context.mojo.muted),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('DISCARD'),
           ),
         ],
+      ),
+    );
+    if (confirmed != true) return;
+    await _timer.clear();
+    if (mounted) Navigator.of(context).pop();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text('Timing ${widget.dogName}')),
+      body: ListenableBuilder(
+        listenable: _timer,
+        builder: (context, _) {
+          final totalMinutes = _timer.totalMinutes;
+          final leftRunning = _timer.leftRunningPhase;
+          return ListView(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(vertical: 20),
+                color: context.mojo.tintWash,
+                alignment: Alignment.center,
+                child: Column(
+                  children: [
+                    Text(formatClock(_timer.totalSeconds), style: AppColors.display(44)),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Usual: ${models.formatDuration(widget.usualMinutes)}',
+                      style: TextStyle(fontSize: 12, color: context.mojo.muted),
+                    ),
+                  ],
+                ),
+              ),
+              if (leftRunning != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Container(
+                    padding: const EdgeInsets.all(12),
+                    color: AppColors.warning.withValues(alpha: 0.12),
+                    child: Text(
+                      '${models.PhaseTiming.labelFor(leftRunning)} has been running for '
+                      '${formatClock(_timer.secondsFor(leftRunning))}. If it was left on, '
+                      'pause it and type the real time in.',
+                      style: const TextStyle(fontSize: 12.5, color: AppColors.warning),
+                    ),
+                  ),
+                ),
+              const SizedBox(height: 8),
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Text(
+                  'Tap a phase to start or pause it. Skip any you did not do. '
+                  'The clock keeps going if you leave this screen.',
+                  style: TextStyle(fontSize: 12.5, color: context.mojo.muted),
+                ),
+              ),
+              for (final phase in models.PhaseTiming.phaseOrder) _phaseTile(phase),
+              const SizedBox(height: 28),
+              ElevatedButton(
+                onPressed: _busy || totalMinutes == 0 ? null : () => _save(applyToDog: true),
+                child: Text(
+                  _busy
+                      ? 'SAVING…'
+                      : 'SAVE & SET AS DEFAULT (${models.formatDuration(totalMinutes)})',
+                  textAlign: TextAlign.center,
+                ),
+              ),
+              const SizedBox(height: 10),
+              OutlinedButton(
+                onPressed: _busy || totalMinutes == 0 ? null : () => _save(applyToDog: false),
+                child: const Text('SAVE WITHOUT CHANGING DEFAULT'),
+              ),
+              const SizedBox(height: 10),
+              OutlinedButton(
+                onPressed: _busy || totalMinutes == 0 ? null : _writeUp,
+                child: const Text('WRITE UP THE GROOM CARD'),
+              ),
+              if (totalMinutes > 0) ...[
+                const SizedBox(height: 10),
+                TextButton(
+                  onPressed: _busy ? null : _discard,
+                  child: const Text('DISCARD THIS TIMING'),
+                ),
+              ],
+              const SizedBox(height: 12),
+              Text(
+                "Setting the default changes how much diary time this dog's future "
+                'bookings block out.',
+                style: TextStyle(fontSize: 12, color: context.mojo.muted),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
 
   Widget _phaseTile(String phase) {
-    final seconds = _displaySeconds(phase);
-    final isRunning = _running == phase;
+    final seconds = _timer.secondsFor(phase);
+    final isRunning = _timer.runningPhase == phase;
     final used = seconds > 0;
 
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       child: ListTile(
-        onTap: () => _toggle(phase),
+        onTap: () => _timer.toggle(phase),
         leading: Container(
           width: 44,
           height: 44,
@@ -260,12 +315,12 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
           models.PhaseTiming.labelFor(phase),
           style: TextStyle(fontWeight: used ? FontWeight.w700 : FontWeight.w400),
         ),
-        subtitle: _manual.contains(phase) ? const Text('Entered by hand') : null,
+        subtitle: _timer.wasEnteredManually(phase) ? const Text('Entered by hand') : null,
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(
-              _formatClock(seconds),
+              formatClock(seconds),
               style: TextStyle(
                 fontSize: 17,
                 fontWeight: FontWeight.w600,
@@ -283,13 +338,14 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
       ),
     );
   }
+}
 
-  static String _formatClock(int seconds) {
-    final h = seconds ~/ 3600;
-    final m = (seconds % 3600) ~/ 60;
-    final s = seconds % 60;
-    final mm = m.toString().padLeft(2, '0');
-    final ss = s.toString().padLeft(2, '0');
-    return h > 0 ? '$h:$mm:$ss' : '$mm:$ss';
-  }
+/// `1:04:09`, or `04:09` under the hour.
+String formatClock(int seconds) {
+  final h = seconds ~/ 3600;
+  final m = (seconds % 3600) ~/ 60;
+  final s = seconds % 60;
+  final mm = m.toString().padLeft(2, '0');
+  final ss = s.toString().padLeft(2, '0');
+  return h > 0 ? '$h:$mm:$ss' : '$mm:$ss';
 }

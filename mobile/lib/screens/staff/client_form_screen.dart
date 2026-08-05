@@ -33,6 +33,7 @@ class _ClientFormScreenState extends State<ClientFormScreen> {
 
   late bool _chatty;
   late bool _leafletReceived;
+  late bool _particularAboutStandard;
   bool _busy = false;
 
   bool get _isEditing => widget.client != null;
@@ -53,6 +54,7 @@ class _ClientFormScreenState extends State<ClientFormScreen> {
     _notes = TextEditingController(text: client?.notes ?? '');
     _chatty = client?.chatty ?? false;
     _leafletReceived = client?.leafletReceived ?? false;
+    _particularAboutStandard = client?.particularAboutStandard ?? false;
   }
 
   @override
@@ -80,6 +82,7 @@ class _ClientFormScreenState extends State<ClientFormScreen> {
       'emergency_contact_name': _emergencyName.text.trim(),
       'emergency_contact_phone': _emergencyPhone.text.trim(),
       'chatty': _chatty,
+      'particular_about_standard': _particularAboutStandard,
       'leaflet_received': _leafletReceived,
       'notes': _notes.text.trim(),
     };
@@ -192,6 +195,13 @@ class _ClientFormScreenState extends State<ClientFormScreen> {
               onChanged: (value) => setState(() => _chatty = value),
               title: const Text('Chatty'),
               subtitle: const Text('Allow extra time at drop-off and collection'),
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _particularAboutStandard,
+              onChanged: (value) => setState(() => _particularAboutStandard = value),
+              title: const Text('Particular about groom standard'),
+              subtitle: const Text('Check the finish over before they collect'),
             ),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,

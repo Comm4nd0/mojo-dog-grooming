@@ -52,8 +52,11 @@ class ConsentInline(admin.TabularInline):
 
 @admin.register(Client)
 class ClientAdmin(admin.ModelAdmin):
-    list_display = ['uid', 'full_name', 'phone', 'email', 'chatty', 'leaflet_received', 'user']
-    list_filter = ['chatty', 'leaflet_received']
+    list_display = [
+        'uid', 'full_name', 'phone', 'email',
+        'chatty', 'particular_about_standard', 'leaflet_received', 'user',
+    ]
+    list_filter = ['chatty', 'particular_about_standard', 'leaflet_received']
     search_fields = ['uid', 'first_name', 'last_name', 'phone', 'email', 'postcode']
     inlines = [DogInline, ConsentInline]
 
@@ -65,8 +68,12 @@ class ProblemAreaInline(admin.TabularInline):
 
 @admin.register(Dog)
 class DogAdmin(admin.ModelAdmin):
-    list_display = ['name', 'client', 'breed_label', 'temperament', 'effective_groom_minutes', 'effective_price', 'is_active']
-    list_filter = ['temperament', 'is_active', 'breed']
+    list_display = [
+        'name', 'client', 'breed_label', 'temperament',
+        'effective_groom_minutes', 'effective_price',
+        'is_ad_hoc', 'is_daycare', 'daycare_days_label', 'is_active',
+    ]
+    list_filter = ['temperament', 'is_ad_hoc', 'is_daycare', 'is_active', 'breed']
     search_fields = ['name', 'client__first_name', 'client__last_name', 'client__uid', 'client__phone']
     autocomplete_fields = ['client', 'breed']
     inlines = [ProblemAreaInline]
@@ -99,11 +106,11 @@ class BreedAdmin(admin.ModelAdmin):
                 ('life_span_min_years', 'life_span_max_years'),
                 ('height_min_cm', 'height_max_cm'),
                 ('weight_min_kg', 'weight_max_kg'),
-                'original_purpose',
+                'original_purpose', 'typical_temperament',
             ],
         }),
         ('Shape', {
-            'fields': ['chest_shape', 'head_type', 'head_shape', 'ear_shape', 'coat_colours'],
+            'fields': ['chest_shape', 'head_type', 'ear_shape', 'tail_shape', 'coat_colours'],
         }),
         ('How it is groomed', {
             'fields': [

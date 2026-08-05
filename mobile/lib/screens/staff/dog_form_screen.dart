@@ -9,6 +9,7 @@ import '../../widgets/dog_silhouette.dart';
 import '../../widgets/searchable_picker.dart';
 import '../../widgets/service_picker.dart';
 import '../../widgets/temperament_picker.dart';
+import '../../widgets/weekday_picker.dart';
 import 'problem_area_editor.dart';
 
 /// Add or edit a dog.
@@ -63,6 +64,9 @@ class _DogFormScreenState extends State<DogFormScreen> {
   String _sex = '';
   bool? _isNeutered;
   bool _isActive = true;
+  bool _isAdHoc = false;
+  bool _isDaycare = false;
+  Set<int> _daycareDays = {};
   DateTime? _dateOfBirth;
   bool _loading = true;
   bool _busy = false;
@@ -78,6 +82,9 @@ class _DogFormScreenState extends State<DogFormScreen> {
     _groomMinutes = TextEditingController(text: dog?.groomMinutesOverride?.toString() ?? '');
     _price = TextEditingController(text: dog?.priceOverride?.toString() ?? '');
     _scheduleWeeks = TextEditingController(text: dog?.scheduleWeeksOverride?.toString() ?? '');
+    _isAdHoc = dog?.isAdHoc ?? false;
+    _isDaycare = dog?.isDaycare ?? false;
+    _daycareDays = {...?dog?.daycareDays};
     _temperamentNotes = TextEditingController(text: dog?.temperamentNotes ?? '');
     _requiresRestraint = dog?.requiresRestraint ?? false;
     _colour = TextEditingController(text: dog?.colour ?? '');
@@ -250,6 +257,11 @@ class _DogFormScreenState extends State<DogFormScreen> {
       'groom_minutes': asInt(_groomMinutes),
       'price': _price.text.trim().isEmpty ? null : _price.text.trim(),
       'schedule_weeks': asInt(_scheduleWeeks),
+      'is_ad_hoc': _isAdHoc,
+      'is_daycare': _isDaycare,
+      // Sorted here as well as on the server — the server is the guarantee,
+      // this is so the field Jess just filled in reads back in order.
+      'daycare_days': (_daycareDays.toList()..sort()),
       'colour': _colour.text.trim(),
       'microchip_number': _microchip.text.trim(),
       'allergies': _allergies.text.trim(),
@@ -532,6 +544,35 @@ class _DogFormScreenState extends State<DogFormScreen> {
                 hintText: breed?.avgScheduleWeeks.toString(),
               ),
               keyboardType: TextInputType.number,
+            ),
+            const SizedBox(height: 6),
+            // The interval above stays editable and stays in use: it is what
+            // answers "when is this one next due" when Jess asks about the dog
+            // directly. What the switch stops is the overdue list volunteering
+            // a deadline nobody agreed to.
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _isAdHoc,
+              onChanged: (value) => setState(() => _isAdHoc = value),
+              title: const Text('Ad hoc'),
+              subtitle: const Text('Comes when the owner asks — keep off the due list'),
+            ),
+
+            const SectionHeader(title: 'Daycare'),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _isDaycare,
+              onChanged: (value) => setState(() => _isDaycare = value),
+              title: const Text('Daycare dog'),
+            ),
+            // Shown whether or not the tickbox is on, and the tickbox does not
+            // clear them: a dog can be signed up before the days are settled,
+            // and days typed in then wiped by a stray tap is worse than a
+            // list sitting quietly under an unticked box.
+            const SizedBox(height: 4),
+            WeekdayPicker(
+              selected: _daycareDays,
+              onChanged: (days) => setState(() => _daycareDays = days),
             ),
 
             const SectionHeader(title: 'Grooming preferences'),

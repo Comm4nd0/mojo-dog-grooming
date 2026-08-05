@@ -35,7 +35,8 @@ templates/
 mobile/lib/
   constants/          app_colors.dart — brand palette and theme
   models/             models.dart — API payload types
-  services/           api_client, auth_service, biometric_service, data_service, service_locator
+  services/           api_client, auth_service, biometric_service, data_service,
+                      groom_timer_service, service_locator
   screens/            login_screen, lock_screen, account_switcher
   screens/staff/      doguments, dog/client profiles, calendar, timers, visit records,
                       invoices, services, equipment, to-dos, documents, logins
@@ -43,7 +44,7 @@ mobile/lib/
   widgets/            common.dart, dog_silhouette.dart, biometric_toggle.dart,
                       searchable_picker.dart, duration_picker.dart,
                       contact_actions.dart, temperament_picker.dart,
-                      service_picker.dart
+                      service_picker.dart, weekday_picker.dart
   widgets/calendar/   the time-axis diary — metrics, layout, painter,
                       day and week timelines
 ```
@@ -53,7 +54,7 @@ mobile/lib/
 Backend:
 ```bash
 python manage.py migrate && python manage.py seed_breeds
-python manage.py test api        # 368 tests
+python manage.py test api        # 391 tests
 python manage.py runserver 0.0.0.0:8000
 python manage.py accounts        # who can sign in — usernames live only in the DB
 python manage.py reset_link jess # a way back in when the superuser is locked out
@@ -62,7 +63,7 @@ python manage.py reset_link jess # a way back in when the superuser is locked ou
 Mobile:
 ```bash
 cd mobile && flutter pub get
-flutter analyze && flutter test  # 165 tests
+flutter analyze && flutter test  # 192 tests
 flutter run --dart-define=MOJO_API_BASE=http://192.168.1.20:8000/api
 ```
 
@@ -78,7 +79,10 @@ git push origin main             # backend — this is the deploy, see below
 
 **1. Staff-only fields must never reach a client.**
 `Dog.temperament`, `Dog.temperament_notes`, `ProblemArea`, `Client.chatty`,
-`Client.leaflet_received` and `Client.notes` are Jess's private working notes.
+`Client.leaflet_received`, `Client.particular_about_standard` and `Client.notes` are Jess's
+private working notes. `particular_about_standard` is her request and belongs here rather than
+on the dog — it is a fact about the *owner*, it applies to every dog they bring, and it is
+plainly not something to show them written down about themselves.
 
 They are removed by `StaffOnlyFieldsMixin` in `api/serializers.py`, which gates in
 **`get_fields()`, not `__init__`**. This is not stylistic: a serializer declared as a nested
@@ -216,6 +220,34 @@ Their due date is genuinely unknown rather than far away, and coercing that to `
 them under "due today", which is a claim nobody made. Same rule as everywhere else here. They
 sort last, because "40 days overdue" is a firmer statement than "never been in".
 
+Jess found a dog on this list the evening of the day she groomed it — *"shes ad hock and was
+in today, don't know what I've done wrong"* — and she hadn't. Three separate things put it
+there, and all three are now closed:
+
+- **"In the diary" starts at midnight this morning, not at this second.** It was
+  `start_at >= now`, so a booking dropped out of the reckoning the moment it began. A groom is
+  not marked completed until it's written up, which may be days later, and in between the dog
+  looked like one nobody had booked.
+- **A visit written up marks its booking done.** `GroomSession.link_to_appointment()` — see
+  the visit-record section below. Until that existed, `dogs_due` counted *completed*
+  appointments and nothing in the app ever completed one.
+- **`Dog.is_ad_hoc` takes a dog off the list altogether.** The sum is "last groom + interval",
+  and every dog has an interval whether or not one was ever agreed, so a dog that comes when
+  the owner rings is permanently about to be late. It does **not** change
+  `effective_schedule_weeks`: `suggested_next_groom` still answers for that dog when asked
+  directly, which is a fair question about any dog. What changes is that nothing volunteers
+  it. `include_ad_hoc=1` for the whole-book question, same as `include_booked`.
+
+**`Dog.is_daycare` and `Dog.daycare_days`** are Jess's *"can there be a daycare dog tickbox and
+be able to put what days they're in?"*. Weekday numbers in a `JSONField`, **0 = Monday**,
+matching `WEEKDAY_CHOICES` and Python's `date.weekday()` — Dart's `DateTime.weekday` is 1-based,
+so never pass one straight through. `validate_weekdays` is the only thing between that column
+and a string, a `7`, or a `True` that would quietly mean Tuesday; `Dog.save()` sorts. The flag
+and the days are separate fields on purpose — a dog can be signed up before the days are
+settled, and a tickbox that unticks itself when you clear the days is a tickbox that argues.
+**Neither is staff-only**: it is the arrangement the owner made and already knows about, the
+same call as `default_services`.
+
 **`AppointmentChangeRequest`** is a client asking to cancel or move. Before it, a client who
 could not make it had *no in-app path at all* — ring the salon, or don't turn up. A no-show
 costs Jess the slot; a cancellation she hears about is a slot she can refill.
@@ -238,7 +270,26 @@ does not go round it.
 
 `Breed` began as three numbers and is now Jess's breed standards record — *"a little snippet of
 the whole dog"*: KC group, life span, activity, size, height, weight, what it was bred for,
-chest/head/ear shape, colours, technique, and five groom styles.
+chest/head/ear/tail shape, colours, typical temperament, technique, and five groom styles.
+
+**`tail_shape` was `head_shape`** until Jess asked for the swap — `head_type` was already
+covering the head and the tail had nowhere to go.
+
+`0017` does it in two steps because both one-step versions are wrong. Drop-and-add throws away
+what she has typed. A bare rename keeps it and files it under the wrong heading, and a breed
+sheet reading *"Tail shape: broad, blocky skull"* is worse than an empty one — the empty one is
+honest, and that one is a confident answer to a question nobody asked. Same rule as
+`nail_visit_price`. So the `RenameField` carries the column across and `rehome_head_shape` then
+moves each value to the field that does mean the head — `head_type` where it is free, `notes`
+under its own heading where it is not — leaving `tail_shape` **blank** for her to fill in. That
+half does not reverse, and says so.
+
+**`typical_temperament` is free text and nothing seeds it.** Her words off the UK Kennel
+Club's pages, and the same rule as `MedicalNote`: this is somebody else's description of a
+breed, and text that merely reads plausibly is worse than the blank, because the blank is
+honest. There is a test asserting `seed_breeds` writes none. It is about the *breed* — never
+read it as a stand-in for `Dog.temperament`, which is the dog in front of you and drives the
+booking limits.
 
 **Two of those fields are not decoration.** `size_band` and `coat_type` are the two axes of
 `PRICING` in `seed_breeds`. The band was in `BREEDS` all along and was never stored, so the
@@ -544,6 +595,29 @@ Things worth knowing:
   many dogs Jess can take.
 - **`bathed_well_behaved` is nullable.** "Not bathed" and "bathed and hated it" are different
   things. Same rule as everywhere else here: null is not false, on both sides.
+- **`high_velocity_dryer` is nullable too**, at Jess's request — *"can we change to well
+  behaved like the bathed"*. It was a switch defaulting to off, so a groom nobody wrote it down
+  for was stored identically to one where the dryer was deliberately kept away from the dog,
+  and on a dog that will not tolerate one that is the fact worth having. `0017` clears the
+  existing `False` values to null, exactly as `0007` did for `is_neutered` and for the same
+  reason: not one of them can be told apart from a switch nobody touched.
+- **A saved visit finds its booking and marks it done** — `link_to_appointment()`. Jess: *"did
+  a 'groom for teddy', set an appointment and then did the timer and managed to add the session
+  but wasn't automatically assigned to the appointment?"* It wasn't: `GroomTimerScreen` took an
+  `appointmentId` and the only place that opened it never passed one. The match is deliberately
+  narrow — it fills a **blank** appointment only (an id she sent is an answer, this is a
+  guess), same **local day** only (a groom written up Thursday must not close Tuesday's slot),
+  a booking with **no session on it already** (so a nails visit and a groom on the same day
+  don't both claim it), an **active** one only, and it marks it completed only once it has
+  actually **started**. The app says which booking it landed on rather than leaving her to
+  open the diary and check.
+- **Closing a booking is offered back.** Marking one off the back of a *different* action is a
+  fair inference and a poor thing to do silently, so `link_to_appointment()` leaves the status
+  it replaced on `appointment_status_before` — not a column, true of one save — and the app's
+  snack carries an UNDO that puts exactly that back. Not a sensible-looking guess: undoing a
+  `CONFIRMED` booking as `BOOKED` would quietly lose the confirmation. It is null unless *this*
+  save changed something, so a booking that was already done offers no undo for a status
+  nobody set. One tap from reversible is what makes it reasonable to do unasked.
 - **`final_body` / `final_feet` / `final_tail` are what was *done*.** The `pref_*` fields on the
   dog are what the owner asked for at intake. Do not conflate them.
 
@@ -581,6 +655,37 @@ Four things that are easy to get wrong:
 
 `Dog.default_services` is **not** staff-only: it is what the owner asked for, and a client
 needs it to request the right kind of booking.
+
+## The groom timer outlives its screen
+
+Jess: *"is it not possible to have the timer running in the background, mostly whilst prep,
+clipping or stripping just need to be able to check notes as I figured out today whilst doing
+bunny"*. It could not. Every count lived in `_GroomTimerScreenState`, so backing out to read
+the dog's handling notes threw the whole groom away without a word — and the notes are on the
+screen directly underneath.
+
+`GroomTimerService` (`services/groom_timer_service.dart`) holds it instead, registered as a
+singleton in `service_locator`. `GroomTimerScreen` is a view over it, and closing that screen
+pauses nothing.
+
+- **Elapsed time is always a wall-clock difference, never a tick count.** A backgrounded app
+  stops getting `Timer.periodic` callbacks; `DateTime.now().difference(since)` does not care.
+  The ticker exists only to repaint.
+- **It persists on every change**, to `FlutterSecureStorage` — already a dependency, and not
+  because a running timer is a secret. iOS will kill the app mid-groom while the camera is
+  open, and two hours of timing is not something to lose to that. A write that fails is
+  swallowed: the in-memory half is what she actually asked for.
+- **A phase restored without its start stamp is dropped, not restarted.** Counting it from now
+  would read as a phase that had only just begun.
+- **A phase running longer than `implausibleRun` (4h) is flagged and never adjusted.** The
+  screen says which one and Jess types the real figure in. A number this code invented would
+  be indistinguishable from one she measured — the same rule as `nail_visit_price`.
+- **Another dog's session is never merged in.** `holdsAnotherDog()`, and the screen asks
+  before discarding.
+- Two places show a running timer, because a timer you can walk away from is one that gets
+  left on: a bar above the tabs in `StaffShell`, and the dog profile's FAB, which reads
+  `TIMING · 12:34`. The profile matters most — it is the screen she leaves the timer *for*,
+  and a pushed route sits over the shell.
 
 ## The diary is a time axis, not a list
 

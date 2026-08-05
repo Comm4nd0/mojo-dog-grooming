@@ -10,6 +10,7 @@ import 'package:mojo_app/screens/staff/dog_profile_screen.dart';
 import 'package:mojo_app/services/api_client.dart';
 import 'package:mojo_app/services/auth_service.dart';
 import 'package:mojo_app/services/data_service.dart';
+import 'package:mojo_app/services/groom_timer_service.dart';
 import 'package:mojo_app/services/service_locator.dart';
 
 /// A staff login, without going near the keychain.
@@ -73,6 +74,10 @@ Future<void> _pumpProfile(WidgetTester tester) async {
   getIt.registerSingleton<ApiClient>(api);
   getIt.registerSingleton<AuthService>(_StaffAuth(api));
   getIt.registerSingleton<DataService>(DataService(api));
+  // The timer FAB reads this. Its constructor tries the keystore, which is
+  // absent under test — the service swallows that and starts empty, which is
+  // exactly the state this screen should render.
+  getIt.registerSingleton<GroomTimerService>(GroomTimerService());
 
   await tester.pumpWidget(MaterialApp(
     theme: AppColors.lightTheme(),
