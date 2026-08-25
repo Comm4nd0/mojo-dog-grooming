@@ -1087,9 +1087,12 @@ class GroomSessionSerializer(serializers.ModelSerializer):
     bookable_minutes = serializers.IntegerField(read_only=True)
 
     visit_type_display = serializers.CharField(source='get_visit_type_display', read_only=True)
-    temperament_observed_display = serializers.CharField(
-        source='get_temperament_observed_display', read_only=True,
-    )
+    # Jess's own wording for the grade, not the frozen enum label — she renames
+    # these in Settings. This used `get_temperament_observed_display()`, which
+    # is exactly the call models.temperament_label warns against: the visit
+    # tiles kept the seed wording after a rename while every other screen
+    # followed her.
+    temperament_observed_display = serializers.SerializerMethodField()
     matting_found = serializers.BooleanField(read_only=True)
     equipment_used_detail = EquipmentSerializer(source='equipment_used', many=True, read_only=True)
     # So the app can say *which* booking a session was matched to, and that it
@@ -1123,6 +1126,7 @@ class GroomSessionSerializer(serializers.ModelSerializer):
             'equipment_used', 'equipment_used_detail',
             'final_body', 'final_feet', 'final_tail', 'final_face',
             'nails_done', 'hygiene_area_done', 'health_check_done', 'ears_cleaned',
+            'feet_clipped_out', 'bathed', 'blow_dried', 'usual_groom_done',
             'checklist_notes',
             'fleas_treated', 'ticks_removed',
             'notes', 'sensitive_notes',
@@ -1141,22 +1145,38 @@ class GroomSessionSerializer(serializers.ModelSerializer):
     def get_appointment_status_before(self, obj):
         return obj.appointment_status_before
 
-    def validate(self, attrs):
-        """A nails visit has to say which of the three it was for.
+    def get_temperament_observed_display(self, obj):
+        return temperament_label(obj.temperament_observed)
 
-        Otherwise the record says a visit happened and nothing about what was
-        done, which is the one thing that card exists to capture.
+    def validate(self, attrs):
+        """A nails visit has to say which of the three it was for, and the
+        checklist cannot contradict the bathing and drying answers beside it.
+
+        The contradictions matter because ``GroomSession.save()`` fills the
+        checklist's ``bathed`` and ``blow_dried`` in by entailment — an answer
+        about how the bath went means a bath went. Letting "not bathed" through
+        next to a bath-behaviour answer would store both halves of an argument.
         """
+
+        def value(name, default=None):
+            return attrs.get(name, getattr(self.instance, name, default))
+
+        if value('bathed') is False and value('bathed_well_behaved') is not None:
+            raise serializers.ValidationError(
+                {'bathed': 'The bathing answer above says a bath happened — clear that first.'},
+            )
+        if value('blow_dried') is False and value('high_velocity_dryer') is True:
+            raise serializers.ValidationError(
+                {'blow_dried': 'The dryer is recorded as used — clear that first.'},
+            )
+
         visit_type = attrs.get(
             'visit_type', getattr(self.instance, 'visit_type', ServiceType.GROOM),
         )
         if visit_type != ServiceType.NAILS_FLEAS_TICKS:
             return attrs
 
-        def flag(name):
-            return attrs.get(name, getattr(self.instance, name, False))
-
-        if not any(flag(name) for name in ('nails_done', 'fleas_treated', 'ticks_removed')):
+        if not any(value(name, False) for name in ('nails_done', 'fleas_treated', 'ticks_removed')):
             raise serializers.ValidationError(
                 {'nails_done': 'Say whether this was nails, fleas or ticks.'},
             )
@@ -1201,6 +1221,46 @@ class GroomSessionSerializer(serializers.ModelSerializer):
                 PhaseTiming.objects.create(session=instance, **timing)
         instance.dog.recalculate_average_groom_minutes()
         return instance
+
+
+class GroomReportSerializer(serializers.ModelSerializer):
+    """The owner's view of a visit — Jess's groom report card.
+
+    Her words, listing exactly what it carries: the tick boxes, *"a text box
+    below saying - notes from any of the above, why it was not carried out.
+    The owner should be able to see this. Then the temperament of the dog and
+    an anything to note text box."*
+
+    A **whitelist over the same model**, not a gated copy of the visit
+    serializer: everything else on the card — the health check findings, the
+    matting, the sensitive notes, the timings, what writing it back did to the
+    dog's booking length — is Jess's working record and stays behind the
+    staff-only ``/groom-sessions/`` endpoint. Read-only by construction: the
+    viewset serving this accepts no writes, so nothing here needs to be
+    writable.
+    """
+
+    dog_name = serializers.CharField(source='dog.name', read_only=True)
+    visit_type_display = serializers.CharField(source='get_visit_type_display', read_only=True)
+    # Jess's wording for the grade, renameable in Settings — and about to be
+    # read by the person it describes, which is one more reason the frozen
+    # seed labels would be wrong here.
+    temperament_display = serializers.SerializerMethodField()
+
+    class Meta:
+        model = GroomSession
+        fields = [
+            'id', 'dog', 'dog_name', 'visit_type', 'visit_type_display', 'started_at',
+            # The checklist, in the order Jess wrote it.
+            'health_check_done', 'nails_done', 'ears_cleaned', 'hygiene_area_done',
+            'feet_clipped_out', 'bathed', 'blow_dried', 'usual_groom_done',
+            'checklist_notes',
+            'fleas_treated', 'ticks_removed',
+            'temperament_display', 'notes',
+        ]
+
+    def get_temperament_display(self, obj):
+        return temperament_label(obj.temperament_observed)
 
 
 # ── Money ──────────────────────────────────────────────────────────────

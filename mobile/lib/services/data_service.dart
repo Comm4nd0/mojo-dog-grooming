@@ -336,6 +336,13 @@ class DataService {
     return GroomSession.fromJson(payload as Map<String, dynamic>);
   }
 
+  /// The owner-visible slice of a dog's visit records. Scoped on the server,
+  /// so a client only ever gets their own dogs' reports back.
+  Future<List<GroomReport>> getGroomReports(int dogId) async {
+    final payload = await _api.get('/groom-reports/', query: {'dog': dogId});
+    return ApiClient.resultsOf(payload).map(GroomReport.fromJson).toList();
+  }
+
   // ── To-dos ─────────────────────────────────────────────────────────
 
   /// What Jess does, in her order. Active services only.

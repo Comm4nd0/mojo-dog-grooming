@@ -625,10 +625,14 @@ void main() {
       expect(visit.hasChecklist, isTrue);
       expect(visit.checklistSkipped, ['ears cleaned']);
       expect(visit.checklistNotes, 'Ears too sore, owner ringing the vet.');
-      // The list keeps Jess's order and every row, answered or not.
+      // The list keeps Jess's order — the second message's eight — and every
+      // row, answered or not.
       expect(
         visit.checklist.map((item) => item.label),
-        ['Nails clipped', 'Hygiene area', 'Health check', 'Ears cleaned'],
+        [
+          'Health check', 'Nails clipped', 'Ears cleaned', 'Hygiene area',
+          'Feet clipped out', 'Bathed', 'Blow dried', 'Usual groom carried out',
+        ],
       );
     });
 

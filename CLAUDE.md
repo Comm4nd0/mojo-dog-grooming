@@ -607,16 +607,29 @@ On the client profile the **Agreed terms** block sits last, at Jess's request. I
 record rather than something she works from, and in the middle of the page it was pushing the
 dogs — the reason she opens a client at all — below the fold.
 
-## One visit record, two cards
+## One visit record, one card
 
 Jess keeps two paper record cards — "Ongoing Record for Dogs" and "Ongoing Record for Nails /
 Flee / Ticks" (`docs/paper-cards.md`). Both land on **`GroomSession`**, told apart by
 `visit_type`. One model rather than two because the cards are the same shape and hers are filed
 per dog: splitting them would split a dog's history in half. The screen is
-`visit_record_screen.dart`, and which fields it shows is driven by the type.
+`visit_record_screen.dart` — and since her *"I don't think it needs to be a separate thing for
+nails/fleas/ticks really"*, it is **one card for every visit**: the type no longer changes what
+the screen shows, fleas and ticks are two plain checkboxes on it, and the profile's two add
+buttons became one.
 
-Neither card is client-facing. `GroomSessionViewSet` is `IsAdminUser` for the whole endpoint —
-that is the gate, not field-level masking.
+**`visit_type` outlives the unified card, on purpose.** It is not presentation: it is what
+keeps a twenty-minute nail trim out of `recalculate_average_groom_minutes()` and out of
+`apply_to_dog()`. So the card still has to know, and the way it knows matters — a visit
+arriving from the timer is a groom by construction and is never asked; editing keeps the
+record's own answer; the profile's ADD VISIT passes **null**, which makes the card ask "What
+kind of visit" with nothing pre-picked and refuse to save unanswered. Same rule as the intake
+form's radios: a pre-picked answer is an answer nobody gave, and here the wrong guess would
+quietly shrink the dog's booking length.
+
+The card is not client-facing — `GroomSessionViewSet` is `IsAdminUser` for the whole endpoint,
+that is the gate, not field-level masking — **with one deliberate exception**: the groom
+report, below.
 
 Things worth knowing:
 
@@ -710,32 +723,74 @@ route.
 ### The finishing checklist
 
 Jess: *"can we add a little 'check list' “Nails Clipped, Hygiene Area, Health Check, Ears
-Cleaned” with a little box under to fill in why something not done"*. Four flags and
-`checklist_notes`, on the groom card only. It goes **beyond the paper card**, like `final_face`
-before it — the card is the spec for everything else, so the difference is deliberate.
+Cleaned” with a little box under to fill in why something not done"* — and then, once she had
+used it: *"Can it just have tick boxes. 'Health Checked, Nails Clipped, Ears Cleaned, Hygiene
+Area, Feet Clipped Out, Bathed, Blow Dried, Usual Groom Carried Out'"*. **Eight flags** (the
+second four in `0020`) and `checklist_notes`, in her second message's order — which is also why
+the tiles lead with the health check, not the nails. It goes **beyond the paper card**, like
+`final_face` before it — the card is the spec for everything else, so the difference is
+deliberate.
 
-- **All four are nullable, and null means the list was never worked down.** Same rule as
+- **All eight are nullable, and null means the list was never worked down.** Same rule as
   `bathed_well_behaved` and `high_velocity_dryer`, arrived at the same way: a box that starts
   unticked cannot tell "I left the hygiene area" from "I have not been down this list yet", and
   here the first one is the fact worth having — it is exactly what the reason box explains.
-- **`nails_done` is one column across both cards.** It already existed on the nails/fleas/ticks
-  card, and whether this dog's nails were clipped at this visit is one fact. Two columns would
-  disagree the first time Jess clipped nails during a groom, and "when were Bunny's nails last
-  done" would miss every groom-card answer. `0018` widens it to nullable.
-- **The migration clears `False` on GROOM rows only.** `nails_done` has been `default=False`
-  since `0001`, so every groom already on file claims the nails were *not* clipped — a claim
-  nobody made, because that card never asked. On a nails visit a `False` is a real answer (the
-  serializer refuses one that names none of the three), so wiping those would destroy
-  information rather than stop inventing it. That half does not reverse, and says so.
-- **The two cards draw the same column differently, on purpose.** The nails card keeps plain
-  checkboxes — it asks which of the three the visit was *for*, and saving is refused unless one
-  is ticked, so an empty box there is an answer. The groom card's checklist is tristate.
+- **`nails_done` is one column across both paper cards.** It already existed on the
+  nails/fleas/ticks card, and whether this dog's nails were clipped at this visit is one fact.
+  Two columns would disagree the first time Jess clipped nails during a groom, and "when were
+  Bunny's nails last done" would miss every groom-card answer. `0018` widens it to nullable and
+  clears the unasked `False`s on GROOM rows only — on a nails visit a `False` was a real
+  answer, so that half does not reverse, and says so.
+- **`bathed` and `blow_dried` are filled in by entailment, never guessed.** They sit beside
+  `bathed_well_behaved` and `high_velocity_dryer` without repeating them — those record how the
+  dog *took* it, these whether it *happened* — and an answer about how the bath went means a
+  bath went. `GroomSession.save()` fills a null `bathed` from a non-null behaviour answer and a
+  null `blow_dried` from a dryer recorded as *used* (only those directions hold; "dryer not
+  used" says nothing about drying), `0020` backfills the same way, the serializer refuses the
+  outright contradictions, and the card ticks the pair together in the UI so Jess sees the
+  entailment before the server applies it. An explicit answer of hers is never overwritten.
+- **The list is uniform tristate on the one card.** The old nails card coerced `nails_done` to
+  two-state; the unified card sends the third state for every visit, and the serializer still
+  refuses a NAILS visit that names none of nails, fleas or ticks. `fleas_treated` and
+  `ticks_removed` stay two-state like the matting flags — the card asks whether it happened, so
+  an unticked box is an answer.
 - The tile ignores the value Flutter's tristate `Checkbox` hands back and sets its own order:
   not recorded → **done** → not done → not recorded. Flutter's own cycle puts "not done" under
   the first tap, and the common case is the opposite. The subtitle names the state in words,
   because a dash is only obvious once somebody has told you what it means.
 - The visit list on a dog's profile summarises **only what was marked not done**. A checklist
   worked straight down says nothing worth a line; the one job she had to leave does.
+
+### The groom report is the owner's window, and a whitelist
+
+Jess: *"The owner should be able to see this"* — the checklist, *"notes from any of the above,
+why it was not carried out"*, *"then the temperament of the dog and an anything to note text
+box"*. That is `GET /api/groom-reports/`: a **second route over `GroomSession`**, read-only
+(`ReadOnlyModelViewSet`, so the write surface is the HTTP method list, same shape as
+`ConsentViewSet`), scoped `ClientScopedMixin(client_lookup='dog__client')`, serving the
+whitelist in `GroomReportSerializer` — the eight ticks, `checklist_notes`, `fleas_treated` /
+`ticks_removed`, the temperament **label** (through `temperament_label()`, never the frozen
+enum — the person it describes is reading it), and `notes`. Everything else on the card —
+health check findings, matting, sensitive notes, timings, shampoo, equipment — stays behind
+the staff-only endpoint, and `test_the_report_is_a_whitelist` pins the exact key set so a new
+model field has to be admitted deliberately.
+
+Four things worth keeping true:
+
+- **The staff card marks what the owner can read.** The checklist header, the visit note and
+  the temperament caption each say so, and `sensitive_notes` — sitting between two shared
+  fields — says "Staff only" outright. Jess writes with a reader now; the boundary belongs on
+  the card, not in her memory.
+- **The owner's report renders answered items only.** On the staff card a null row is Jess's
+  own to-do list and stays visible; on the report, "Not recorded" eight times over reads as
+  eight worries, and every visit written up before the checklist existed would be all of them.
+  What was done, and what was deliberately left with the reason, is the report.
+- **`notes` ("Anything to note") became owner-visible retroactively.** It had always been on
+  the card; anything typed in it before the report existed is now readable by that dog's
+  owner. `sensitive_notes` is the box that was always meant for what the owner must not see,
+  and it stays staff-only.
+- The client sees reports on the dog profile (`_reportsSection`, the client-side counterpart
+  of the staff `_visitsSection`), opening into `screens/client/groom_report_screen.dart`.
 
 ## Services are a catalogue; ServiceType is still the category
 

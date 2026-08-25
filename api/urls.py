@@ -20,6 +20,8 @@ router.register('medical-notes', views.MedicalNoteViewSet, basename='medical-not
 router.register('appointments', views.AppointmentViewSet, basename='appointment')
 router.register('booking-series', views.BookingSeriesViewSet, basename='booking-series')
 router.register('groom-sessions', views.GroomSessionViewSet, basename='groom-session')
+# The owner-visible slice of the same records — see GroomReportViewSet.
+router.register('groom-reports', views.GroomReportViewSet, basename='groom-report')
 router.register('invoices', views.InvoiceViewSet, basename='invoice')
 router.register('payments', views.PaymentViewSet, basename='payment')
 router.register('equipment', views.EquipmentViewSet, basename='equipment')

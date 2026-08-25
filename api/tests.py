@@ -640,6 +640,199 @@ class GroomSessionTests(BaseAPITestCase):
         self.assertEqual(response.data['total_minutes'], 40)
 
 
+class ChecklistTests(BaseAPITestCase):
+    """The checklist of eight, and the entailments that keep it honest."""
+
+    CHECKLIST = [
+        'health_check_done', 'nails_done', 'ears_cleaned', 'hygiene_area_done',
+        'feet_clipped_out', 'bathed', 'blow_dried', 'usual_groom_done',
+    ]
+
+    def test_every_item_starts_not_recorded(self):
+        """Null, not False: an unanswered list is not a list of things skipped."""
+        response = self.staff_client.post(
+            '/api/groom-sessions/', {'dog': self.alice_dog.pk}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        for item in self.CHECKLIST:
+            self.assertIsNone(response.data[item], item)
+
+    def test_a_bath_behaviour_answer_means_a_bath_happened(self):
+        """Entailment, not a guess — and it holds for *either* answer."""
+        response = self.staff_client.post(
+            '/api/groom-sessions/',
+            {'dog': self.alice_dog.pk, 'bathed_well_behaved': False},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIs(response.data['bathed'], True)
+
+    def test_a_dryer_used_means_the_dog_was_blow_dried(self):
+        response = self.staff_client.post(
+            '/api/groom-sessions/',
+            {'dog': self.alice_dog.pk, 'high_velocity_dryer': True},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIs(response.data['blow_dried'], True)
+
+    def test_a_dryer_left_off_says_nothing_about_drying(self):
+        """The entailment only runs one way — she may have fluff dried."""
+        response = self.staff_client.post(
+            '/api/groom-sessions/',
+            {'dog': self.alice_dog.pk, 'high_velocity_dryer': False},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIsNone(response.data['blow_dried'])
+
+    def test_not_bathed_beside_a_bath_answer_is_refused(self):
+        response = self.staff_client.post(
+            '/api/groom-sessions/',
+            {'dog': self.alice_dog.pk, 'bathed': False, 'bathed_well_behaved': True},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('bathed', response.data)
+
+    def test_not_blow_dried_beside_a_dryer_used_is_refused(self):
+        response = self.staff_client.post(
+            '/api/groom-sessions/',
+            {'dog': self.alice_dog.pk, 'blow_dried': False, 'high_velocity_dryer': True},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('blow_dried', response.data)
+
+    def test_an_explicit_bathed_answer_is_never_overwritten(self):
+        session = GroomSession.objects.create(dog=self.alice_dog, bathed=True)
+        session.refresh_from_db()
+        self.assertIs(session.bathed, True)
+        self.assertIsNone(session.bathed_well_behaved)
+
+    def test_a_nails_visit_can_name_fleas_alone(self):
+        """The unified card sends the tristate as-is; a flea-only visit is
+        complete without an answer about the nails."""
+        response = self.staff_client.post(
+            '/api/groom-sessions/',
+            {
+                'dog': self.alice_dog.pk,
+                'visit_type': ServiceType.NAILS_FLEAS_TICKS,
+                'nails_done': None,
+                'fleas_treated': True,
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIsNone(response.data['nails_done'])
+
+    def test_visit_temperament_follows_jess_wording(self):
+        """`get_temperament_observed_display()` was reading the frozen enum —
+        the one call models.temperament_label exists to replace. The visit
+        tiles kept the seed wording after a rename while every other screen
+        followed her."""
+        TemperamentGrade.objects.update_or_create(
+            temperament=Temperament.FEISTY, defaults={'label': 'Handle with care'},
+        )
+        session = GroomSession.objects.create(
+            dog=self.alice_dog, temperament_observed=Temperament.FEISTY,
+        )
+        response = self.staff_client.get(f'/api/groom-sessions/{session.pk}/')
+        self.assertEqual(response.data['temperament_observed_display'], 'Handle with care')
+
+
+class GroomReportTests(BaseAPITestCase):
+    """Jess: *"The owner should be able to see this"* — and nothing else.
+
+    The report is the first client-visible slice of a visit record, so these
+    tests guard both rules at once: the whitelist (rule 1) and the scoping
+    (rule 2) — and all six verbs, because a class that covers four of six
+    reads exactly like one that covers them all.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.session = GroomSession.objects.create(
+            dog=self.alice_dog,
+            nails_done=True,
+            hygiene_area_done=False,
+            checklist_notes='Too wriggly for the hygiene area today.',
+            notes='Lovely and calm once the dryer was off.',
+            temperament_observed=Temperament.FEISTY,
+            # Jess's working record, which must stay on the staff side.
+            health_check_notes='Small wart on the left ear.',
+            sensitive_notes='Hates her tail being touched.',
+            recorded_minutes=90,
+        )
+
+    def test_owner_sees_their_dogs_report(self):
+        response = self.alice_client.get('/api/groom-reports/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['count'], 1)
+        report = response.data['results'][0]
+        self.assertIs(report['nails_done'], True)
+        self.assertIs(report['hygiene_area_done'], False)
+        self.assertEqual(report['checklist_notes'], 'Too wriggly for the hygiene area today.')
+        self.assertEqual(report['notes'], 'Lovely and calm once the dryer was off.')
+
+    def test_the_report_is_a_whitelist(self):
+        """The exact key set, so a field added to the model has to be admitted
+        here deliberately rather than leaking by default."""
+        report = self.alice_client.get(f'/api/groom-reports/{self.session.pk}/').data
+        self.assertEqual(
+            set(report),
+            {
+                'id', 'dog', 'dog_name', 'visit_type', 'visit_type_display', 'started_at',
+                'health_check_done', 'nails_done', 'ears_cleaned', 'hygiene_area_done',
+                'feet_clipped_out', 'bathed', 'blow_dried', 'usual_groom_done',
+                'checklist_notes', 'fleas_treated', 'ticks_removed',
+                'temperament_display', 'notes',
+            },
+        )
+
+    def test_another_client_sees_nothing(self):
+        self.assertEqual(self.bob_client.get('/api/groom-reports/').data['count'], 0)
+        self.assertEqual(
+            self.bob_client.get(f'/api/groom-reports/{self.session.pk}/').status_code,
+            status.HTTP_404_NOT_FOUND,
+        )
+
+    def test_a_user_with_no_client_record_sees_nothing(self):
+        stranger = APIClient()
+        stranger.force_authenticate(User.objects.create_user('stranger', password='pw'))
+        self.assertEqual(stranger.get('/api/groom-reports/').data['count'], 0)
+
+    def test_staff_pass_through(self):
+        self.assertEqual(self.staff_client.get('/api/groom-reports/').data['count'], 1)
+
+    def test_the_report_takes_no_writes(self):
+        """Even to the owner of the row — the write surface is the method list."""
+        url = f'/api/groom-reports/{self.session.pk}/'
+        cases = [
+            self.alice_client.post('/api/groom-reports/', {'dog': self.alice_dog.pk}, format='json'),
+            self.alice_client.put(url, {'notes': 'better words'}, format='json'),
+            self.alice_client.patch(url, {'notes': 'better words'}, format='json'),
+            self.alice_client.delete(url),
+            self.staff_client.patch(url, {'notes': 'better words'}, format='json'),
+        ]
+        for response in cases:
+            self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    def test_dog_filter(self):
+        second = Dog.objects.create(client=self.alice, name='Waffle', breed=self.breed)
+        GroomSession.objects.create(dog=second, nails_done=True)
+        response = self.alice_client.get('/api/groom-reports/', {'dog': second.pk})
+        self.assertEqual(response.data['count'], 1)
+        self.assertEqual(response.data['results'][0]['dog_name'], 'Waffle')
+
+    def test_temperament_reaches_the_owner_in_jess_wording(self):
+        TemperamentGrade.objects.update_or_create(
+            temperament=Temperament.FEISTY, defaults={'label': 'Needs patience'},
+        )
+        report = self.alice_client.get(f'/api/groom-reports/{self.session.pk}/').data
+        self.assertEqual(report['temperament_display'], 'Needs patience')
+
+
 class IntakeFormTests(BaseAPITestCase):
     def setUp(self):
         super().setUp()

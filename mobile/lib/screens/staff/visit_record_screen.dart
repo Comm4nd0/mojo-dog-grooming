@@ -9,10 +9,19 @@ import '../../widgets/temperament_picker.dart';
 
 /// Jess's "Ongoing Record" card, as a screen.
 ///
-/// One screen for both of her cards: a groom shows the lot, a nails/fleas/ticks
-/// visit shows the handful of questions that card actually asks. Which fields
-/// appear is driven by [visitType] — the paper cards differ that much, and
-/// showing a shampoo box on a nail trim would just be noise.
+/// **One card for every visit**, at her request — *"I don't think it needs to
+/// be a separate thing for nails/fleas/ticks really"*. It used to fork on the
+/// visit type and show a nails visit a cut-down card; now everything is always
+/// on it, and the type survives only as a question near the top — because the
+/// server keeps nails visits out of the groom-time average and refuses to
+/// write their minutes to the dog, so which kind this was still has to be
+/// true. A visit arriving from the timer was a groom by construction and is
+/// never asked.
+///
+/// The checklist, its reason box, the temperament and the visit note are
+/// **owner-visible** through the groom report — Jess: *"The owner should be
+/// able to see this"*. The card says so beside each of them, because she is
+/// writing with a reader now and the boundary should never be a surprise.
 class VisitRecordScreen extends StatefulWidget {
   const VisitRecordScreen({
     super.key,
@@ -26,7 +35,12 @@ class VisitRecordScreen extends StatefulWidget {
 
   final int dogId;
   final String dogName;
-  final String visitType;
+
+  /// What the visit was for, when the opener knows — the timer leaves the
+  /// default (a timed visit is a groom), editing passes the record's own.
+  /// **Null means ask**: the profile's ADD VISIT can't know, and a guess here
+  /// would put nail trims into the groom-time average.
+  final String? visitType;
 
   /// An existing record to edit. Null means this is a new one.
   final GroomSession? session;
@@ -55,16 +69,25 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
   late final TextEditingController _sensitive;
   late final TextEditingController _checklistNotes;
 
+  /// Null until answered. The dropdown starts unset on a hand-added visit for
+  /// the same reason the intake form's radios do — a pre-picked answer is an
+  /// answer nobody gave.
+  String? _visitType;
+
   bool _mattingPaws = false;
   bool _mattingArmpits = false;
   bool _mattingEars = false;
   bool _mattingElsewhere = false;
   bool? _bathedWellBehaved;
   bool? _hvDryer;
-  bool? _nails;
-  bool? _hygiene;
   bool? _healthCheckDone;
+  bool? _nails;
   bool? _earsCleaned;
+  bool? _hygiene;
+  bool? _feetClippedOut;
+  bool? _bathed;
+  bool? _blowDried;
+  bool? _usualGroom;
   bool _fleas = false;
   bool _ticks = false;
   String _temperament = '';
@@ -75,7 +98,6 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
   bool _loading = true;
   bool _busy = false;
 
-  bool get _isGroom => widget.visitType == VisitType.groom;
   bool get _isEditing => widget.session != null;
 
   /// The phases behind this record — handed over by the timer when the card is
@@ -92,6 +114,7 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
   void initState() {
     super.initState();
     final session = widget.session;
+    _visitType = session?.visitType ?? widget.visitType;
     _recordedMinutes =
         TextEditingController(text: session?.recordedMinutes?.toString() ?? '');
     _healthCheck = TextEditingController(text: session?.healthCheckNotes ?? '');
@@ -111,13 +134,17 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
     _mattingElsewhere = session?.mattingElsewhere ?? false;
     _bathedWellBehaved = session?.bathedWellBehaved;
     _hvDryer = session?.highVelocityDryer;
-    // No `?? false` on the checklist four: a card written up before this
-    // list existed answered none of them, and starting them at "not done"
-    // would put an answer in Jess's mouth she never gave.
-    _nails = session?.nailsDone;
-    _hygiene = session?.hygieneAreaDone;
+    // No `?? false` on the checklist: a card written up before this list
+    // existed answered none of it, and starting a box at "not done" would put
+    // an answer in Jess's mouth she never gave.
     _healthCheckDone = session?.healthCheckDone;
+    _nails = session?.nailsDone;
     _earsCleaned = session?.earsCleaned;
+    _hygiene = session?.hygieneAreaDone;
+    _feetClippedOut = session?.feetClippedOut;
+    _bathed = session?.bathed;
+    _blowDried = session?.blowDried;
+    _usualGroom = session?.usualGroomDone;
     _fleas = session?.fleasTreated ?? false;
     _ticks = session?.ticksRemoved ?? false;
     _temperament = session?.temperamentObserved ?? '';
@@ -139,18 +166,11 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
   }
 
   Future<void> _loadReferenceData() async {
-    // Both cards ask how the dog was, so the grades are fetched whichever one
-    // this is. Equipment is on the groom card only.
     try {
       final grades = await _data.getTemperamentGrades();
       if (mounted && grades.isNotEmpty) setState(() => _grades = grades);
     } catch (_) {
       // Left on the seed wording.
-    }
-
-    if (!_isGroom) {
-      if (mounted) setState(() => _loading = false);
-      return;
     }
     try {
       final equipment = await _data.getEquipment();
@@ -167,51 +187,50 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
   }
 
   Map<String, dynamic> get _record => {
-        'visit_type': widget.visitType,
+        'visit_type': _visitType,
         'recorded_minutes': _recordedMinutes.text.trim().isEmpty
             ? null
             : int.tryParse(_recordedMinutes.text.trim()),
         'notes': _notes.text.trim(),
         'sensitive_notes': _sensitive.text.trim(),
         'temperament_observed': _temperament,
-        if (_isGroom) ...{
-          // The checklist. Sent even when null — the server stores the third
-          // state, and dropping the key would leave a box Jess deliberately
-          // un-answered looking the same as one she ticked last time.
-          'nails_done': _nails,
-          'hygiene_area_done': _hygiene,
-          'health_check_done': _healthCheckDone,
-          'ears_cleaned': _earsCleaned,
-          'checklist_notes': _checklistNotes.text.trim(),
-          'health_check_notes': _healthCheck.text.trim(),
-          'matting_paws': _mattingPaws,
-          'matting_armpits': _mattingArmpits,
-          'matting_ears': _mattingEars,
-          'matting_elsewhere': _mattingElsewhere,
-          'matting_notes': _mattingNotes.text.trim(),
-          'bathed_well_behaved': _bathedWellBehaved,
-          'high_velocity_dryer': _hvDryer,
-          'shampoo_used': _shampoo.text.trim(),
-          'equipment_used': _equipmentIds.toList(),
-          'final_body': _finalBody.text.trim(),
-          'final_feet': _finalFeet.text.trim(),
-          'final_tail': _finalTail.text.trim(),
-          'final_face': _finalFace.text.trim(),
-        },
-        if (!_isGroom) ...{
-          // Coerced here and nowhere else. This card asks which of the three
-          // the visit was *for* and refuses to save unless one is ticked, so
-          // an untouched box is a deliberate "no" rather than a silence —
-          // which is exactly the distinction the groom card's checklist keeps
-          // as null.
-          'nails_done': _nails ?? false,
-          'fleas_treated': _fleas,
-          'ticks_removed': _ticks,
-        },
+        // The checklist. Sent even when null — the server stores the third
+        // state, and dropping the key would leave a box Jess deliberately
+        // un-answered looking the same as one she ticked last time.
+        'health_check_done': _healthCheckDone,
+        'nails_done': _nails,
+        'ears_cleaned': _earsCleaned,
+        'hygiene_area_done': _hygiene,
+        'feet_clipped_out': _feetClippedOut,
+        'bathed': _bathed,
+        'blow_dried': _blowDried,
+        'usual_groom_done': _usualGroom,
+        'checklist_notes': _checklistNotes.text.trim(),
+        'fleas_treated': _fleas,
+        'ticks_removed': _ticks,
+        'health_check_notes': _healthCheck.text.trim(),
+        'matting_paws': _mattingPaws,
+        'matting_armpits': _mattingArmpits,
+        'matting_ears': _mattingEars,
+        'matting_elsewhere': _mattingElsewhere,
+        'matting_notes': _mattingNotes.text.trim(),
+        'bathed_well_behaved': _bathedWellBehaved,
+        'high_velocity_dryer': _hvDryer,
+        'shampoo_used': _shampoo.text.trim(),
+        'equipment_used': _equipmentIds.toList(),
+        'final_body': _finalBody.text.trim(),
+        'final_feet': _finalFeet.text.trim(),
+        'final_tail': _finalTail.text.trim(),
+        'final_face': _finalFace.text.trim(),
       };
 
   Future<void> _save() async {
-    if (!_isGroom && _nails != true && !_fleas && !_ticks) {
+    if (_visitType == null) {
+      showSnack(context, 'Say what kind of visit this was.', isError: true);
+      return;
+    }
+    if (_visitType == VisitType.nailsFleasTicks &&
+        _nails != true && !_fleas && !_ticks) {
       showSnack(context, 'Say whether this was nails, fleas or ticks.', isError: true);
       return;
     }
@@ -243,7 +262,7 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
   /// One line of Jess's finishing checklist.
   ///
   /// Three states, not two, and the same rule as the bathing and dryer
-  /// questions above it: a box that starts unticked cannot tell "I left the
+  /// questions below it: a box that starts unticked cannot tell "I left the
   /// hygiene area" from "I have not been down this list yet", and on this
   /// list the first one is the fact worth having — it is what the reason box
   /// underneath exists to explain.
@@ -352,12 +371,99 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
     );
   }
 
+  /// Jess: *"Can the equipment selection be a drop down menu? Just takes up a
+  /// bit of space when filling out the groom card."* One compact field showing
+  /// what's ticked, opening into the list — instead of a wall of chips.
+  Widget _equipmentField() {
+    final selected = [
+      for (final item in _equipment)
+        if (_equipmentIds.contains(item.id)) item.name,
+    ];
+    return InkWell(
+      onTap: _equipment.isEmpty ? null : _pickEquipment,
+      child: InputDecorator(
+        decoration: InputDecoration(
+          labelText: 'Equipment used',
+          helperText: _equipment.isEmpty ? 'No equipment on file yet.' : null,
+          suffixIcon: const Icon(Icons.arrow_drop_down),
+        ),
+        isEmpty: selected.isEmpty,
+        child: selected.isEmpty
+            ? null
+            : Text(selected.join(', '), style: const TextStyle(fontSize: 14)),
+      ),
+    );
+  }
+
+  Future<void> _pickEquipment() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      // The sheet mutates the screen's selection as boxes are ticked, so
+      // backing out by any route keeps what was picked — there is no separate
+      // confirm step to lose work behind.
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (sheetContext, setSheetState) => SafeArea(
+          child: ListView(
+            shrinkWrap: true,
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+            children: [
+              Text('Equipment used', style: AppColors.display(18)),
+              const SizedBox(height: 4),
+              for (final item in _equipment)
+                CheckboxListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  controlAffinity: ListTileControlAffinity.leading,
+                  value: _equipmentIds.contains(item.id),
+                  onChanged: (ticked) {
+                    setSheetState(() {});
+                    setState(() {
+                      if (ticked == true) {
+                        _equipmentIds.add(item.id);
+                      } else {
+                        _equipmentIds.remove(item.id);
+                      }
+                    });
+                  },
+                  title: Text(item.name),
+                ),
+              const SizedBox(height: 8),
+              ElevatedButton(
+                onPressed: () => Navigator.of(sheetContext).pop(),
+                child: const Text('DONE'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (mounted) setState(() {});
+  }
+
+  /// A quiet marker on the fields the owner can read through the groom
+  /// report. Jess writes the whole card; only some of it has a reader now,
+  /// and the boundary should be on the card rather than in her memory.
+  Widget _ownerCanSee(String what) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 2, bottom: 6),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.visibility_outlined, size: 13, color: context.mojo.muted),
+          const SizedBox(width: 5),
+          Text(
+            what,
+            style: TextStyle(fontSize: 11.5, color: context.mojo.muted),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: Text(_isGroom ? 'Groom record' : 'Nails, fleas or ticks'),
-      ),
+      appBar: AppBar(title: const Text('Visit record')),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : ListView(
@@ -365,6 +471,31 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
               children: [
                 Text(widget.dogName, style: AppColors.display(22)),
                 const SizedBox(height: 16),
+
+                // Asked only when nothing has answered it: a timed visit is a
+                // groom by construction, so a card opened off the timer never
+                // shows this. It matters because the server keeps nails visits
+                // out of the groom-time average — a nail trim filed as a groom
+                // would quietly shrink the dog's booking length.
+                if (_timings.isEmpty) ...[
+                  DropdownButtonFormField<String>(
+                    initialValue: _visitType,
+                    decoration: const InputDecoration(labelText: 'What kind of visit'),
+                    hint: const Text('Choose one'),
+                    items: const [
+                      DropdownMenuItem(
+                        value: VisitType.groom,
+                        child: Text('Full groom'),
+                      ),
+                      DropdownMenuItem(
+                        value: VisitType.nailsFleasTicks,
+                        child: Text('Nails, fleas or ticks'),
+                      ),
+                    ],
+                    onChanged: (value) => setState(() => _visitType = value),
+                  ),
+                  const SizedBox(height: 14),
+                ],
 
                 // Two figures, and they are not the same number.
                 //
@@ -376,209 +507,215 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
                 MojoTextField(
                   controller: _recordedMinutes,
                   decoration: InputDecoration(
-                    labelText: _isGroom
-                        ? 'How long the groom took (minutes)'
-                        : 'How long the visit took (minutes)',
-                    helperText: _isGroom
-                        ? 'What to book next time. Blank uses the timer.'
-                        : null,
+                    labelText: _visitType == VisitType.nailsFleasTicks
+                        ? 'How long the visit took (minutes)'
+                        : 'How long the groom took (minutes)',
+                    helperText: _visitType == VisitType.nailsFleasTicks
+                        ? null
+                        : 'What to book next time. Blank uses the timer.',
                   ),
                   keyboardType: TextInputType.number,
                 ),
                 if (_timings.isNotEmpty) _timedSection(),
 
-                if (!_isGroom) ...[
-                  const SectionHeader(title: 'What was done'),
-                  // Two-state here on purpose, unlike the groom card's
-                  // checklist: this card asks which of the three the visit was
-                  // *for*, and saving is refused unless one is ticked — so an
-                  // empty box is an answer rather than a silence.
-                  CheckboxListTile(
-                    contentPadding: EdgeInsets.zero,
-                    value: _nails ?? false,
-                    onChanged: (value) => setState(() => _nails = value ?? false),
-                    title: const Text('Nails'),
+                // Jess's eight: "Health Checked, Nails Clipped, Ears Cleaned,
+                // Hygiene Area, Feet Clipped Out, Bathed, Blow Dried, Usual
+                // Groom Carried Out ... with a text box below saying - notes
+                // from any of the above, why it was not carried out". First on
+                // the card because it is the list she works down, and last
+                // thing before she puts the dog back is the wrong time to go
+                // looking for it.
+                const SectionHeader(title: 'Checklist'),
+                _ownerCanSee('The owner sees this list and the reason box.'),
+                _checklistTile(
+                  'Health check',
+                  _healthCheckDone,
+                  (value) => setState(() => _healthCheckDone = value),
+                ),
+                _checklistTile(
+                  'Nails clipped',
+                  _nails,
+                  (value) => setState(() => _nails = value),
+                ),
+                _checklistTile(
+                  'Ears cleaned',
+                  _earsCleaned,
+                  (value) => setState(() => _earsCleaned = value),
+                ),
+                _checklistTile(
+                  'Hygiene area',
+                  _hygiene,
+                  (value) => setState(() => _hygiene = value),
+                ),
+                _checklistTile(
+                  'Feet clipped out',
+                  _feetClippedOut,
+                  (value) => setState(() => _feetClippedOut = value),
+                ),
+                // Bathed and blow dried are tied to the two behaviour
+                // questions further down: an answer about how the bath went
+                // means a bath went, so the pairs move together here exactly
+                // as the server would fill them in anyway.
+                _checklistTile(
+                  'Bathed',
+                  _bathed,
+                  (value) => setState(() {
+                    _bathed = value;
+                    if (value == false) _bathedWellBehaved = null;
+                  }),
+                ),
+                _checklistTile(
+                  'Blow dried',
+                  _blowDried,
+                  (value) => setState(() {
+                    _blowDried = value;
+                    if (value == false && _hvDryer == true) _hvDryer = false;
+                  }),
+                ),
+                _checklistTile(
+                  'Usual groom carried out',
+                  _usualGroom,
+                  (value) => setState(() => _usualGroom = value),
+                ),
+                const SizedBox(height: 8),
+                MojoTextField(
+                  controller: _checklistNotes,
+                  decoration: const InputDecoration(
+                    labelText: 'Why anything was not done',
                   ),
-                  CheckboxListTile(
-                    contentPadding: EdgeInsets.zero,
-                    value: _fleas,
-                    onChanged: (value) => setState(() => _fleas = value ?? false),
-                    title: const Text('Fleas'),
-                  ),
-                  CheckboxListTile(
-                    contentPadding: EdgeInsets.zero,
-                    value: _ticks,
-                    onChanged: (value) => setState(() => _ticks = value ?? false),
-                    title: const Text('Ticks'),
-                  ),
-                ],
+                  maxLines: 2,
+                  textCapitalization: TextCapitalization.sentences,
+                ),
 
-                if (_isGroom) ...[
-                  // Jess's four: "Nails Clipped, Hygiene Area, Health Check,
-                  // Ears Cleaned ... with a little box under to fill in why
-                  // something not done". First on the card because it is the
-                  // list she works down, and last thing before she puts the
-                  // dog back is the wrong time to go looking for it.
-                  const SectionHeader(title: 'Checklist'),
-                  _checklistTile(
-                    'Nails clipped',
-                    _nails,
-                    (value) => setState(() => _nails = value),
-                  ),
-                  _checklistTile(
-                    'Hygiene area',
-                    _hygiene,
-                    (value) => setState(() => _hygiene = value),
-                  ),
-                  _checklistTile(
-                    'Health check',
-                    _healthCheckDone,
-                    (value) => setState(() => _healthCheckDone = value),
-                  ),
-                  _checklistTile(
-                    'Ears cleaned',
-                    _earsCleaned,
-                    (value) => setState(() => _earsCleaned = value),
-                  ),
-                  const SizedBox(height: 8),
-                  MojoTextField(
-                    controller: _checklistNotes,
-                    decoration: const InputDecoration(
-                      labelText: 'Why anything was not done',
+                // Two-state on purpose, unlike the checklist above: these ask
+                // whether it happened at this visit, so an unticked box is an
+                // answer rather than a silence — same as the matting flags.
+                const SectionHeader(title: 'Fleas and ticks'),
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: _fleas,
+                  onChanged: (value) => setState(() => _fleas = value ?? false),
+                  title: const Text('Fleas treated'),
+                ),
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: _ticks,
+                  onChanged: (value) => setState(() => _ticks = value ?? false),
+                  title: const Text('Ticks removed'),
+                ),
+
+                const SectionHeader(title: 'Health check'),
+                MojoTextField(
+                  controller: _healthCheck,
+                  decoration: const InputDecoration(labelText: 'Anything found'),
+                  maxLines: 3,
+                  textCapitalization: TextCapitalization.sentences,
+                ),
+
+                const SectionHeader(title: 'Matting found'),
+                Wrap(
+                  spacing: 8,
+                  children: [
+                    FilterChip(
+                      label: const Text('In paws'),
+                      selected: _mattingPaws,
+                      onSelected: (value) => setState(() => _mattingPaws = value),
                     ),
-                    maxLines: 2,
-                    textCapitalization: TextCapitalization.sentences,
-                  ),
-
-                  const SectionHeader(title: 'Health check'),
-                  MojoTextField(
-                    controller: _healthCheck,
-                    decoration: const InputDecoration(labelText: 'Anything found'),
-                    maxLines: 3,
-                    textCapitalization: TextCapitalization.sentences,
-                  ),
-
-                  const SectionHeader(title: 'Matting found'),
-                  Wrap(
-                    spacing: 8,
-                    children: [
-                      FilterChip(
-                        label: const Text('In paws'),
-                        selected: _mattingPaws,
-                        onSelected: (value) => setState(() => _mattingPaws = value),
-                      ),
-                      FilterChip(
-                        label: const Text('Under armpits'),
-                        selected: _mattingArmpits,
-                        onSelected: (value) => setState(() => _mattingArmpits = value),
-                      ),
-                      FilterChip(
-                        label: const Text('Under ears'),
-                        selected: _mattingEars,
-                        onSelected: (value) => setState(() => _mattingEars = value),
-                      ),
-                      FilterChip(
-                        label: const Text('Anywhere else'),
-                        selected: _mattingElsewhere,
-                        onSelected: (value) => setState(() => _mattingElsewhere = value),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  MojoTextField(
-                    controller: _mattingNotes,
-                    decoration: const InputDecoration(labelText: 'Where, and how bad'),
-                    maxLines: 2,
-                    textCapitalization: TextCapitalization.sentences,
-                  ),
-
-                  const SectionHeader(title: 'Bathing and drying'),
-                  // Three states on purpose: "not bathed" is not the same as
-                  // "bathed and hated it", and the card leaves it blank when
-                  // there was no bath.
-                  DropdownButtonFormField<bool?>(
-                    initialValue: _bathedWellBehaved,
-                    decoration: const InputDecoration(labelText: 'Bathing, well behaved'),
-                    items: const [
-                      DropdownMenuItem(value: null, child: Text('Not recorded')),
-                      DropdownMenuItem(value: true, child: Text('Yes')),
-                      DropdownMenuItem(value: false, child: Text('No')),
-                    ],
-                    onChanged: (value) => setState(() => _bathedWellBehaved = value),
-                  ),
-                  const SizedBox(height: 12),
-                  // Jess asked for this "like the bathed", and for the same
-                  // reason: a switch that starts off cannot tell "we didn't
-                  // use one" from "nobody wrote it down".
-                  DropdownButtonFormField<bool?>(
-                    initialValue: _hvDryer,
-                    decoration: const InputDecoration(labelText: 'High velocity dryer'),
-                    items: const [
-                      DropdownMenuItem(value: null, child: Text('Not recorded')),
-                      DropdownMenuItem(value: true, child: Text('Used')),
-                      DropdownMenuItem(value: false, child: Text('Not used')),
-                    ],
-                    onChanged: (value) => setState(() => _hvDryer = value),
-                  ),
-                  const SizedBox(height: 12),
-                  MojoTextField(
-                    controller: _shampoo,
-                    decoration: const InputDecoration(labelText: 'Shampoo used'),
-                  ),
-
-                  const SectionHeader(title: 'Equipment used'),
-                  if (_equipment.isEmpty)
-                    Text(
-                      'No equipment on file yet.',
-                      style: TextStyle(fontSize: 12.5, color: context.mojo.muted),
-                    )
-                  else
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 4,
-                      children: [
-                        for (final item in _equipment)
-                          FilterChip(
-                            label: Text(item.name),
-                            selected: _equipmentIds.contains(item.id),
-                            onSelected: (value) => setState(() {
-                              if (value) {
-                                _equipmentIds.add(item.id);
-                              } else {
-                                _equipmentIds.remove(item.id);
-                              }
-                            }),
-                          ),
-                      ],
+                    FilterChip(
+                      label: const Text('Under armpits'),
+                      selected: _mattingArmpits,
+                      onSelected: (value) => setState(() => _mattingArmpits = value),
                     ),
+                    FilterChip(
+                      label: const Text('Under ears'),
+                      selected: _mattingEars,
+                      onSelected: (value) => setState(() => _mattingEars = value),
+                    ),
+                    FilterChip(
+                      label: const Text('Anywhere else'),
+                      selected: _mattingElsewhere,
+                      onSelected: (value) => setState(() => _mattingElsewhere = value),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                MojoTextField(
+                  controller: _mattingNotes,
+                  decoration: const InputDecoration(labelText: 'Where, and how bad'),
+                  maxLines: 2,
+                  textCapitalization: TextCapitalization.sentences,
+                ),
 
-                  const SectionHeader(title: 'How it was left'),
-                  MojoTextField(
-                    controller: _finalBody,
-                    decoration: const InputDecoration(labelText: 'Final body trim'),
-                    textCapitalization: TextCapitalization.sentences,
-                  ),
-                  const SizedBox(height: 14),
-                  MojoTextField(
-                    controller: _finalFeet,
-                    decoration: const InputDecoration(labelText: 'Final feet shape'),
-                    textCapitalization: TextCapitalization.sentences,
-                  ),
-                  const SizedBox(height: 14),
-                  MojoTextField(
-                    controller: _finalTail,
-                    decoration: const InputDecoration(labelText: 'Final tail'),
-                    textCapitalization: TextCapitalization.sentences,
-                  ),
-                  const SizedBox(height: 14),
-                  // Jess's request. Goes beyond the paper card, which records
-                  // body, feet and tail only — see docs/paper-cards.md.
-                  MojoTextField(
-                    controller: _finalFace,
-                    decoration: const InputDecoration(labelText: 'Final face shape'),
-                    textCapitalization: TextCapitalization.sentences,
-                  ),
-                ],
+                const SectionHeader(title: 'Bathing and drying'),
+                // Three states on purpose: "not bathed" is not the same as
+                // "bathed and hated it", and the card leaves it blank when
+                // there was no bath. Answering either of these ticks the
+                // matching checklist box above — an answer about how it went
+                // means it happened.
+                DropdownButtonFormField<bool?>(
+                  initialValue: _bathedWellBehaved,
+                  decoration: const InputDecoration(labelText: 'Bathing, well behaved'),
+                  items: const [
+                    DropdownMenuItem(value: null, child: Text('Not recorded')),
+                    DropdownMenuItem(value: true, child: Text('Yes')),
+                    DropdownMenuItem(value: false, child: Text('No')),
+                  ],
+                  onChanged: (value) => setState(() {
+                    _bathedWellBehaved = value;
+                    if (value != null && _bathed != true) _bathed = true;
+                  }),
+                ),
+                const SizedBox(height: 12),
+                // Jess asked for this "like the bathed", and for the same
+                // reason: a switch that starts off cannot tell "we didn't
+                // use one" from "nobody wrote it down".
+                DropdownButtonFormField<bool?>(
+                  initialValue: _hvDryer,
+                  decoration: const InputDecoration(labelText: 'High velocity dryer'),
+                  items: const [
+                    DropdownMenuItem(value: null, child: Text('Not recorded')),
+                    DropdownMenuItem(value: true, child: Text('Used')),
+                    DropdownMenuItem(value: false, child: Text('Not used')),
+                  ],
+                  onChanged: (value) => setState(() {
+                    _hvDryer = value;
+                    if (value == true && _blowDried != true) _blowDried = true;
+                  }),
+                ),
+                const SizedBox(height: 12),
+                MojoTextField(
+                  controller: _shampoo,
+                  decoration: const InputDecoration(labelText: 'Shampoo used'),
+                ),
+                const SizedBox(height: 14),
+                _equipmentField(),
+
+                const SectionHeader(title: 'How it was left'),
+                MojoTextField(
+                  controller: _finalBody,
+                  decoration: const InputDecoration(labelText: 'Final body trim'),
+                  textCapitalization: TextCapitalization.sentences,
+                ),
+                const SizedBox(height: 14),
+                MojoTextField(
+                  controller: _finalFeet,
+                  decoration: const InputDecoration(labelText: 'Final feet shape'),
+                  textCapitalization: TextCapitalization.sentences,
+                ),
+                const SizedBox(height: 14),
+                MojoTextField(
+                  controller: _finalTail,
+                  decoration: const InputDecoration(labelText: 'Final tail'),
+                  textCapitalization: TextCapitalization.sentences,
+                ),
+                const SizedBox(height: 14),
+                // Jess's request. Goes beyond the paper card, which records
+                // body, feet and tail only — see docs/paper-cards.md.
+                MojoTextField(
+                  controller: _finalFace,
+                  decoration: const InputDecoration(labelText: 'Final face shape'),
+                  textCapitalization: TextCapitalization.sentences,
+                ),
 
                 const SectionHeader(title: 'How the dog was'),
                 Padding(
@@ -597,7 +734,8 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
                 const SizedBox(height: 6),
                 Text(
                   "Recorded against this visit only — it doesn't change the dog's "
-                  'temperament or the daily booking limit.',
+                  'temperament or the daily booking limit. The owner sees it on '
+                  'their groom report, in the wording from Settings.',
                   style: TextStyle(fontSize: 11.5, color: context.mojo.muted),
                 ),
                 const SizedBox(height: 14),
@@ -605,6 +743,9 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
                   controller: _sensitive,
                   decoration: const InputDecoration(
                     labelText: "Anywhere they didn't want to be touched",
+                    // Sitting between two owner-visible fields, so it says so
+                    // — this one is Jess's working note and stays hers.
+                    helperText: 'Staff only — never shown to the owner.',
                   ),
                   maxLines: 2,
                   textCapitalization: TextCapitalization.sentences,
@@ -612,7 +753,10 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
                 const SizedBox(height: 14),
                 MojoTextField(
                   controller: _notes,
-                  decoration: const InputDecoration(labelText: 'Anything to note'),
+                  decoration: const InputDecoration(
+                    labelText: 'Anything to note',
+                    helperText: 'The owner can read this on their groom report.',
+                  ),
                   maxLines: 3,
                   textCapitalization: TextCapitalization.sentences,
                 ),

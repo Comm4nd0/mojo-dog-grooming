@@ -10,6 +10,7 @@ import '../../services/service_locator.dart';
 import '../../widgets/common.dart';
 import '../../widgets/contact_actions.dart';
 import '../../widgets/dog_silhouette.dart';
+import '../client/groom_report_screen.dart';
 import 'booking_form_screen.dart';
 import 'client_profile_screen.dart';
 import 'dog_form_screen.dart';
@@ -37,6 +38,10 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
   List<DogPhoto> _photos = const [];
   List<DogDocument> _documents = const [];
   List<GroomSession> _visits = const [];
+
+  /// The owner-visible slice of the visit records, for a client login only —
+  /// staff read the full cards through [_visits] instead.
+  List<GroomReport> _reports = const [];
   String? _nextGroomDue;
 
   /// The server's wording for how [_nextGroomDue] was arrived at — "8 weeks
@@ -86,6 +91,15 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
       Appointment? nextBooking;
       var nextBookingChecked = false;
       var visits = const <GroomSession>[];
+      var reports = const <GroomReport>[];
+      if (!_isStaff) {
+        try {
+          reports = await _data.getGroomReports(widget.dogId);
+        } catch (_) {
+          // The reports are history, not the profile — same as the visit
+          // cards on the staff side.
+        }
+      }
       if (_isStaff) {
         try {
           final suggestion = await _data.getSuggestedNextGroom(widget.dogId);
@@ -113,6 +127,7 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
         _photos = photos;
         _documents = documents;
         _visits = visits;
+        _reports = reports;
         _nextGroomDue = due;
         _nextGroomDueBasis = dueBasis;
         _nextBooking = nextBooking;
@@ -221,6 +236,7 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
           _photosSection(dog),
           _documentsSection(dog),
           if (_isStaff) _visitsSection(dog),
+          if (!_isStaff) _reportsSection(),
           if (dog.client != null) _ownerSection(dog.client!),
           _notesSection(dog),
         ],
@@ -881,14 +897,19 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
 
   /// Jess's ongoing record cards for this dog, newest first.
   ///
-  /// Staff-only — the whole endpoint is, and a client has no business reading
-  /// the handling notes on it.
+  /// Staff-only — the whole endpoint is, and a client reads the report slice
+  /// through [_reportsSection] instead.
   Widget _visitsSection(Dog dog) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         SectionHeader(
           title: 'Visit records',
+          // One button and one card for every visit — Jess: "I don't think it
+          // needs to be a separate thing for nails/fleas/ticks really". The
+          // null visitType is the card's cue to ask what kind this was, which
+          // it still must: a nail trim filed as a groom would feed twenty
+          // minutes into the dog's groom-time average.
           action: TextButton(
             onPressed: () async {
               final saved = await Navigator.of(context).push<bool>(
@@ -896,13 +917,13 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
                   builder: (_) => VisitRecordScreen(
                     dogId: dog.id,
                     dogName: dog.name,
-                    visitType: VisitType.nailsFleasTicks,
+                    visitType: null,
                   ),
                 ),
               );
               if (saved == true) _load();
             },
-            child: const Text('+ NAILS/FLEAS/TICKS'),
+            child: const Text('+ ADD VISIT'),
           ),
         ),
         if (_visits.isEmpty)
@@ -966,6 +987,60 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
         );
         if (saved == true) _load();
       },
+    );
+  }
+
+  /// The groom reports, for the owner — Jess: *"The owner should be able to
+  /// see this"*.
+  ///
+  /// The report endpoint serves the checklist, the reason box, how the dog
+  /// was and the visit note, and nothing else; everything else on the record
+  /// card stays on the staff side. Shown only when there is something to
+  /// show — an owner whose dog has no written-up visits doesn't need an
+  /// empty section explaining itself.
+  Widget _reportsSection() {
+    if (_reports.isEmpty) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SectionHeader(title: 'Groom reports'),
+        for (final report in _reports) _reportTile(report),
+      ],
+    );
+  }
+
+  Widget _reportTile(GroomReport report) {
+    final parts = <String>[
+      // Only what was marked not done — a null is "not recorded", and
+      // telling an owner the health check was skipped when nobody said so
+      // is exactly the coercion the tristate exists to prevent.
+      if (report.checklistSkipped.isNotEmpty)
+        'not done: ${report.checklistSkipped.join(', ')}',
+      if (!report.isGroom && report.treatmentsSummary.isNotEmpty)
+        report.treatmentsSummary,
+      if (report.temperamentDisplay.isNotEmpty) report.temperamentDisplay,
+    ];
+    return ListTile(
+      dense: true,
+      leading: Icon(
+        report.isGroom ? Icons.content_cut : Icons.pets_outlined,
+        size: 20,
+        color: context.mojo.accent,
+      ),
+      title: Text(
+        '${report.isGroom ? 'Groom' : 'Nails, fleas or ticks'} · ${formatDate(report.startedAt)}',
+        style: const TextStyle(fontSize: 13.5),
+      ),
+      subtitle: parts.isEmpty
+          ? null
+          : Text(
+              parts.join(' · '),
+              style: TextStyle(fontSize: 11.5, color: context.mojo.muted),
+            ),
+      trailing: const Icon(Icons.chevron_right, size: 18),
+      onTap: () => Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => GroomReportScreen(report: report)),
+      ),
     );
   }
 

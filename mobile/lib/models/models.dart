@@ -1350,8 +1350,10 @@ typedef VisitType = ServiceType;
 
 /// One worked visit — Jess's "Ongoing Record" card.
 ///
-/// Covers both of her cards: a full groom carries the lot, a nails/fleas/ticks
-/// visit fills in far less. [visitType] says which.
+/// One card for every visit, at her request — *"I don't think it needs to be
+/// a separate thing for nails/fleas/ticks really"*. [visitType] still says
+/// what the visit was for, because the server keeps nails visits out of the
+/// groom-time average and refuses to write their minutes to the dog.
 class GroomSession {
   final int id;
   final int dogId;
@@ -1443,18 +1445,26 @@ class GroomSession {
 
   /// The finishing checklist, and why anything on it was skipped.
   ///
-  /// All four are **nullable and null means the list was never worked down** —
-  /// not that the job was skipped. Same rule as [bathedWellBehaved] and
+  /// All eight are **nullable and null means the list was never worked down**
+  /// — not that the job was skipped. Same rule as [bathedWellBehaved] and
   /// [highVelocityDryer]: every groom card written up before this list existed
   /// reads null, and rendering that as "not done" would put words in Jess's
   /// mouth about grooms she finished months ago.
   ///
-  /// [nailsDone] is shared with the nails/fleas/ticks card below — whether the
-  /// nails were clipped at this visit is one fact, not two.
+  /// [nailsDone] is shared with the nails/fleas/ticks questions below —
+  /// whether the nails were clipped at this visit is one fact, not two.
+  /// [bathed] and [blowDried] record whether it happened; [bathedWellBehaved]
+  /// and [highVelocityDryer] record how the dog took it. The server fills the
+  /// first pair in from the second where that follows, and refuses the
+  /// contradiction.
   final bool? nailsDone;
   final bool? hygieneAreaDone;
   final bool? healthCheckDone;
   final bool? earsCleaned;
+  final bool? feetClippedOut;
+  final bool? bathed;
+  final bool? blowDried;
+  final bool? usualGroomDone;
   final String checklistNotes;
 
   final bool fleasTreated;
@@ -1500,6 +1510,10 @@ class GroomSession {
     this.hygieneAreaDone,
     this.healthCheckDone,
     this.earsCleaned,
+    this.feetClippedOut,
+    this.bathed,
+    this.blowDried,
+    this.usualGroomDone,
     this.checklistNotes = '',
     this.fleasTreated = false,
     this.ticksRemoved = false,
@@ -1553,6 +1567,10 @@ class GroomSession {
         hygieneAreaDone: _tristate(json['hygiene_area_done']),
         healthCheckDone: _tristate(json['health_check_done']),
         earsCleaned: _tristate(json['ears_cleaned']),
+        feetClippedOut: _tristate(json['feet_clipped_out']),
+        bathed: _tristate(json['bathed']),
+        blowDried: _tristate(json['blow_dried']),
+        usualGroomDone: _tristate(json['usual_groom_done']),
         checklistNotes: json['checklist_notes']?.toString() ?? '',
         fleasTreated: json['fleas_treated'] == true,
         ticksRemoved: json['ticks_removed'] == true,
@@ -1602,17 +1620,23 @@ class GroomSession {
         if (ticksRemoved) 'Ticks',
       ].join(' · ');
 
-  /// The finishing checklist as label/state pairs, in the order Jess wrote it.
+  /// The finishing checklist as label/state pairs, in the order Jess wrote it
+  /// — *"Health Checked, Nails Clipped, Ears Cleaned, Hygiene Area, Feet
+  /// Clipped Out, Bathed, Blow Dried, Usual Groom Carried Out"*.
   ///
   /// Entries whose state is null are still included: "not recorded" is an
   /// answer worth showing, and dropping them would make a half-filled list
   /// look complete.
-  List<({String label, bool? done})> get checklist => [
-        (label: 'Nails clipped', done: nailsDone),
-        (label: 'Hygiene area', done: hygieneAreaDone),
-        (label: 'Health check', done: healthCheckDone),
-        (label: 'Ears cleaned', done: earsCleaned),
-      ];
+  List<({String label, bool? done})> get checklist => buildChecklist(
+        healthCheckDone: healthCheckDone,
+        nailsDone: nailsDone,
+        earsCleaned: earsCleaned,
+        hygieneAreaDone: hygieneAreaDone,
+        feetClippedOut: feetClippedOut,
+        bathed: bathed,
+        blowDried: blowDried,
+        usualGroomDone: usualGroomDone,
+      );
 
   /// Whether anything on the checklist was answered at all.
   bool get hasChecklist => checklist.any((item) => item.done != null);
@@ -1634,6 +1658,138 @@ class GroomSession {
         if (mattingEars) 'ears',
         if (mattingElsewhere) 'elsewhere',
       ];
+}
+
+/// The eight checklist items in Jess's order, shared by [GroomSession] and
+/// [GroomReport] so the staff card and the owner's report can never disagree
+/// about what the list says or what it is called.
+List<({String label, bool? done})> buildChecklist({
+  required bool? healthCheckDone,
+  required bool? nailsDone,
+  required bool? earsCleaned,
+  required bool? hygieneAreaDone,
+  required bool? feetClippedOut,
+  required bool? bathed,
+  required bool? blowDried,
+  required bool? usualGroomDone,
+}) =>
+    [
+      (label: 'Health check', done: healthCheckDone),
+      (label: 'Nails clipped', done: nailsDone),
+      (label: 'Ears cleaned', done: earsCleaned),
+      (label: 'Hygiene area', done: hygieneAreaDone),
+      (label: 'Feet clipped out', done: feetClippedOut),
+      (label: 'Bathed', done: bathed),
+      (label: 'Blow dried', done: blowDried),
+      (label: 'Usual groom carried out', done: usualGroomDone),
+    ];
+
+/// What the owner sees of a visit — the groom report card.
+///
+/// Jess: *"The owner should be able to see this"* — the checklist, why
+/// anything on it was skipped, how the dog was, and the visit note. Served by
+/// `/groom-reports/`, which whitelists exactly these fields; everything else
+/// on the record card is her working notes and never reaches this model.
+class GroomReport {
+  final int id;
+  final int dogId;
+  final String dogName;
+  final String visitType;
+  final String visitTypeDisplay;
+  final DateTime startedAt;
+
+  /// The checklist, tristate on both sides of the wire: null means the list
+  /// was never worked down, and rendering that as "not done" would tell an
+  /// owner their dog's nails were skipped when nobody said any such thing.
+  final bool? healthCheckDone;
+  final bool? nailsDone;
+  final bool? earsCleaned;
+  final bool? hygieneAreaDone;
+  final bool? feetClippedOut;
+  final bool? bathed;
+  final bool? blowDried;
+  final bool? usualGroomDone;
+  final String checklistNotes;
+
+  final bool fleasTreated;
+  final bool ticksRemoved;
+
+  /// Jess's wording for how the dog was on the day, or '' when unrecorded.
+  final String temperamentDisplay;
+  final String notes;
+
+  GroomReport({
+    required this.id,
+    required this.dogId,
+    required this.dogName,
+    required this.startedAt,
+    this.visitType = VisitType.groom,
+    this.visitTypeDisplay = '',
+    this.healthCheckDone,
+    this.nailsDone,
+    this.earsCleaned,
+    this.hygieneAreaDone,
+    this.feetClippedOut,
+    this.bathed,
+    this.blowDried,
+    this.usualGroomDone,
+    this.checklistNotes = '',
+    this.fleasTreated = false,
+    this.ticksRemoved = false,
+    this.temperamentDisplay = '',
+    this.notes = '',
+  });
+
+  factory GroomReport.fromJson(Map<String, dynamic> json) => GroomReport(
+        id: json['id'] as int,
+        dogId: (json['dog'] as num?)?.toInt() ?? 0,
+        dogName: json['dog_name']?.toString() ?? '',
+        visitType: json['visit_type']?.toString() ?? VisitType.groom,
+        visitTypeDisplay: json['visit_type_display']?.toString() ?? '',
+        startedAt: _dateTime(json['started_at']) ?? DateTime.now(),
+        healthCheckDone: _tristate(json['health_check_done']),
+        nailsDone: _tristate(json['nails_done']),
+        earsCleaned: _tristate(json['ears_cleaned']),
+        hygieneAreaDone: _tristate(json['hygiene_area_done']),
+        feetClippedOut: _tristate(json['feet_clipped_out']),
+        bathed: _tristate(json['bathed']),
+        blowDried: _tristate(json['blow_dried']),
+        usualGroomDone: _tristate(json['usual_groom_done']),
+        checklistNotes: json['checklist_notes']?.toString() ?? '',
+        fleasTreated: json['fleas_treated'] == true,
+        ticksRemoved: json['ticks_removed'] == true,
+        temperamentDisplay: json['temperament_display']?.toString() ?? '',
+        notes: json['notes']?.toString() ?? '',
+      );
+
+  bool get isGroom => visitType == VisitType.groom;
+
+  List<({String label, bool? done})> get checklist => buildChecklist(
+        healthCheckDone: healthCheckDone,
+        nailsDone: nailsDone,
+        earsCleaned: earsCleaned,
+        hygieneAreaDone: hygieneAreaDone,
+        feetClippedOut: feetClippedOut,
+        bathed: bathed,
+        blowDried: blowDried,
+        usualGroomDone: usualGroomDone,
+      );
+
+  bool get hasChecklist => checklist.any((item) => item.done != null);
+
+  /// What was explicitly marked not done — `false` only, same rule as the
+  /// staff card's summary.
+  List<String> get checklistSkipped => [
+        for (final item in checklist)
+          if (item.done == false) item.label.toLowerCase(),
+      ];
+
+  /// Which of nails, fleas or ticks the visit covered, for the tile line.
+  String get treatmentsSummary => [
+        if (nailsDone == true) 'Nails',
+        if (fleasTreated) 'Fleas',
+        if (ticksRemoved) 'Ticks',
+      ].join(' · ');
 }
 
 class TodoItem {

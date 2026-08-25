@@ -26,3 +26,5 @@ Getting back into your account no longer means starting again.
   lock one and not another.
 - Creating an account now asks for your password twice, so a typo can't leave
   you locked out of an account you just made.
+- Your dog's profile now shows a groom report for every visit: what was done,
+  anything that had to wait and why, and how they were on the day.

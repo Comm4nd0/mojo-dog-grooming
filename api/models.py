@@ -1664,18 +1664,23 @@ class AppointmentChangeRequest(models.Model):
 class GroomSession(models.Model):
     """One worked visit — Jess's "Ongoing Record", filled in as it happens.
 
-    Covers both of her record cards. A ``GROOM`` carries the whole thing:
-    phases timed, matting found, what was used, how the dog was. A
-    ``NAILS_FLEAS_TICKS`` visit is minutes rather than hours and fills in far
-    less — which of the three was done, how long, how the dog took it.
-
-    One model rather than two because the cards are the same shape and Jess's
-    are filed per dog: splitting them would split a dog's history in half.
+    One model, and since her *"I don't think it needs to be a separate thing
+    for nails/fleas/ticks really"*, one card in the app too — the record began
+    as her two paper cards, and they were always the same shape, filed per
+    dog. ``visit_type`` outlives the split on purpose: it is not presentation,
+    it is what keeps a twenty-minute nail trim out of the groom-time average
+    and out of :meth:`apply_to_dog`, so it still has to be true even though
+    the app no longer shows a different card for it.
 
     Phases are optional — a wash-and-blow-dry records no clip or strip, and a
     nails visit records none at all, which is what ``recorded_minutes`` is for.
     The total can be written back to the dog so future bookings block out the
     right amount of diary time.
+
+    Most of the card is Jess's working record and stays staff-only. The
+    finishing checklist, its reason box, the observed temperament and the
+    visit note are the exception — the **groom report**, the owner-visible
+    slice served read-only through ``GroomReportViewSet``.
     """
 
     dog = models.ForeignKey(Dog, on_delete=models.CASCADE, related_name='groom_sessions')
@@ -1726,10 +1731,12 @@ class GroomSession(models.Model):
     # ── The finishing checklist ────────────────────────────────────────
     # Jess: *"can we add a little 'check list' “Nails Clipped, Hygiene Area,
     # Health Check, Ears Cleaned” with a little box under to fill in why
-    # something not done"*. The four jobs that get forgotten, and one box for
-    # the reason when one of them didn't happen.
+    # something not done"* — and then, once she had used it: *"Can it just
+    # have tick boxes. 'Health Checked, Nails Clipped, Ears Cleaned, Hygiene
+    # Area, Feet Clipped Out, Bathed, Blow Dried, Usual Groom Carried Out'"*.
+    # Eight jobs, and one box for the reason when one of them didn't happen.
     #
-    # All four are **nullable, and null means nobody worked down the list** —
+    # All eight are **nullable, and null means nobody worked down the list** —
     # the same rule as ``bathed_well_behaved`` and ``high_velocity_dryer``,
     # arrived at the same way. A checkbox that starts unticked cannot tell "the
     # hygiene area was deliberately left" from "this card was written up before
@@ -1737,12 +1744,21 @@ class GroomSession(models.Model):
     # having: it is what ``checklist_notes`` is there to explain.
     #
     # ``nails_done`` is deliberately the *same column* the nails/fleas/ticks
-    # card uses rather than a second one meaning the same thing. Whether this
-    # dog's nails were clipped at this visit is one fact, and two columns for
-    # it would disagree the first time Jess clipped nails during a groom —
+    # questions use rather than a second one meaning the same thing. Whether
+    # this dog's nails were clipped at this visit is one fact, and two columns
+    # for it would disagree the first time Jess clipped nails during a groom —
     # "when were Bunny's nails last done" would miss every groom-card answer.
-    # The two cards ask it differently, so they draw it differently; the
-    # column is shared.
+    #
+    # ``bathed`` and ``blow_dried`` sit beside ``bathed_well_behaved`` and
+    # ``high_velocity_dryer`` without repeating them: those two record how the
+    # dog *took* it, these two record whether it *happened*. They are tied
+    # together by entailment in :meth:`save` — an answer about how the bath
+    # went means a bath went — and the serializer refuses the contradiction,
+    # so the pairs cannot quietly disagree.
+    #
+    # This checklist and ``checklist_notes`` are **owner-visible**, through
+    # ``GroomReportSerializer`` — Jess: *"The owner should be able to see
+    # this"*. Everything else on the card stays staff-only.
     nails_done = models.BooleanField(
         null=True, blank=True, verbose_name='Nails clipped',
     )
@@ -1754,14 +1770,24 @@ class GroomSession(models.Model):
         help_text='Whether the check was carried out. What it found goes in health_check_notes.',
     )
     ears_cleaned = models.BooleanField(null=True, blank=True)
+    feet_clipped_out = models.BooleanField(
+        null=True, blank=True, verbose_name='Feet clipped out',
+    )
+    bathed = models.BooleanField(null=True, blank=True)
+    blow_dried = models.BooleanField(null=True, blank=True)
+    usual_groom_done = models.BooleanField(
+        null=True, blank=True, verbose_name='Usual groom carried out',
+    )
     checklist_notes = models.TextField(
         blank=True, help_text='Why anything on the checklist was not done.',
     )
 
-    # ── The nails / fleas / ticks card ─────────────────────────────────
-    # Two-state on this card on purpose: it asks which of the three the visit
-    # was *for*, and the serializer refuses a nails visit that names none of
-    # them, so an unticked box there is an answer rather than a silence.
+    # ── Fleas and ticks ────────────────────────────────────────────────
+    # Two-state on purpose, like the matting flags: the card asks whether it
+    # happened at this visit, so an unticked box is an answer rather than a
+    # silence. On a NAILS visit the serializer still refuses a record that
+    # names none of nails, fleas or ticks — a visit that was *for* one of the
+    # three has to say which.
     fleas_treated = models.BooleanField(default=False)
     ticks_removed = models.BooleanField(default=False)
 
@@ -1949,7 +1975,20 @@ class GroomSession(models.Model):
 
         Here rather than in a nightly job because the figure has to be right
         the moment Jess finishes writing a visit up and books the next one.
+
+        Two checklist boxes are filled in by entailment first, never guessed:
+        an answer to "bathed, well behaved" means a bath happened, and a dryer
+        recorded as *used* means the dog was blow dried. Only a null is filled
+        — an explicit answer of hers is never overwritten — and the serializer
+        refuses the outright contradictions, so the pairs cannot disagree.
+        Skipped when the caller named ``update_fields``: that is a targeted
+        write, and mutating columns it didn't name would not persist anyway.
         """
+        if kwargs.get('update_fields') is None:
+            if self.bathed is None and self.bathed_well_behaved is not None:
+                self.bathed = True
+            if self.blow_dried is None and self.high_velocity_dryer:
+                self.blow_dried = True
         super().save(*args, **kwargs)
         self._refresh_dog_average()
 

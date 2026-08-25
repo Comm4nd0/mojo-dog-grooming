@@ -118,6 +118,7 @@ from .serializers import (
     DogPhotoSerializer,
     DogSerializer,
     EquipmentSerializer,
+    GroomReportSerializer,
     GroomSessionSerializer,
     IntakeInviteSerializer,
     IntakeSubmissionSerializer,
@@ -1383,6 +1384,36 @@ class GroomSessionViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return Response(self.get_serializer(session).data)
+
+
+class GroomReportViewSet(ClientScopedMixin, viewsets.ReadOnlyModelViewSet):
+    """The owner-visible slice of the visit records — Jess's groom report.
+
+    Jess: *"The owner should be able to see this"* — the finishing checklist,
+    why anything on it was skipped, how the dog was, and the visit note.
+
+    A second route over :class:`~api.models.GroomSession` rather than a loosened
+    ``/groom-sessions/``, because the two audiences share almost nothing:
+    that endpoint is Jess's whole working card and stays ``IsAdminUser``; this
+    one serves the whitelist in :class:`~api.serializers.GroomReportSerializer`
+    and nothing else. ``ReadOnlyModelViewSet`` makes the write surface the HTTP
+    method list, the same shape as ``ConsentViewSet`` — there is no
+    ``perform_update`` to forget to guard.
+
+    Scoped through the dog's owner, so a client sees their own dogs' visits
+    only; staff pass straight through, which costs nothing and keeps the row
+    ids interchangeable with ``/groom-sessions/`` when the app has both.
+    """
+
+    queryset = GroomSession.objects.select_related('dog')
+    serializer_class = GroomReportSerializer
+    permission_classes = [IsAuthenticated]
+    client_lookup = 'dog__client'
+
+    def get_queryset(self):
+        queryset = self.scope_to_client(super().get_queryset())
+        dog_id = self.request.query_params.get('dog')
+        return queryset.filter(dog_id=dog_id) if dog_id else queryset
 
 
 # ── Money ──────────────────────────────────────────────────────────────
