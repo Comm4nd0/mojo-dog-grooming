@@ -126,6 +126,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       onTap: _editBuffer,
                     ),
 
+                    const SectionHeader(title: 'Groom times'),
+                    ListTile(
+                      dense: true,
+                      title: const Text('Add to a timed groom'),
+                      subtitle: const Text(
+                        "What the timer never sees — nails, ears, the health "
+                        'check, drop-off and collection',
+                      ),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            // "Not set" rather than "None": nothing has been
+                            // guessed, and the two are different statements.
+                            _settings!.groomTimeBufferMinutes == null
+                                ? 'Not set'
+                                : formatDuration(_settings!.groomTimeBufferMinutes!),
+                            style: TextStyle(color: context.mojo.muted),
+                          ),
+                          const SizedBox(width: 10),
+                          const Icon(Icons.edit_outlined, size: 18),
+                        ],
+                      ),
+                      onTap: _editGroomTimeBuffer,
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                      child: Text(
+                        'A groom timed at 55 minutes is not a 55-minute slot. This is '
+                        'the difference, and it is added whenever a timed groom sets a '
+                        "dog's booking length. Blank adds nothing.",
+                        style: TextStyle(fontSize: 11.5, color: context.mojo.muted),
+                      ),
+                    ),
+
                     // "Nails, fleas and ticks" used to sit here as well, asking
                     // how long to block out and what it costs. It is the same
                     // question the Services screen asks per service, so having
@@ -357,6 +392,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (result == null) return;
     await _data.updateSettings({
       'booking_slot_buffer_minutes': result.isEmpty ? 0 : int.tryParse(result) ?? 0,
+    });
+    _load();
+  }
+
+  /// What to add to a timed groom to get how long to book.
+  ///
+  /// Jess: the groom time is *"nowhere near the appointment time (which would
+  /// be how long to book them in for)"*. It never could be — the timer counts
+  /// five phases and a visit is more than five phases. This is the distance,
+  /// and it is hers to measure: blank stays blank, and nothing is guessed.
+  ///
+  /// Changing it re-derives every dog's average groom time on the server,
+  /// because those are stored with the buffer already in them.
+  Future<void> _editGroomTimeBuffer() async {
+    final result = await promptForText(
+      context,
+      title: 'Add to a timed groom',
+      initialValue: _settings!.groomTimeBufferMinutes?.toString() ?? '',
+      labelText: 'Minutes',
+      helperText: 'Leave blank to book exactly what the timer measured',
+      keyboardType: TextInputType.number,
+    );
+    if (result == null) return;
+    await _data.updateSettings({
+      'groom_time_buffer_minutes': result.trim().isEmpty ? null : int.tryParse(result.trim()),
     });
     _load();
   }

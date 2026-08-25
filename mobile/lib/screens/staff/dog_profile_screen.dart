@@ -38,6 +38,24 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
   List<DogDocument> _documents = const [];
   List<GroomSession> _visits = const [];
   String? _nextGroomDue;
+
+  /// The server's wording for how [_nextGroomDue] was arrived at — "8 weeks
+  /// after 12 Jun 2026". Shown beside the date so the figure is never a
+  /// mystery, the same reasoning as `_groomTimeBasis` below.
+  String _nextGroomDueBasis = '';
+
+  /// The dog's next booking in the diary, or null when nothing is booked.
+  ///
+  /// Kept apart from [_nextGroomDue] rather than folded into it: one is a
+  /// slot Jess has actually put in the diary and the other is arithmetic on
+  /// the grooming interval. They answer different questions and are wrong to
+  /// show under one heading — see the Groom section for why.
+  Appointment? _nextBooking;
+
+  /// Whether the diary was actually read. A failed fetch must not render as
+  /// "nothing booked" — that is the one wrong answer on this row, because it
+  /// is the answer Jess would act on by booking the dog in twice.
+  bool _nextBookingChecked = false;
   bool _loading = true;
   Object? _error;
 
@@ -64,12 +82,24 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
         // Paperwork is a nice-to-have on this screen, not the point of it.
       }
       String? due;
+      var dueBasis = '';
+      Appointment? nextBooking;
+      var nextBookingChecked = false;
       var visits = const <GroomSession>[];
       if (_isStaff) {
         try {
-          due = await _data.getSuggestedNextGroom(widget.dogId);
+          final suggestion = await _data.getSuggestedNextGroom(widget.dogId);
+          due = suggestion.dueDate;
+          dueBasis = suggestion.basis;
         } catch (_) {
           // A missing suggestion is not worth failing the whole screen for.
+        }
+        try {
+          nextBooking = await _loadNextBooking();
+          nextBookingChecked = true;
+        } catch (_) {
+          // Same again. The row says "not checked" rather than "nothing
+          // booked" when this fails — see `_groomingSection`.
         }
         try {
           visits = await _data.getGroomSessions(widget.dogId);
@@ -84,6 +114,9 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
         _documents = documents;
         _visits = visits;
         _nextGroomDue = due;
+        _nextGroomDueBasis = dueBasis;
+        _nextBooking = nextBooking;
+        _nextBookingChecked = nextBookingChecked;
         _loading = false;
       });
     } catch (error) {
@@ -93,6 +126,25 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
         _loading = false;
       });
     }
+  }
+
+  /// The soonest booking this dog still has ahead of it.
+  ///
+  /// From midnight this morning rather than from now, matching `dogs_due` on
+  /// the server: a groom is not written up until it is written up, so a
+  /// booking that has already started this morning is still this dog's next
+  /// one as far as anybody standing in the salon is concerned.
+  ///
+  /// Cancellations and no-shows are skipped. A cancelled slot is precisely
+  /// when a dog needs booking again, so reporting it as "next booking" would
+  /// be the app arguing that the work is in hand.
+  Future<Appointment?> _loadNextBooking() async {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final bookings = await _data.getAppointments(dogId: widget.dogId, from: today);
+    final upcoming = bookings.where((b) => !b.isCancelled).toList()
+      ..sort((a, b) => a.startAt.compareTo(b.startAt));
+    return upcoming.isEmpty ? null : upcoming.first;
   }
 
   @override
@@ -376,11 +428,42 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
           value: 'Every ${dog.scheduleWeeks} weeks'
               '${dog.scheduleWeeksOverride == null ? ' (breed default)' : ''}',
         ),
+        // Jess asked for "Next due" to read **Next booking**, and the honest
+        // way to give her that is for the row to answer the question the words
+        // ask. It used to show `suggested_next_groom` — last groom plus the
+        // interval — which is a due *date*, not a booking, and calling
+        // arithmetic a booking is how somebody stops chasing a dog that has
+        // nothing in the diary at all.
+        //
+        // So the diary answers this row, and the sum keeps its own beneath it.
+        if (_nextBookingChecked || _nextBooking != null)
+          DetailRow(label: 'Next booking', value: _nextBookingValue),
         if (_nextGroomDue != null)
-          DetailRow(label: 'Next due', value: formatDate(DateTime.parse(_nextGroomDue!))),
+          DetailRow(
+            label: 'Due',
+            value: [
+              formatDate(DateTime.parse(_nextGroomDue!)),
+              if (_nextGroomDueBasis.isNotEmpty) '($_nextGroomDueBasis)',
+            ].join(' '),
+          ),
         DetailRow(label: 'Microchip', value: dog.microchipNumber),
       ],
     );
+  }
+
+  /// What the "Next booking" row says.
+  ///
+  /// "Nothing booked" is a real answer and worth stating plainly — it is the
+  /// prompt to ring the owner. It is only ever said when the diary was
+  /// actually read; see [_nextBookingChecked].
+  String get _nextBookingValue {
+    final booking = _nextBooking;
+    if (booking == null) return 'Nothing booked';
+    final when = '${formatDate(booking.startAt)}, ${booking.timeRange}';
+    // The status only when it is not the ordinary one — a booking that is
+    // merely booked needs no adjective, but a request Jess has not confirmed
+    // is not the same as a slot she has kept.
+    return booking.status == 'BOOKED' ? when : '$when · ${booking.statusLabel}';
   }
 
   Widget _preferencesSection(Dog dog) {
@@ -838,8 +921,18 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
 
   Widget _visitTile(Dog dog, GroomSession visit) {
     final parts = <String>[
-      formatDuration(visit.totalMinutes),
+      // How long the groom took, which is the figure that sizes the next
+      // booking — and beside it what the stopwatch actually measured, when
+      // they differ. Jess: "it doesn't come up with the individual times for
+      // the groom". Tapping through opens the phase breakdown.
+      formatDuration(visit.bookableMinutes),
+      if (visit.wasTimed && visit.timedMinutes != visit.bookableMinutes)
+        '${formatDuration(visit.timedMinutes)} timed',
       if (!visit.isGroom && visit.nailsSummary.isNotEmpty) visit.nailsSummary,
+      // Only what she marked *not* done. A checklist she worked straight down
+      // says nothing worth a summary line; the one job she had to leave does.
+      if (visit.checklistSkipped.isNotEmpty)
+        'not done: ${visit.checklistSkipped.join(', ')}',
       if (visit.mattingPlaces.isNotEmpty) 'matting: ${visit.mattingPlaces.join(', ')}',
       if (visit.shampooUsed.isNotEmpty) visit.shampooUsed,
       if (visit.temperamentObservedDisplay.isNotEmpty) visit.temperamentObservedDisplay,

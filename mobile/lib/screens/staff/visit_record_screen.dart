@@ -53,6 +53,7 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
   late final TextEditingController _finalFace;
   late final TextEditingController _notes;
   late final TextEditingController _sensitive;
+  late final TextEditingController _checklistNotes;
 
   bool _mattingPaws = false;
   bool _mattingArmpits = false;
@@ -60,7 +61,10 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
   bool _mattingElsewhere = false;
   bool? _bathedWellBehaved;
   bool? _hvDryer;
-  bool _nails = false;
+  bool? _nails;
+  bool? _hygiene;
+  bool? _healthCheckDone;
+  bool? _earsCleaned;
   bool _fleas = false;
   bool _ticks = false;
   String _temperament = '';
@@ -73,6 +77,16 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
 
   bool get _isGroom => widget.visitType == VisitType.groom;
   bool get _isEditing => widget.session != null;
+
+  /// The phases behind this record — handed over by the timer when the card is
+  /// being written up, read off the saved session when it is being looked at
+  /// again. Either way they were saved and never shown, which is the whole of
+  /// Jess's *"it doesn't come up with the individual times for the groom"*.
+  List<PhaseTiming> get _timings =>
+      _isEditing ? widget.session!.timingsInOrder : widget.timings;
+
+  int get _timedSeconds =>
+      _timings.fold(0, (sum, timing) => sum + timing.durationSeconds);
 
   @override
   void initState() {
@@ -89,6 +103,7 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
     _finalFace = TextEditingController(text: session?.finalFace ?? '');
     _notes = TextEditingController(text: session?.notes ?? '');
     _sensitive = TextEditingController(text: session?.sensitiveNotes ?? '');
+    _checklistNotes = TextEditingController(text: session?.checklistNotes ?? '');
 
     _mattingPaws = session?.mattingPaws ?? false;
     _mattingArmpits = session?.mattingArmpits ?? false;
@@ -96,7 +111,13 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
     _mattingElsewhere = session?.mattingElsewhere ?? false;
     _bathedWellBehaved = session?.bathedWellBehaved;
     _hvDryer = session?.highVelocityDryer;
-    _nails = session?.nailsDone ?? false;
+    // No `?? false` on the checklist four: a card written up before this
+    // list existed answered none of them, and starting them at "not done"
+    // would put an answer in Jess's mouth she never gave.
+    _nails = session?.nailsDone;
+    _hygiene = session?.hygieneAreaDone;
+    _healthCheckDone = session?.healthCheckDone;
+    _earsCleaned = session?.earsCleaned;
     _fleas = session?.fleasTreated ?? false;
     _ticks = session?.ticksRemoved ?? false;
     _temperament = session?.temperamentObserved ?? '';
@@ -110,6 +131,7 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
     for (final controller in [
       _recordedMinutes, _healthCheck, _mattingNotes, _shampoo,
       _finalBody, _finalFeet, _finalTail, _finalFace, _notes, _sensitive,
+      _checklistNotes,
     ]) {
       controller.dispose();
     }
@@ -153,6 +175,14 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
         'sensitive_notes': _sensitive.text.trim(),
         'temperament_observed': _temperament,
         if (_isGroom) ...{
+          // The checklist. Sent even when null — the server stores the third
+          // state, and dropping the key would leave a box Jess deliberately
+          // un-answered looking the same as one she ticked last time.
+          'nails_done': _nails,
+          'hygiene_area_done': _hygiene,
+          'health_check_done': _healthCheckDone,
+          'ears_cleaned': _earsCleaned,
+          'checklist_notes': _checklistNotes.text.trim(),
           'health_check_notes': _healthCheck.text.trim(),
           'matting_paws': _mattingPaws,
           'matting_armpits': _mattingArmpits,
@@ -169,14 +199,19 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
           'final_face': _finalFace.text.trim(),
         },
         if (!_isGroom) ...{
-          'nails_done': _nails,
+          // Coerced here and nowhere else. This card asks which of the three
+          // the visit was *for* and refuses to save unless one is ticked, so
+          // an untouched box is a deliberate "no" rather than a silence —
+          // which is exactly the distinction the groom card's checklist keeps
+          // as null.
+          'nails_done': _nails ?? false,
           'fleas_treated': _fleas,
           'ticks_removed': _ticks,
         },
       };
 
   Future<void> _save() async {
-    if (!_isGroom && !_nails && !_fleas && !_ticks) {
+    if (!_isGroom && _nails != true && !_fleas && !_ticks) {
       showSnack(context, 'Say whether this was nails, fleas or ticks.', isError: true);
       return;
     }
@@ -205,6 +240,118 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
     }
   }
 
+  /// One line of Jess's finishing checklist.
+  ///
+  /// Three states, not two, and the same rule as the bathing and dryer
+  /// questions above it: a box that starts unticked cannot tell "I left the
+  /// hygiene area" from "I have not been down this list yet", and on this
+  /// list the first one is the fact worth having — it is what the reason box
+  /// underneath exists to explain.
+  ///
+  /// A tristate [Checkbox] cycles `false → true → null` on its own, which puts
+  /// **Not done** under the first tap. The common case is the opposite, so the
+  /// value handed back is ignored and the order is set here: not recorded →
+  /// done → not done → back to not recorded. The subtitle says which state it
+  /// is in outright, because a dash is only obvious once somebody has told you
+  /// what it means.
+  Widget _checklistTile(String label, bool? value, ValueChanged<bool?> onChanged) {
+    final (String state, Color colour) = switch (value) {
+      true => ('Done', context.mojo.accent),
+      false => ('Not done — say why below', AppColors.warning),
+      null => ('Not recorded', context.mojo.muted),
+    };
+    return CheckboxListTile(
+      contentPadding: EdgeInsets.zero,
+      tristate: true,
+      value: value,
+      onChanged: (_) => onChanged(switch (value) {
+        null => true,
+        true => false,
+        false => null,
+      }),
+      title: Text(label),
+      subtitle: Text(state, style: TextStyle(fontSize: 11.5, color: colour)),
+    );
+  }
+
+  /// Actual grooming time, and the phases underneath it.
+  ///
+  /// Every groom Jess has timed stored its phases and showed her none of them
+  /// — the card kept one total and the timer screen was gone by the time she
+  /// looked. This is that breakdown, folded away because the total is the
+  /// answer most of the time and the phases are what she opens it for.
+  ///
+  /// Deliberately read-only. The phases are a measurement; the figure she can
+  /// change is the one above, which is the one that does anything.
+  Widget _timedSection() {
+    return Theme(
+      // The default expansion tile draws a divider top and bottom, which reads
+      // as a section break in the middle of one.
+      data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+      child: ExpansionTile(
+        tilePadding: EdgeInsets.zero,
+        childrenPadding: const EdgeInsets.only(left: 12, bottom: 8),
+        title: const Text('Actual grooming time', style: TextStyle(fontSize: 14)),
+        subtitle: Text(
+          '${_timings.length} phase${_timings.length == 1 ? '' : 's'} timed',
+          style: TextStyle(fontSize: 11.5, color: context.mojo.muted),
+        ),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              formatClock(_timedSeconds),
+              style: const TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
+                fontFeatures: [FontFeature.tabularFigures()],
+              ),
+            ),
+            const SizedBox(width: 4),
+            const Icon(Icons.expand_more, size: 20),
+          ],
+        ),
+        children: [
+          for (final timing in _timings)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 3),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      PhaseTiming.labelFor(timing.phase),
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                  ),
+                  if (timing.enteredManually)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: Text(
+                        'by hand',
+                        style: TextStyle(fontSize: 11, color: context.mojo.muted),
+                      ),
+                    ),
+                  Text(
+                    formatClock(timing.durationSeconds),
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontFeatures: [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          const SizedBox(height: 4),
+          Text(
+            'What the stopwatch measured. The figure above is the whole groom '
+            "— drop-off, nails, ears and collection are in it and aren't timed.",
+            style: TextStyle(fontSize: 11.5, color: context.mojo.muted),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -219,20 +366,36 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
                 Text(widget.dogName, style: AppColors.display(22)),
                 const SizedBox(height: 16),
 
+                // Two figures, and they are not the same number.
+                //
+                // Jess: *"can the 'appointment time' be the 'how long the
+                // groom took' but the timer is 'actual grooming time' so I can
+                // click on it and see the timer?"*. The one above is what
+                // sizes the next booking; the one below is what the stopwatch
+                // measured, and it opens.
                 MojoTextField(
                   controller: _recordedMinutes,
-                  decoration: const InputDecoration(
-                    labelText: 'How long the visit took (minutes)',
-                    helperText: 'Leave blank to use the timer total',
+                  decoration: InputDecoration(
+                    labelText: _isGroom
+                        ? 'How long the groom took (minutes)'
+                        : 'How long the visit took (minutes)',
+                    helperText: _isGroom
+                        ? 'What to book next time. Blank uses the timer.'
+                        : null,
                   ),
                   keyboardType: TextInputType.number,
                 ),
+                if (_timings.isNotEmpty) _timedSection(),
 
                 if (!_isGroom) ...[
                   const SectionHeader(title: 'What was done'),
+                  // Two-state here on purpose, unlike the groom card's
+                  // checklist: this card asks which of the three the visit was
+                  // *for*, and saving is refused unless one is ticked — so an
+                  // empty box is an answer rather than a silence.
                   CheckboxListTile(
                     contentPadding: EdgeInsets.zero,
-                    value: _nails,
+                    value: _nails ?? false,
                     onChanged: (value) => setState(() => _nails = value ?? false),
                     title: const Text('Nails'),
                   ),
@@ -251,6 +414,42 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
                 ],
 
                 if (_isGroom) ...[
+                  // Jess's four: "Nails Clipped, Hygiene Area, Health Check,
+                  // Ears Cleaned ... with a little box under to fill in why
+                  // something not done". First on the card because it is the
+                  // list she works down, and last thing before she puts the
+                  // dog back is the wrong time to go looking for it.
+                  const SectionHeader(title: 'Checklist'),
+                  _checklistTile(
+                    'Nails clipped',
+                    _nails,
+                    (value) => setState(() => _nails = value),
+                  ),
+                  _checklistTile(
+                    'Hygiene area',
+                    _hygiene,
+                    (value) => setState(() => _hygiene = value),
+                  ),
+                  _checklistTile(
+                    'Health check',
+                    _healthCheckDone,
+                    (value) => setState(() => _healthCheckDone = value),
+                  ),
+                  _checklistTile(
+                    'Ears cleaned',
+                    _earsCleaned,
+                    (value) => setState(() => _earsCleaned = value),
+                  ),
+                  const SizedBox(height: 8),
+                  MojoTextField(
+                    controller: _checklistNotes,
+                    decoration: const InputDecoration(
+                      labelText: 'Why anything was not done',
+                    ),
+                    maxLines: 2,
+                    textCapitalization: TextCapitalization.sentences,
+                  ),
+
                   const SectionHeader(title: 'Health check'),
                   MojoTextField(
                     controller: _healthCheck,

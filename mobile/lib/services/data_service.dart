@@ -48,9 +48,20 @@ class DataService {
 
   Future<void> deleteDog(int id) => _api.delete('/dogs/$id/');
 
-  Future<String?> getSuggestedNextGroom(int dogId) async {
-    final payload = await _api.get('/dogs/$dogId/suggested_next_groom/');
-    return (payload as Map<String, dynamic>)['due_date']?.toString();
+  /// When a dog is next due, and the sum behind it.
+  ///
+  /// [basis] is the server's own wording — "8 weeks after 12 Jun 2026" — and
+  /// is worth carrying rather than re-deriving: it names the groom the figure
+  /// was counted from, which the app does not otherwise know. [dueDate] is
+  /// null for a dog with no completed groom behind it, and that is a real
+  /// answer rather than a missing one.
+  Future<({String? dueDate, String basis})> getSuggestedNextGroom(int dogId) async {
+    final payload =
+        await _api.get('/dogs/$dogId/suggested_next_groom/') as Map<String, dynamic>;
+    return (
+      dueDate: payload['due_date']?.toString(),
+      basis: payload['basis']?.toString() ?? '',
+    );
   }
 
   /// Who needs booking in. Staff only — it is a worklist over the whole book.

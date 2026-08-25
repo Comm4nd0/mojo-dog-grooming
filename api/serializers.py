@@ -474,7 +474,8 @@ class AppSettingsSerializer(serializers.ModelSerializer):
         fields = [
             'business_name', 'contact_phone', 'contact_email',
             'invoicing_visible_to_clients', 'booking_slot_buffer_minutes',
-            'nail_visit_minutes', 'nail_visit_price', 'updated_at',
+            'nail_visit_minutes', 'nail_visit_price', 'groom_time_buffer_minutes',
+            'updated_at',
         ]
         read_only_fields = ['updated_at']
 
@@ -1080,6 +1081,10 @@ class GroomSessionSerializer(serializers.ModelSerializer):
     dog_name = serializers.CharField(source='dog.name', read_only=True)
     total_seconds = serializers.IntegerField(read_only=True)
     total_minutes = serializers.IntegerField(read_only=True)
+    # What this visit says to book next time, which is not what it timed — see
+    # GroomSession.bookable_minutes. Sent so the app can say which figure it
+    # wrote to the dog rather than quoting the stopwatch back at Jess.
+    bookable_minutes = serializers.IntegerField(read_only=True)
 
     visit_type_display = serializers.CharField(source='get_visit_type_display', read_only=True)
     temperament_observed_display = serializers.CharField(
@@ -1117,10 +1122,13 @@ class GroomSessionSerializer(serializers.ModelSerializer):
             'bathed_well_behaved', 'high_velocity_dryer', 'shampoo_used',
             'equipment_used', 'equipment_used_detail',
             'final_body', 'final_feet', 'final_tail', 'final_face',
-            'nails_done', 'fleas_treated', 'ticks_removed',
+            'nails_done', 'hygiene_area_done', 'health_check_done', 'ears_cleaned',
+            'checklist_notes',
+            'fleas_treated', 'ticks_removed',
             'notes', 'sensitive_notes',
             'temperament_observed', 'temperament_observed_display',
-            'timings', 'total_seconds', 'total_minutes', 'applied_to_dog_at', 'created_at',
+            'timings', 'total_seconds', 'total_minutes', 'bookable_minutes',
+            'applied_to_dog_at', 'created_at',
         ]
         read_only_fields = ['id', 'applied_to_dog_at', 'created_at']
 

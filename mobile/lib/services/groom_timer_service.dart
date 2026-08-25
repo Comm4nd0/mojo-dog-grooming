@@ -31,9 +31,10 @@ import '../models/models.dart' as models;
 class GroomTimerService extends ChangeNotifier {
   GroomTimerService({FlutterSecureStorage? storage})
       : _storage = storage ?? const FlutterSecureStorage() {
-    // Fire and forget: listeners are notified if anything was found, and the
-    // app is usable in the meantime either way.
-    unawaited(restore());
+    // Started here rather than awaited: listeners are notified if anything was
+    // found, and the app is usable in the meantime either way. The future is
+    // kept so a caller that *does* care can wait — see [ready].
+    _restoring = restore();
   }
 
   static const _storageKey = 'mojo_groom_timer';
@@ -45,6 +46,17 @@ class GroomTimerService extends ChangeNotifier {
   static const implausibleRun = Duration(hours: 4);
 
   final FlutterSecureStorage _storage;
+
+  Future<void>? _restoring;
+
+  /// Completes once the session on disk has been read back, if there was one.
+  ///
+  /// Anything that decides *which dog* the timer is on has to wait for this.
+  /// The read is a keystore round trip and the constructor does not block on
+  /// it, so without this a screen could open the timer for the dog in front of
+  /// Jess and have the restore land a moment later and put the previous dog
+  /// back — the timer showing Teddy on Bunny's groom.
+  Future<void> get ready => _restoring ?? Future<void>.value();
 
   int? _dogId;
   String _dogName = '';
@@ -269,6 +281,12 @@ class GroomTimerService extends ChangeNotifier {
       final data = jsonDecode(raw) as Map<String, dynamic>;
       final dogId = (data['dogId'] as num?)?.toInt();
       if (dogId == null) return;
+
+      // Something opened the timer while this read was in flight. Memory is
+      // the live session and disk is a snapshot of an older one, so disk
+      // loses — restoring over the top is how the previous dog's name and
+      // clock end up on the groom Jess is standing over.
+      if (_dogId != null) return;
 
       _dogId = dogId;
       _dogName = data['dogName']?.toString() ?? '';

@@ -217,6 +217,31 @@ void main() {
       expect(timer.secondsFor('WASH'), 120);
     });
 
+    test('a restore landing late never puts the previous dog back', () async {
+      // Jess: the timer was "stuck on teddy instead of the actual dog it's
+      // meant for". Reading the session back off the keystore is a round trip
+      // the constructor does not block on, so a screen could open the timer
+      // for the dog in front of her and have the restore land a moment later
+      // and overwrite it — name, clock and all. Memory is the live session;
+      // disk is a snapshot of an older one, so disk loses.
+      storeSession(dogId: 7, dogName: 'Teddy', elapsed: {'CLIP': 600});
+
+      final timer = GroomTimerService(); // restore in flight, deliberately
+      timer.openFor(dogId: 9, dogName: 'Bunny', usualMinutes: 60);
+      await timer.ready;
+
+      expect(timer.dogId, 9);
+      expect(timer.dogName, 'Bunny');
+      expect(timer.usualMinutes, 60);
+      expect(timer.totalSeconds, 0, reason: "Teddy's clip time must not land here");
+    });
+
+    test('ready still completes when there was nothing stored', () async {
+      final timer = GroomTimerService();
+      await timer.ready;
+      expect(timer.dogId, isNull);
+    });
+
     test('an unreadable blob is cleared rather than wedging the timer', () async {
       stored['mojo_groom_timer'] = 'not json';
       final timer = await service();

@@ -205,8 +205,6 @@ class _ClientProfileScreenState extends State<ClientProfileScreen> {
               ),
             ),
 
-          _consentsSection(client),
-
           const SectionHeader(title: 'Staff flags'),
           Padding(
             padding: EdgeInsets.symmetric(horizontal: 16),
@@ -282,13 +280,19 @@ class _ClientProfileScreenState extends State<ClientProfileScreen> {
 
           const SectionHeader(title: 'Intake'),
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
             child: OutlinedButton.icon(
               onPressed: _sendIntakeForm,
               icon: const Icon(Icons.mail_outline, size: 18),
               label: const Text('CREATE INTAKE FORM LINK'),
             ),
           ),
+
+          // Last on the page at Jess's request. It is a signed record rather
+          // than something she works from, so it was pushing the dogs — the
+          // reason she opens a client at all — below the fold.
+          _consentsSection(client),
+          const SizedBox(height: 32),
         ],
       ),
     );

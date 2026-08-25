@@ -598,6 +598,50 @@ void main() {
       expect(visit.recordedMinutes, 15);
     });
 
+    test('an unanswered checklist is not a groom where nothing was done', () {
+      // Every card written up before the checklist existed answers none of
+      // the four. Coercing those to false would report months of finished
+      // grooms as ones where the nails, ears and hygiene area were all
+      // skipped — the same bug `is_neutered` and the dryer both had.
+      final old = GroomSession.fromJson(visitJson({'visit_type': 'GROOM'}));
+      expect(old.nailsDone, isNull);
+      expect(old.hygieneAreaDone, isNull);
+      expect(old.healthCheckDone, isNull);
+      expect(old.earsCleaned, isNull);
+      expect(old.hasChecklist, isFalse);
+      expect(old.checklistSkipped, isEmpty);
+      expect(old.checklistNotes, '');
+    });
+
+    test('only what was marked not done counts as skipped', () {
+      final visit = GroomSession.fromJson(visitJson({
+        'visit_type': 'GROOM',
+        'nails_done': true,
+        'hygiene_area_done': true,
+        'health_check_done': true,
+        'ears_cleaned': false,
+        'checklist_notes': 'Ears too sore, owner ringing the vet.',
+      }));
+      expect(visit.hasChecklist, isTrue);
+      expect(visit.checklistSkipped, ['ears cleaned']);
+      expect(visit.checklistNotes, 'Ears too sore, owner ringing the vet.');
+      // The list keeps Jess's order and every row, answered or not.
+      expect(
+        visit.checklist.map((item) => item.label),
+        ['Nails clipped', 'Hygiene area', 'Health check', 'Ears cleaned'],
+      );
+    });
+
+    test('a groom that clipped nails still summarises them on the nails card', () {
+      // One column across both cards, so this reads the same either side.
+      final groom = GroomSession.fromJson(visitJson({
+        'visit_type': 'GROOM',
+        'nails_done': true,
+      }));
+      expect(groom.nailsDone, isTrue);
+      expect(groom.checklistSkipped, isEmpty);
+    });
+
     test('a nails booking is not priced off the breed grid', () {
       final settings = AppSettings.fromJson({
         'business_name': 'Mojo and Co',
@@ -606,6 +650,93 @@ void main() {
       });
       expect(settings.nailVisitMinutes, 20);
       expect(settings.nailVisitPrice, 12.0);
+    });
+
+    test('a timed groom books longer than it timed once a buffer is set', () {
+      // Jess: the groom time was "nowhere near the appointment time (which
+      // would be how long to book them in for)". The server sends both
+      // figures; the app must quote the bookable one when it says what it
+      // wrote to the dog.
+      final visit = GroomSession.fromJson(visitJson({
+        'visit_type': 'GROOM',
+        'total_minutes': 55,
+        'bookable_minutes': 90,
+      }));
+      expect(visit.totalMinutes, 55);
+      expect(visit.bookableMinutes, 90);
+    });
+
+    test('an older server sending no bookable figure books what it timed', () {
+      final visit = GroomSession.fromJson(visitJson({
+        'visit_type': 'GROOM',
+        'total_minutes': 55,
+      }));
+      expect(visit.bookableMinutes, 55);
+    });
+
+    test('the phases are kept apart from the whole-groom figure', () {
+      // Jess: "it doesn't come up with the individual times for the groom".
+      // They were saved and never shown. Three numbers, and only two of them
+      // are ones she named: how long the groom took, and what the stopwatch
+      // measured.
+      final visit = GroomSession.fromJson(visitJson({
+        'visit_type': 'GROOM',
+        'total_minutes': 55,
+        'bookable_minutes': 90,
+        'timings': [
+          {'phase': 'CLIP', 'duration_seconds': 1800},
+          {'phase': 'PREP', 'duration_seconds': 600, 'entered_manually': true},
+          {'phase': 'WASH', 'duration_seconds': 900},
+        ],
+      }));
+      expect(visit.wasTimed, isTrue);
+      expect(visit.timedSeconds, 3300);
+      expect(visit.timedMinutes, 55);
+      expect(visit.bookableMinutes, 90);
+      // Shown in the order the timer runs them, not the order they arrived.
+      expect(
+        visit.timingsInOrder.map((t) => t.phase),
+        ['PREP', 'WASH', 'CLIP'],
+      );
+      expect(visit.timingsInOrder.first.enteredManually, isTrue);
+    });
+
+    test('a phase this build has never heard of is shown, not dropped', () {
+      // A newer server is a better reason to show an unfamiliar code than to
+      // quietly leave it out of a total that claims to be the whole groom.
+      final visit = GroomSession.fromJson(visitJson({
+        'visit_type': 'GROOM',
+        'timings': [
+          {'phase': 'CLIP', 'duration_seconds': 600},
+          {'phase': 'SCISSOR', 'duration_seconds': 300},
+        ],
+      }));
+      expect(visit.timingsInOrder.map((t) => t.phase), ['CLIP', 'SCISSOR']);
+      expect(visit.timedSeconds, 900);
+    });
+
+    test('a visit nobody timed says so rather than showing a zero', () {
+      final visit = GroomSession.fromJson(visitJson({
+        'visit_type': 'NAILS',
+        'nails_done': true,
+        'recorded_minutes': 15,
+        'total_minutes': 15,
+      }));
+      expect(visit.wasTimed, isFalse);
+      expect(visit.timedSeconds, 0);
+    });
+
+    test('an unset groom buffer is null, not none', () {
+      // "Not set" and "set to nothing" are different statements, and only one
+      // of them is worth prompting her about. Same rule as the nails figures.
+      final unset = AppSettings.fromJson({'business_name': 'Mojo and Co'});
+      expect(unset.groomTimeBufferMinutes, isNull);
+
+      final set = AppSettings.fromJson({
+        'business_name': 'Mojo and Co',
+        'groom_time_buffer_minutes': 35,
+      });
+      expect(set.groomTimeBufferMinutes, 35);
     });
 
     test('an unset nails price is null, not free', () {

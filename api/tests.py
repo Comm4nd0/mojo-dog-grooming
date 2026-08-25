@@ -4427,6 +4427,273 @@ class VisitRecordTests(BaseAPITestCase):
             status.HTTP_403_FORBIDDEN,
         )
 
+    # ── The finishing checklist ────────────────────────────────────────
+
+    CHECKLIST_FIELDS = ('nails_done', 'hygiene_area_done', 'health_check_done', 'ears_cleaned')
+
+    def test_the_checklist_starts_unanswered_rather_than_not_done(self):
+        """Jess's four jobs, and the third state all four have to carry.
+
+        A box that starts unticked cannot tell "I left the hygiene area" from
+        "I have not been down this list yet", and on this list it is the first
+        one that matters — it is what the reason box exists to explain. Same
+        rule as ``bathed_well_behaved`` and ``high_velocity_dryer``.
+        """
+        session = GroomSession.objects.create(dog=self.alice_dog)
+        for field in self.CHECKLIST_FIELDS:
+            self.assertIsNone(getattr(session, field), field)
+        self.assertEqual(session.checklist_notes, '')
+
+    def test_every_checklist_box_round_trips_all_three_states(self):
+        session = GroomSession.objects.create(dog=self.alice_dog)
+        for field in self.CHECKLIST_FIELDS:
+            for sent in (True, False, None):
+                response = self.staff_client.patch(
+                    f'/api/groom-sessions/{session.pk}/', {field: sent}, format='json',
+                )
+                self.assertEqual(response.status_code, status.HTTP_200_OK)
+                self.assertIs(response.data[field], sent, f'{field} sent {sent}')
+                session.refresh_from_db()
+                self.assertIs(getattr(session, field), sent, f'{field} sent {sent}')
+
+    def test_the_reason_box_rides_with_the_checklist(self):
+        response = self.staff_client.post('/api/groom-sessions/', {
+            'dog': self.alice_dog.id,
+            'visit_type': 'GROOM',
+            'nails_done': True,
+            'hygiene_area_done': True,
+            'health_check_done': True,
+            'ears_cleaned': False,
+            'checklist_notes': 'Ears too sore, owner ringing the vet.',
+            'recorded_minutes': 90,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        session = GroomSession.objects.get(pk=response.data['id'])
+        self.assertIs(session.ears_cleaned, False)
+        self.assertEqual(session.checklist_notes, 'Ears too sore, owner ringing the vet.')
+
+    def test_nails_is_one_column_across_both_cards(self):
+        """The groom card's "Nails clipped" and the nails card's "Nails" are
+        the same fact about the same visit, so they are the same column.
+
+        Two would disagree the first time Jess clipped nails during a groom,
+        and "when were this dog's nails last done" would miss every groom-card
+        answer.
+        """
+        groom = GroomSession.objects.create(
+            dog=self.alice_dog, visit_type=ServiceType.GROOM,
+            nails_done=True, recorded_minutes=90,
+        )
+        nails = GroomSession.objects.create(
+            dog=self.alice_dog, visit_type=ServiceType.NAILS_FLEAS_TICKS,
+            nails_done=True, recorded_minutes=15,
+        )
+        self.assertEqual(
+            list(
+                GroomSession.objects
+                .filter(dog=self.alice_dog, nails_done=True)
+                .order_by('pk')
+                .values_list('pk', flat=True)
+            ),
+            [groom.pk, nails.pk],
+        )
+
+    def test_the_migration_clears_only_the_falses_nobody_entered(self):
+        """``nails_done`` has been ``default=False`` since ``0001``.
+
+        Every groom session already on file therefore claims the dog's nails
+        were not clipped — a claim nobody made, because that card never asked.
+        Those clear to null, exactly as ``0007`` did for ``is_neutered``.
+
+        On a nails visit a ``False`` is a real answer: that card asks which of
+        the three the visit was for, and the serializer refuses one that names
+        none. Wiping those would destroy information rather than stop inventing
+        it, so the migration is narrowed to GROOM rows and this is the test
+        that holds it there.
+        """
+        migration = import_module('api.migrations.0018_groom_card_checklist')
+
+        old_groom = GroomSession.objects.create(
+            dog=self.alice_dog, visit_type=ServiceType.GROOM,
+            nails_done=False, recorded_minutes=90,
+        )
+        clipped_groom = GroomSession.objects.create(
+            dog=self.alice_dog, visit_type=ServiceType.GROOM,
+            nails_done=True, recorded_minutes=90,
+        )
+        nails_only = GroomSession.objects.create(
+            dog=self.alice_dog, visit_type=ServiceType.NAILS_FLEAS_TICKS,
+            nails_done=False, fleas_treated=True, recorded_minutes=15,
+        )
+
+        migration.clear_unasked_nails_on_grooms(apps, None)
+
+        old_groom.refresh_from_db()
+        self.assertIsNone(old_groom.nails_done, 'a groom card never asked this')
+
+        clipped_groom.refresh_from_db()
+        self.assertIs(clipped_groom.nails_done, True, 'a real answer stays')
+
+        nails_only.refresh_from_db()
+        self.assertIs(
+            nails_only.nails_done, False,
+            'False on a nails card is an answer, not a silence',
+        )
+
+    def test_an_unanswered_nails_box_still_fails_the_nails_card(self):
+        """Widening the column for the groom card must not let a nails visit
+        through saying nothing about what was done — that is the one thing that
+        card exists to capture."""
+        response = self.staff_client.post('/api/groom-sessions/', {
+            'dog': self.alice_dog.id,
+            'visit_type': 'NAILS',
+            'recorded_minutes': 15,
+            'nails_done': None,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class BookableGroomTimeTests(BaseAPITestCase):
+    """A timed groom is not a bookable slot, and the difference is Jess's.
+
+    Jess: *"the 'groom time' is nowhere near the appointment time (which would
+    be how long to book them in for)"*. It never could be. The timer counts
+    five phases — prep, wash, dry, clip, strip — and a booking also covers the
+    nails, the ears, the hygiene area, the health check and handing the dog
+    over at both ends. Writing the stopwatch figure straight to the dog booked
+    a 55-minute slot for a 90-minute job.
+
+    ``AppSettings.groom_time_buffer_minutes`` is the distance between the two.
+    Null until she sets it, and until then everything behaves exactly as it did
+    — which is the property that lets this ship without changing a single
+    figure already in her diary.
+    """
+
+    def _timed(self, minutes, dog=None):
+        """A session with time on the clock rather than typed in."""
+        session = GroomSession.objects.create(
+            dog=dog or self.alice_dog,
+            visit_type=ServiceType.GROOM,
+            started_at=timezone.now(),
+        )
+        PhaseTiming.objects.create(
+            session=session, phase=GroomPhase.CLIP, duration_seconds=minutes * 60,
+        )
+        # After the timings, exactly as the serializer does: `save()` fired the
+        # recalculation while this session still had none, so it counted as
+        # nothing.
+        session.dog.recalculate_average_groom_minutes()
+        return session
+
+    def _set_buffer(self, minutes):
+        settings_row = AppSettings.get()
+        settings_row.groom_time_buffer_minutes = minutes
+        settings_row.save()
+
+    def test_the_buffer_starts_unset_and_adds_nothing(self):
+        """An invented buffer is indistinguishable from a measured one once it
+        is in the table, and every booking in the diary would be the wrong
+        length on the strength of it. Same rule as ``nail_visit_price``."""
+        self.assertIsNone(AppSettings.get().groom_time_buffer_minutes)
+        session = self._timed(55)
+        self.assertEqual(session.total_minutes, 55)
+        self.assertEqual(session.bookable_minutes, 55)
+
+    def test_a_timed_groom_books_the_timed_figure_plus_the_buffer(self):
+        self._set_buffer(35)
+        session = self._timed(55)
+        self.assertEqual(session.total_minutes, 55, 'the record still says what it timed')
+        self.assertEqual(session.bookable_minutes, 90)
+
+    def test_setting_the_default_writes_the_bookable_figure(self):
+        self._set_buffer(35)
+        session = self._timed(55)
+        self.assertTrue(session.apply_to_dog())
+        self.alice_dog.refresh_from_db()
+        self.assertEqual(self.alice_dog.groom_minutes, 90)
+
+    def test_a_figure_jess_typed_herself_is_not_buffered(self):
+        """``recorded_minutes`` is how long the whole visit took, typed in when
+        the timer was not used. It already includes everything the buffer
+        stands for, so adding to it would double-count."""
+        self._set_buffer(35)
+        session = GroomSession.objects.create(
+            dog=self.alice_dog, visit_type=ServiceType.GROOM, recorded_minutes=90,
+        )
+        self.assertEqual(session.bookable_minutes, 90)
+        self.assertTrue(session.apply_to_dog())
+        self.alice_dog.refresh_from_db()
+        self.assertEqual(self.alice_dog.groom_minutes, 90)
+
+    def test_the_average_is_bookable_time_too(self):
+        """The average sizes diary blocks just as much as the override does.
+        Buffering one and not the other is the same bug behind a different
+        door."""
+        self._set_buffer(30)
+        self._timed(60)
+        self._timed(70)
+        self.alice_dog.refresh_from_db()
+        # (60 + 30) and (70 + 30), averaged.
+        self.assertEqual(self.alice_dog.average_groom_minutes, 95)
+        self.assertEqual(self.alice_dog.effective_groom_minutes, 95)
+
+    def test_changing_the_buffer_re_derives_every_stored_average(self):
+        """Averages are stored with the buffer already in them, so a change
+        leaves every one of them stale — and a stale booking length is
+        invisible until a groom overruns."""
+        self._set_buffer(30)
+        self._timed(60)
+        self._timed(70)
+        self.alice_dog.refresh_from_db()
+        self.assertEqual(self.alice_dog.average_groom_minutes, 95)
+
+        self._set_buffer(10)
+        self.alice_dog.refresh_from_db()
+        self.assertEqual(self.alice_dog.average_groom_minutes, 75)
+
+        # And back to nothing at all, which is a real setting rather than a
+        # missing one.
+        self._set_buffer(None)
+        self.alice_dog.refresh_from_db()
+        self.assertEqual(self.alice_dog.average_groom_minutes, 65)
+
+    def test_saving_settings_without_touching_the_buffer_recomputes_nothing(self):
+        self._set_buffer(30)
+        self._timed(60)
+        self._timed(70)
+        self.alice_dog.refresh_from_db()
+        self.assertEqual(self.alice_dog.average_groom_minutes, 95)
+
+        # A stale average left deliberately, so the recompute is observable.
+        Dog.objects.filter(pk=self.alice_dog.pk).update(average_groom_minutes=999)
+        settings_row = AppSettings.get()
+        settings_row.business_name = 'Mojo and Co.'
+        settings_row.save()
+
+        self.alice_dog.refresh_from_db()
+        self.assertEqual(self.alice_dog.average_groom_minutes, 999)
+
+    def test_the_bookable_figure_is_on_the_payload(self):
+        """So the app can say which number it wrote to the dog rather than
+        quoting the stopwatch back at Jess."""
+        self._set_buffer(35)
+        session = self._timed(55)
+        response = self.staff_client.get(f'/api/groom-sessions/{session.pk}/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['total_minutes'], 55)
+        self.assertEqual(response.data['bookable_minutes'], 90)
+
+    def test_the_buffer_never_reaches_a_nails_visit(self):
+        """It stands for the parts of a *groom* the timer misses, and a nails
+        visit is priced and timed off AppSettings in the first place."""
+        self._set_buffer(35)
+        session = GroomSession.objects.create(
+            dog=self.alice_dog, visit_type=ServiceType.NAILS_FLEAS_TICKS,
+            nails_done=True, recorded_minutes=20,
+        )
+        self.assertEqual(session.bookable_minutes, 20)
+        self.assertFalse(session.apply_to_dog())
+
 
 class SessionAppointmentLinkTests(BaseAPITestCase):
     """A written-up visit finds the booking it was worked against, and closes it.

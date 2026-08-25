@@ -54,7 +54,7 @@ mobile/lib/
 Backend:
 ```bash
 python manage.py migrate && python manage.py seed_breeds
-python manage.py test api        # 391 tests
+python manage.py test api        # 406 tests
 python manage.py runserver 0.0.0.0:8000
 python manage.py accounts        # who can sign in — usernames live only in the DB
 python manage.py reset_link jess # a way back in when the superuser is locked out
@@ -63,7 +63,7 @@ python manage.py reset_link jess # a way back in when the superuser is locked ou
 Mobile:
 ```bash
 cd mobile && flutter pub get
-flutter analyze && flutter test  # 202 tests
+flutter analyze && flutter test  # 213 tests
 flutter run --dart-define=MOJO_API_BASE=http://192.168.1.20:8000/api
 ```
 
@@ -237,6 +237,21 @@ there, and all three are now closed:
   `effective_schedule_weeks`: `suggested_next_groom` still answers for that dog when asked
   directly, which is a fair question about any dog. What changes is that nothing volunteers
   it. `include_ad_hoc=1` for the whole-book question, same as `include_booked`.
+
+**The dog profile answers "next booking" from the diary, not from the sum.** That row used to
+be labelled "Next due" and showed `suggested_next_groom` — last groom plus the interval. Jess
+asked for it to read **Next booking**, so it now reads the diary and says what is actually in
+it, including **"Nothing booked"**, which is the prompt to ring the owner. Calling arithmetic a
+booking is how somebody stops chasing a dog that has nothing in the diary at all. The sum keeps
+its own row underneath, labelled **Due**, carrying the server's `basis` wording ("8 weeks after
+12 Jun 2026") so the figure is never a mystery.
+
+Two things it has to get right, both the same shape as `dogs_due`: the window starts at
+**midnight this morning**, not at this second, because a groom is not written up until it is
+written up; and a **cancelled** booking is not a booking, because that is the moment a dog most
+needs booking again. A failed fetch renders as nothing at all rather than "Nothing booked" —
+that is the one wrong answer on this row, because it is the one Jess would act on by booking
+the dog in twice.
 
 **`Dog.is_daycare` and `Dog.daycare_days`** are Jess's *"can there be a daycare dog tickbox and
 be able to put what days they're in?"*. Weekday numbers in a `JSONField`, **0 = Monday**,
@@ -588,6 +603,10 @@ the copy that matters is the one stored against a signature. The app also needs 
 `templates/intake/policies.html` is page 2 of the card reproduced verbatim, typos and all. It
 is a policy document; do not tidy the wording.
 
+On the client profile the **Agreed terms** block sits last, at Jess's request. It is a signed
+record rather than something she works from, and in the middle of the page it was pushing the
+dogs — the reason she opens a client at all — below the fold.
+
 ## One visit record, two cards
 
 Jess keeps two paper record cards — "Ongoing Record for Dogs" and "Ongoing Record for Nails /
@@ -635,6 +654,88 @@ Things worth knowing:
   nobody set. One tap from reversible is what makes it reasonable to do unasked.
 - **`final_body` / `final_feet` / `final_tail` are what was *done*.** The `pref_*` fields on the
   dog are what the owner asked for at intake. Do not conflate them.
+
+### A timed groom is not a bookable slot
+
+Jess: *"the 'groom time' is nowhere near the appointment time (which would be how long to book
+them in for)"*. It never could be. The timer counts five phases — prep, wash, dry, clip, strip
+— and a booking also has to cover the nails, the ears, the hygiene area, the health check and
+handing the dog over at both ends. Writing the stopwatch figure straight to `Dog.groom_minutes`
+is what booked a 55-minute slot for a 90-minute job, and the *average* did it again by a second
+route.
+
+`AppSettings.groom_time_buffer_minutes` is the distance between the two figures, and
+`GroomSession.bookable_minutes` is where it lands.
+
+- **Null until Jess sets it, and nothing is guessed.** Same call as `nail_visit_price` and for
+  the same reason — a buffer this codebase invented would be indistinguishable from one she
+  measured, and every booking in the diary would be the wrong length on the strength of it.
+  Until she fills it in, behaviour is **byte-identical to before**, which is the property that
+  let this ship without moving a single figure already in her diary.
+- **Applied at both places a timed total becomes a booking length**: `apply_to_dog()` and
+  `recalculate_average_groom_minutes()`. Buffering one and not the other is the same bug behind
+  a different door — the override is what she sets deliberately, the average is what creeps up
+  on her.
+- **Never applied to `recorded_minutes`.** That is her own figure for how long the whole visit
+  took, typed in when the timer was not used, so it already includes everything the buffer
+  stands for. Adding to it double-counts. `total_minutes` still reports what was *timed* — the
+  record card is a record, not a booking estimate.
+- **Changing it re-derives every dog's average**, in `AppSettings.save()`, because the averages
+  are stored with the buffer already in them. Doing it at read time instead would put a
+  settings lookup inside `effective_groom_minutes`, which renders once per row on `Doguments` —
+  the N+1 that `average_groom_minutes` was denormalised to avoid in the first place. The
+  recompute only fires when the figure actually moved.
+- **One figure for the business, not one per dog.** The overhead it covers is handling, not
+  coat, so it barely moves between a toy and a colossal. A dog that genuinely differs gets its
+  groom time set by hand, which overrides all of this anyway.
+- **The phases are shown back.** Every timed groom stored its phase breakdown and displayed
+  none of it — the card kept one total and the timer screen was gone by the time Jess looked.
+  Her framing is the right one: *"can the 'appointment time' be the 'how long the groom took'
+  but the timer is 'actual grooming time' so I can click on it and see the timer?"*. The record
+  card now carries both, the timed one opening into Prep / Wash / Dry / Clip / Strip, and the
+  dog's visit list leads with the whole-groom figure and names the timed one beside it when
+  they differ. The breakdown is read-only: the phases are a measurement, and the figure she can
+  change is the one above, which is the one that does anything.
+- **`total_minutes` is neither of the two figures she named** and is not what to render. It is
+  `recorded_minutes` or the phase sum, with no buffer. Use `bookable_minutes` for how long the
+  groom took and `timedSeconds` (Dart, off the timings) for what the stopwatch measured.
+- `formatClock` lives in `models.dart` beside `formatDuration`, not in the timer screen. It
+  stopped being only the timer's the moment a saved visit showed the same figures back, and
+  importing that screen from the record card would be a cycle.
+- The timer screen quotes the **bookable** figure on its save button and spells out the sum
+  underneath, and the snack afterwards reads `session.bookable_minutes` rather than the
+  stopwatch. Saying the wrong one is how the number on the dog becomes a surprise. With no
+  buffer set it says so, and names the parts the timer does not count.
+
+### The finishing checklist
+
+Jess: *"can we add a little 'check list' “Nails Clipped, Hygiene Area, Health Check, Ears
+Cleaned” with a little box under to fill in why something not done"*. Four flags and
+`checklist_notes`, on the groom card only. It goes **beyond the paper card**, like `final_face`
+before it — the card is the spec for everything else, so the difference is deliberate.
+
+- **All four are nullable, and null means the list was never worked down.** Same rule as
+  `bathed_well_behaved` and `high_velocity_dryer`, arrived at the same way: a box that starts
+  unticked cannot tell "I left the hygiene area" from "I have not been down this list yet", and
+  here the first one is the fact worth having — it is exactly what the reason box explains.
+- **`nails_done` is one column across both cards.** It already existed on the nails/fleas/ticks
+  card, and whether this dog's nails were clipped at this visit is one fact. Two columns would
+  disagree the first time Jess clipped nails during a groom, and "when were Bunny's nails last
+  done" would miss every groom-card answer. `0018` widens it to nullable.
+- **The migration clears `False` on GROOM rows only.** `nails_done` has been `default=False`
+  since `0001`, so every groom already on file claims the nails were *not* clipped — a claim
+  nobody made, because that card never asked. On a nails visit a `False` is a real answer (the
+  serializer refuses one that names none of the three), so wiping those would destroy
+  information rather than stop inventing it. That half does not reverse, and says so.
+- **The two cards draw the same column differently, on purpose.** The nails card keeps plain
+  checkboxes — it asks which of the three the visit was *for*, and saving is refused unless one
+  is ticked, so an empty box there is an answer. The groom card's checklist is tristate.
+- The tile ignores the value Flutter's tristate `Checkbox` hands back and sets its own order:
+  not recorded → **done** → not done → not recorded. Flutter's own cycle puts "not done" under
+  the first tap, and the common case is the opposite. The subtitle names the state in words,
+  because a dash is only obvious once somebody has told you what it means.
+- The visit list on a dog's profile summarises **only what was marked not done**. A checklist
+  worked straight down says nothing worth a line; the one job she had to leave does.
 
 ## Services are a catalogue; ServiceType is still the category
 
@@ -697,6 +798,18 @@ pauses nothing.
   be indistinguishable from one she measured — the same rule as `nail_visit_price`.
 - **Another dog's session is never merged in.** `holdsAnotherDog()`, and the screen asks
   before discarding.
+- **A restore landing late must not overwrite a session already opened.** Jess: the timer was
+  *"stuck on teddy instead of the actual dog it's meant for"*. Reading the session back off the
+  keystore is a round trip the constructor deliberately does not block on, so a screen could
+  open the timer for the dog in front of her and have the restore land a moment later and put
+  the previous dog back — name, clock and all. Memory is the live session and disk is a
+  snapshot of an older one, so **disk loses**, and `GroomTimerService.ready` lets anything that
+  decides *which dog* wait for the read first. There is a test that fails without the guard.
+- **Switching dogs must not cost a groom.** The way out of "Teddy is still being timed" used to
+  be discard or nothing, which is the other half of the same complaint: the only button that
+  moved things on threw an hour of timing away, so the honest answer was to back out — and then
+  the timer said Teddy for good. The dialog now offers **WRITE UP TEDDY**, which hands that
+  session to its own record card, and only clears the timer if the card was actually saved.
 - Two places show a running timer, because a timer you can walk away from is one that gets
   left on: a bar above the tabs in `StaffShell`, and the dog profile's FAB, which reads
   `TIMING · 12:34`. The profile matters most — it is the screen she leaves the timer *for*,

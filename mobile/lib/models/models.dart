@@ -23,6 +23,20 @@ String formatDuration(int minutes) {
   return rest == 0 ? '${hours}h' : '${hours}h ${rest}m';
 }
 
+/// `1:04:09`, or `04:09` under the hour.
+///
+/// Beside [formatDuration] rather than in the timer screen because it is not
+/// only the timer's any more: a saved visit shows the same phase figures back,
+/// and importing the screen to read them would be a cycle.
+String formatClock(int seconds) {
+  final h = seconds ~/ 3600;
+  final m = (seconds % 3600) ~/ 60;
+  final s = seconds % 60;
+  final mm = m.toString().padLeft(2, '0');
+  final ss = s.toString().padLeft(2, '0');
+  return h > 0 ? '$h:$mm:$ss' : '$mm:$ss';
+}
+
 num _num(dynamic value) {
   if (value == null) return 0;
   if (value is num) return value;
@@ -31,6 +45,13 @@ num _num(dynamic value) {
 
 DateTime? _dateTime(dynamic value) =>
     value == null ? null : DateTime.tryParse(value.toString())?.toLocal();
+
+/// A three-state boolean off the wire, where null means "the server has no
+/// answer" rather than "no".
+///
+/// Deliberately not `value == true`: that coerces both a missing key and an
+/// explicit null to false, which is the bug this file keeps having to undo.
+bool? _tristate(dynamic value) => value is bool ? value : null;
 
 class CurrentUser {
   final int id;
@@ -1340,6 +1361,18 @@ class GroomSession {
   final DateTime startedAt;
   final List<PhaseTiming> timings;
   final int totalMinutes;
+
+  /// How long to book this dog in for next time, which is **not**
+  /// [totalMinutes].
+  ///
+  /// The timer counts five phases; a booking also covers the nails, the ears,
+  /// the hygiene area, the health check and handing the dog over at both ends.
+  /// The server adds `AppSettings.groom_time_buffer_minutes` — Jess's own
+  /// figure, blank until she sets it — and this is the result. Falls back to
+  /// [totalMinutes] on an older server that doesn't send it, which is exactly
+  /// what that server would have written to the dog.
+  final int bookableMinutes;
+
   final int? recordedMinutes;
   final DateTime? appliedToDogAt;
 
@@ -1408,7 +1441,22 @@ class GroomSession {
   final String finalTail;
   final String finalFace;
 
-  final bool nailsDone;
+  /// The finishing checklist, and why anything on it was skipped.
+  ///
+  /// All four are **nullable and null means the list was never worked down** —
+  /// not that the job was skipped. Same rule as [bathedWellBehaved] and
+  /// [highVelocityDryer]: every groom card written up before this list existed
+  /// reads null, and rendering that as "not done" would put words in Jess's
+  /// mouth about grooms she finished months ago.
+  ///
+  /// [nailsDone] is shared with the nails/fleas/ticks card below — whether the
+  /// nails were clipped at this visit is one fact, not two.
+  final bool? nailsDone;
+  final bool? hygieneAreaDone;
+  final bool? healthCheckDone;
+  final bool? earsCleaned;
+  final String checklistNotes;
+
   final bool fleasTreated;
   final bool ticksRemoved;
 
@@ -1417,13 +1465,14 @@ class GroomSession {
   final String temperamentObserved;
   final String temperamentObservedDisplay;
 
-  const GroomSession({
+  GroomSession({
     required this.id,
     required this.dogId,
     required this.dogName,
     required this.startedAt,
     required this.timings,
     required this.totalMinutes,
+    int? bookableMinutes,
     this.visitType = VisitType.groom,
     this.visitTypeDisplay = '',
     this.recordedMinutes,
@@ -1447,14 +1496,18 @@ class GroomSession {
     this.finalFeet = '',
     this.finalTail = '',
     this.finalFace = '',
-    this.nailsDone = false,
+    this.nailsDone,
+    this.hygieneAreaDone,
+    this.healthCheckDone,
+    this.earsCleaned,
+    this.checklistNotes = '',
     this.fleasTreated = false,
     this.ticksRemoved = false,
     this.notes = '',
     this.sensitiveNotes = '',
     this.temperamentObserved = '',
     this.temperamentObservedDisplay = '',
-  });
+  }) : bookableMinutes = bookableMinutes ?? totalMinutes;
 
   factory GroomSession.fromJson(Map<String, dynamic> json) => GroomSession(
         id: json['id'] as int,
@@ -1467,6 +1520,7 @@ class GroomSession {
             .map((t) => PhaseTiming.fromJson(t as Map<String, dynamic>))
             .toList(),
         totalMinutes: (json['total_minutes'] as num?)?.toInt() ?? 0,
+        bookableMinutes: (json['bookable_minutes'] as num?)?.toInt(),
         recordedMinutes: (json['recorded_minutes'] as num?)?.toInt(),
         appliedToDogAt: _dateTime(json['applied_to_dog_at']),
         appointmentId: (json['appointment'] as num?)?.toInt(),
@@ -1493,7 +1547,13 @@ class GroomSession {
         finalFeet: json['final_feet']?.toString() ?? '',
         finalTail: json['final_tail']?.toString() ?? '',
         finalFace: json['final_face']?.toString() ?? '',
-        nailsDone: json['nails_done'] == true,
+        // Not coerced, for the same reason as the two above: a missing or
+        // null key is "nobody worked down the list", never "not done".
+        nailsDone: _tristate(json['nails_done']),
+        hygieneAreaDone: _tristate(json['hygiene_area_done']),
+        healthCheckDone: _tristate(json['health_check_done']),
+        earsCleaned: _tristate(json['ears_cleaned']),
+        checklistNotes: json['checklist_notes']?.toString() ?? '',
         fleasTreated: json['fleas_treated'] == true,
         ticksRemoved: json['ticks_removed'] == true,
         notes: json['notes']?.toString() ?? '',
@@ -1504,12 +1564,68 @@ class GroomSession {
 
   bool get isGroom => visitType == VisitType.groom;
 
+  /// What the stopwatch actually measured, phase by phase, ignoring anything
+  /// typed in for the visit as a whole.
+  ///
+  /// **Not [totalMinutes]**, which prefers [recordedMinutes] when Jess has
+  /// filled that in. The two answer different questions and the card shows
+  /// both: how long the groom took, which sizes the next booking, and how long
+  /// the clippers were actually in her hand.
+  int get timedSeconds =>
+      timings.fold(0, (sum, timing) => sum + timing.durationSeconds);
+
+  int get timedMinutes => (timedSeconds / 60).round();
+
+  /// Whether the timer was used at all. A nails visit and a groom Jess wrote
+  /// up afterwards both have nothing to show.
+  bool get wasTimed => timings.isNotEmpty;
+
+  /// The phases that were used, in the order the timer runs them rather than
+  /// whatever order they came back in.
+  List<PhaseTiming> get timingsInOrder {
+    final byPhase = {for (final timing in timings) timing.phase: timing};
+    return [
+      for (final phase in PhaseTiming.phaseOrder)
+        if (byPhase[phase] != null) byPhase[phase]!,
+      // Anything the server knows about that this build does not. Better shown
+      // under its own code than silently dropped from a total that claims to
+      // be the whole groom.
+      for (final timing in timings)
+        if (!PhaseTiming.phaseOrder.contains(timing.phase)) timing,
+    ];
+  }
+
   /// Which of the three a nails visit covered, for a one-line summary.
   String get nailsSummary => [
-        if (nailsDone) 'Nails',
+        if (nailsDone == true) 'Nails',
         if (fleasTreated) 'Fleas',
         if (ticksRemoved) 'Ticks',
       ].join(' · ');
+
+  /// The finishing checklist as label/state pairs, in the order Jess wrote it.
+  ///
+  /// Entries whose state is null are still included: "not recorded" is an
+  /// answer worth showing, and dropping them would make a half-filled list
+  /// look complete.
+  List<({String label, bool? done})> get checklist => [
+        (label: 'Nails clipped', done: nailsDone),
+        (label: 'Hygiene area', done: hygieneAreaDone),
+        (label: 'Health check', done: healthCheckDone),
+        (label: 'Ears cleaned', done: earsCleaned),
+      ];
+
+  /// Whether anything on the checklist was answered at all.
+  bool get hasChecklist => checklist.any((item) => item.done != null);
+
+  /// What was explicitly **not** done, for a one-line summary.
+  ///
+  /// `false` only — a null is "not recorded", and listing those as skipped
+  /// would report every card written before this list existed as a groom where
+  /// nothing got done.
+  List<String> get checklistSkipped => [
+        for (final item in checklist)
+          if (item.done == false) item.label.toLowerCase(),
+      ];
 
   /// Where matting was found, in the order the paper card lists it.
   List<String> get mattingPlaces => [
@@ -1672,6 +1788,18 @@ class AppSettings {
   /// Zero by default, so nothing changes until Jess sets one.
   final int bookingSlotBufferMinutes;
 
+  /// What to add to a groom the timer measured to get how long to book.
+  ///
+  /// The timer counts five phases; a booking also covers the nails, the ears,
+  /// the hygiene area, the health check and handing the dog over at both ends.
+  /// Jess: the groom time is *"nowhere near the appointment time (which would
+  /// be how long to book them in for)"*.
+  ///
+  /// **Null means she hasn't set one**, not zero — show "Not set" rather than
+  /// "None", the same rule as [nailVisitMinutes]. Nothing is guessed, so until
+  /// she fills it in a timed groom books at exactly what it timed.
+  final int? groomTimeBufferMinutes;
+
   const AppSettings({
     required this.businessName,
     required this.contactPhone,
@@ -1680,6 +1808,7 @@ class AppSettings {
     this.nailVisitMinutes,
     this.nailVisitPrice,
     this.bookingSlotBufferMinutes = 0,
+    this.groomTimeBufferMinutes,
   });
 
   factory AppSettings.fromJson(Map<String, dynamic> json) => AppSettings(
@@ -1690,6 +1819,10 @@ class AppSettings {
         bookingSlotBufferMinutes:
             (json['booking_slot_buffer_minutes'] as num?)?.toInt() ?? 0,
         nailVisitMinutes: (json['nail_visit_minutes'] as num?)?.toInt(),
+        // Not defaulted to 0 for the same reason as the nails figures: an
+        // older server sending nothing has no buffer set, which is a different
+        // statement from one Jess deliberately set to none.
+        groomTimeBufferMinutes: (json['groom_time_buffer_minutes'] as num?)?.toInt(),
         // Deliberately not defaulted: a null price is "not set", not free.
         nailVisitPrice:
             json['nail_visit_price'] == null ? null : _num(json['nail_visit_price']),

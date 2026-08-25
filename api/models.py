@@ -1012,7 +1012,7 @@ class Dog(models.Model):
             return self.breed.avg_groom_minutes
         return 90  # Fallback for an unknown breed with no override.
 
-    def recalculate_average_groom_minutes(self, save=True):
+    def recalculate_average_groom_minutes(self, save=True, buffer_minutes=None):
         """Re-derive :attr:`average_groom_minutes` from this dog's history.
 
         Only **whole grooms** count, via the same ``_was_a_whole_groom()``
@@ -1031,6 +1031,11 @@ class Dog(models.Model):
         #
         # Over-fetch a little, because sessions that fail the whole-groom guard
         # are skipped and we still want the most recent five that pass.
+        #
+        # `buffer_minutes` is only ever passed by the whole-book recalculation,
+        # which reads it once rather than once per dog.
+        if buffer_minutes is None:
+            buffer_minutes = AppSettings.get().groom_time_buffer_minutes or 0
         sessions = (
             self.groom_sessions
             .filter(visit_type=ServiceType.GROOM)
@@ -1045,7 +1050,11 @@ class Dog(models.Model):
         for session in sessions:
             if not session._was_a_whole_groom():
                 continue
-            total = session.total_minutes
+            # Bookable, not timed — this average sizes diary blocks, so it has
+            # to be the same kind of number `apply_to_dog` writes. Averaging
+            # the raw phase totals is how a dog that takes ninety minutes ends
+            # up booked in for fifty-five.
+            total = session.bookable_minutes_with(buffer_minutes)
             if total > 0:
                 minutes.append(total)
             if len(minutes) >= self.AVERAGE_OVER_SESSIONS:
@@ -1714,8 +1723,45 @@ class GroomSession(models.Model):
     # counterpart; she asked for the face, so that is what this adds.
     final_face = models.TextField(blank=True, verbose_name='Final face shape')
 
+    # ── The finishing checklist ────────────────────────────────────────
+    # Jess: *"can we add a little 'check list' “Nails Clipped, Hygiene Area,
+    # Health Check, Ears Cleaned” with a little box under to fill in why
+    # something not done"*. The four jobs that get forgotten, and one box for
+    # the reason when one of them didn't happen.
+    #
+    # All four are **nullable, and null means nobody worked down the list** —
+    # the same rule as ``bathed_well_behaved`` and ``high_velocity_dryer``,
+    # arrived at the same way. A checkbox that starts unticked cannot tell "the
+    # hygiene area was deliberately left" from "this card was written up before
+    # the checklist existed", and on this list the first one is the fact worth
+    # having: it is what ``checklist_notes`` is there to explain.
+    #
+    # ``nails_done`` is deliberately the *same column* the nails/fleas/ticks
+    # card uses rather than a second one meaning the same thing. Whether this
+    # dog's nails were clipped at this visit is one fact, and two columns for
+    # it would disagree the first time Jess clipped nails during a groom —
+    # "when were Bunny's nails last done" would miss every groom-card answer.
+    # The two cards ask it differently, so they draw it differently; the
+    # column is shared.
+    nails_done = models.BooleanField(
+        null=True, blank=True, verbose_name='Nails clipped',
+    )
+    hygiene_area_done = models.BooleanField(
+        null=True, blank=True, verbose_name='Hygiene area',
+    )
+    health_check_done = models.BooleanField(
+        null=True, blank=True, verbose_name='Health check done',
+        help_text='Whether the check was carried out. What it found goes in health_check_notes.',
+    )
+    ears_cleaned = models.BooleanField(null=True, blank=True)
+    checklist_notes = models.TextField(
+        blank=True, help_text='Why anything on the checklist was not done.',
+    )
+
     # ── The nails / fleas / ticks card ─────────────────────────────────
-    nails_done = models.BooleanField(default=False)
+    # Two-state on this card on purpose: it asks which of the three the visit
+    # was *for*, and the serializer refuses a nails visit that names none of
+    # them, so an unticked box there is an answer rather than a silence.
     fleas_treated = models.BooleanField(default=False)
     ticks_removed = models.BooleanField(default=False)
 
@@ -1755,6 +1801,44 @@ class GroomSession(models.Model):
         return round(self.total_seconds / 60)
 
     @property
+    def bookable_minutes(self):
+        """How long to book this dog in for, from what this visit measured.
+
+        Not the same number as :attr:`total_minutes`, and the difference is
+        Jess's: *"the 'groom time' is nowhere near the appointment time (which
+        would be how long to book them in for)"*. The timer counts five phases;
+        a booking also covers the nails, the ears, the hygiene area, the health
+        check and handing the dog over at both ends. Writing the timed figure
+        straight to the dog is what booked a 55-minute slot for a 90-minute
+        job.
+
+        ``AppSettings.groom_time_buffer_minutes`` is the distance between them,
+        and it is **null until Jess sets it** — until then this returns the
+        timed total unchanged, because a buffer this code invented would be
+        indistinguishable from one she measured. Same rule as
+        ``nail_visit_price``.
+
+        **The buffer is not added to ``recorded_minutes``.** That field is her
+        own figure for how long the whole visit took, typed in when the timer
+        was not used, so it already includes everything the buffer stands for.
+        Adding to it would double-count.
+        """
+        return self.bookable_minutes_with(AppSettings.get().groom_time_buffer_minutes or 0)
+
+    def bookable_minutes_with(self, buffer_minutes):
+        """:attr:`bookable_minutes`, with the buffer passed in.
+
+        The averaging loop runs over several sessions at once, and reading the
+        settings singleton per row would turn one query into one per visit.
+        """
+        if self.recorded_minutes is not None:
+            return self.recorded_minutes
+        timed = self.total_minutes
+        if timed <= 0:
+            return timed
+        return timed + buffer_minutes
+
+    @property
     def matting_found(self):
         return any([
             self.matting_paws, self.matting_armpits,
@@ -1778,7 +1862,9 @@ class GroomSession(models.Model):
             return False
         if not self._was_a_whole_groom():
             return False
-        minutes = self.total_minutes
+        # The bookable figure, not the timed one: this number's whole job is to
+        # size the next diary block. See `bookable_minutes`.
+        minutes = self.bookable_minutes
         if minutes <= 0:
             return False
         self.dog.groom_minutes = minutes
@@ -2250,6 +2336,34 @@ class AppSettings(models.Model):
         max_digits=7, decimal_places=2, null=True, blank=True,
         help_text='What a nails, flea or tick visit costs. Not from the breed price list.',
     )
+    # What the groom timer cannot see.
+    #
+    # Jess: the groom time coming off the timer is *"nowhere near the
+    # appointment time (which would be how long to book them in for)"*. It
+    # isn't, and it never could be: the timer counts five phases — prep, wash,
+    # dry, clip, strip — and a booking also has to cover the nails, the ears,
+    # the hygiene area, the health check, and handing the dog over at both
+    # ends. A groom she timed at 55 minutes is not a 55-minute slot.
+    #
+    # So the timed figure and the bookable figure are two numbers, and this is
+    # the distance between them. **Null until she sets it**, like the nails
+    # price and for the identical reason — an invented buffer is
+    # indistinguishable from a measured one once it is in the table, and the
+    # cost of getting it wrong is every future booking in the diary being the
+    # wrong length.
+    #
+    # Deliberately one figure for the business rather than one per dog: the
+    # overhead it covers is handling, not coat, so it barely moves between a
+    # toy and a colossal. A dog that genuinely differs gets its groom time set
+    # by hand, which overrides all of this anyway.
+    groom_time_buffer_minutes = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text=(
+            'Minutes to add to a timed groom to get how long to book. Covers what the '
+            'timer never sees — nails, ears, the health check, drop-off and collection. '
+            'Blank until set, and nothing is guessed.'
+        ),
+    )
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -2260,9 +2374,39 @@ class AppSettings(models.Model):
 
     def save(self, *args, **kwargs):
         self.pk = 1  # Enforce a single row.
+        # Every dog's average groom time is stored with the buffer already in
+        # it — see `GroomSession.bookable_minutes` — so changing the buffer
+        # leaves every one of them stale, and a stale booking length is
+        # invisible until a groom overruns. Recomputed here rather than at read
+        # time because `effective_groom_minutes` renders once per row on the
+        # busiest screen in the app, and a settings lookup there is an N+1.
+        #
+        # Only when the figure actually moved, and only for a row that already
+        # exists: the first save is the singleton being created.
+        buffer_changed = False
+        if not self._state.adding:
+            previous = type(self).objects.filter(pk=1).values_list(
+                'groom_time_buffer_minutes', flat=True,
+            ).first()
+            buffer_changed = previous != self.groom_time_buffer_minutes
         super().save(*args, **kwargs)
+        if buffer_changed:
+            recalculate_every_average_groom_time()
 
     @classmethod
     def get(cls):
         obj, _ = cls.objects.get_or_create(pk=1)
         return obj
+
+
+def recalculate_every_average_groom_time():
+    """Re-derive every dog's average groom time.
+
+    Only ever called when the groom-time buffer changes, which is a thing Jess
+    does approximately once. A fan-out over the whole book is the right price
+    for the alternative — averages that silently disagree with the setting that
+    produced them.
+    """
+    buffer_minutes = AppSettings.get().groom_time_buffer_minutes or 0
+    for dog in Dog.objects.all():
+        dog.recalculate_average_groom_minutes(buffer_minutes=buffer_minutes)
