@@ -49,7 +49,7 @@ void main() {
   testWidgets('names the dog and the phase once one is running', (tester) async {
     final timer = await pumpBar(tester);
     timer.openFor(dogId: 1, dogName: 'Bunny');
-    timer.toggle('CLIP');
+    timer.toggle(1, 'CLIP');
     await tester.pump();
 
     expect(find.textContaining('Bunny'), findsOneWidget);
@@ -64,7 +64,7 @@ void main() {
     // The ticker is a real `Timer.periodic` and outlives the widget tree by
     // design — that is the point of the service. `testWidgets` checks for
     // pending timers *before* teardowns run, so it has to be stopped here.
-    timer.pause();
+    timer.pauseAll();
   });
 
   testWidgets('a pause reads as paused, not as finished', (tester) async {
@@ -72,14 +72,29 @@ void main() {
     timer.openFor(dogId: 1, dogName: 'Bunny');
     // Banked time first. A phase started and stopped inside a test clock that
     // never moves banks nothing, and a nil session is correctly not shown.
-    timer.setMinutes('PREP', 8);
-    timer.toggle('CLIP');
+    timer.setMinutes(1, 'PREP', 8);
+    timer.toggle(1, 'CLIP');
     await tester.pump();
     expect(find.textContaining('Clip'), findsOneWidget);
 
-    timer.pause();
+    timer.pauseAll();
     await tester.pump();
     expect(find.textContaining('paused'), findsOneWidget);
+  });
+
+  testWidgets('two dogs on the clock get a strip each', (tester) async {
+    // The shared visit: Bunny dries in the crate while Teddy is in the bath.
+    // Hiding one of the two clocks is how it gets left on.
+    final timer = await pumpBar(tester);
+    timer.openFor(dogId: 1, dogName: 'Teddy');
+    timer.setMinutes(1, 'WASH', 10);
+    timer.openFor(dogId: 2, dogName: 'Bunny');
+    timer.setMinutes(2, 'DRY', 5);
+    await tester.pump();
+
+    expect(find.textContaining('Teddy'), findsOneWidget);
+    expect(find.textContaining('Bunny'), findsOneWidget);
+    expect(find.byType(InkWell), findsNWidgets(2));
   });
 
   testWidgets('a paused session is still worth showing', (tester) async {
@@ -87,7 +102,7 @@ void main() {
     // while she reads the dog's notes — the bar is how she gets back.
     final timer = await pumpBar(tester);
     timer.openFor(dogId: 1, dogName: 'Teddy');
-    timer.setMinutes('PREP', 12);
+    timer.setMinutes(1, 'PREP', 12);
     await tester.pump();
 
     expect(find.textContaining('Teddy'), findsOneWidget);

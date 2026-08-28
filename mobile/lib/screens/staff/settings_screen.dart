@@ -6,11 +6,9 @@ import '../../services/api_client.dart';
 import '../../services/data_service.dart';
 import '../../services/service_locator.dart';
 import '../../widgets/common.dart';
-import 'breed_detail_screen.dart';
-import 'medical_notes_screen.dart';
 import 'services_screen.dart';
 
-/// Business settings: client-facing invoicing, temperament limits, breeds.
+/// Business settings: client-facing invoicing, temperament limits, hours.
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
 
@@ -130,9 +128,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ListTile(
                       dense: true,
                       title: const Text('Add to a timed groom'),
+                      // Not "nails, ears, the health check" — Jess does those
+                      // inside the prep and health-check phases, so the timer
+                      // does see them. What it genuinely never counts is the
+                      // handover at both ends and anything done off the clock.
                       subtitle: const Text(
-                        "What the timer never sees — nails, ears, the health "
-                        'check, drop-off and collection',
+                        'What the phases never cover — drop-off, collection '
+                        'and anything done off the clock',
                       ),
                       trailing: Row(
                         mainAxisSize: MainAxisSize.min,
@@ -207,39 +209,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                     ),
 
-                    const SectionHeader(title: 'Reference'),
-                    ListTile(
-                      leading: Icon(Icons.medical_information_outlined,
-                          color: context.mojo.accent),
-                      title: const Text('Medical notes'),
-                      subtitle: const Text(
-                        'What an ailment means, and what it means for a groom',
-                      ),
-                      trailing: const Icon(Icons.chevron_right),
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => const MedicalNotesScreen()),
-                      ),
-                    ),
-
-                    const SectionHeader(title: 'Breeds'),
-                    ListTile(
-                      leading: Icon(Icons.list_alt_outlined, color: context.mojo.accent),
-                      title: const Text('Breed times and prices'),
-                      subtitle: const Text('Review the defaults new dogs inherit'),
-                      trailing: const Icon(Icons.chevron_right),
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => const _BreedListScreen()),
-                      ),
-                    ),
-                    const Padding(
-                      padding: EdgeInsets.all(16),
-                      child: Text(
-                        'Times and prices come from your own price list. Which size and '
-                        'coat band each breed was put in, and how often it needs doing, '
-                        'are our guess — worth a look through.',
-                        style: TextStyle(fontSize: 12, color: AppColors.warning),
-                      ),
-                    ),
+                    // Medical notes and the breed standards used to close this
+                    // screen out under "Reference" and "Breeds". They are under
+                    // More → Medical and Breed Standards now, at Jess's request
+                    // — neither is a setting.
                   ],
                 ),
     );
@@ -479,91 +452,4 @@ class _SettingsScreenState extends State<SettingsScreen> {
     label.dispose();
     cap.dispose();
   }
-}
-
-/// Breed reference table, editable in place.
-class _BreedListScreen extends StatefulWidget {
-  const _BreedListScreen();
-
-  @override
-  State<_BreedListScreen> createState() => _BreedListScreenState();
-}
-
-class _BreedListScreenState extends State<_BreedListScreen> {
-  final _data = getIt<DataService>();
-  List<Breed> _breeds = const [];
-  String _query = '';
-  bool _loading = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  Future<void> _load() async {
-    setState(() => _loading = true);
-    final breeds = await _data.getBreeds();
-    if (!mounted) return;
-    setState(() {
-      _breeds = breeds;
-      _loading = false;
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final visible = _breeds
-        .where((b) => b.name.toLowerCase().contains(_query.toLowerCase()))
-        .toList();
-
-    return Scaffold(
-      appBar: AppBar(title: const Text('Breeds')),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: TextField(
-              onChanged: (value) => setState(() => _query = value),
-              decoration: const InputDecoration(
-                hintText: 'Search breeds',
-                prefixIcon: Icon(Icons.search),
-              ),
-            ),
-          ),
-          Expanded(
-            child: _loading
-                ? const Center(child: CircularProgressIndicator())
-                : ListView.separated(
-                    itemCount: visible.length,
-                    separatorBuilder: (_, _) => const Divider(height: 1),
-                    itemBuilder: (context, index) {
-                      final breed = visible[index];
-                      return ListTile(
-                        title: Text(breed.name),
-                        subtitle: Text(
-                          '${formatDuration(breed.avgGroomMinutes)} · '
-                          '${formatMoney(breed.avgPrice)} · '
-                          'every ${breed.avgScheduleWeeks}w',
-                        ),
-                        trailing: const Icon(Icons.chevron_right),
-                        // The whole standards record, not just the three
-                        // numbers the old dialog edited.
-                        onTap: () async {
-                          await Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => BreedDetailScreen(breedId: breed.id),
-                            ),
-                          );
-                          if (mounted) _load();
-                        },
-                      );
-                    },
-                  ),
-          ),
-        ],
-      ),
-    );
-  }
-
 }

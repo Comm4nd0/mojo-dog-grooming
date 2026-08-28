@@ -66,10 +66,13 @@ class _StaffShellState extends State<StaffShell> {
   }
 }
 
-/// The running groom timer, shown on every staff screen while it runs.
+/// The running groom timers, shown on every staff screen while any runs.
 ///
 /// Nothing at all when there is no session, so it costs no room the rest of
-/// the time. Tapping it goes back to the timer.
+/// the time. **One strip per dog**, because the service holds a session per
+/// dog now — Bunny drying in the crate while Teddy is in the bath is two
+/// clocks, and hiding one is how it gets left on. Tapping a strip goes back
+/// to that dog's timer.
 class GroomTimerBar extends StatelessWidget {
   const GroomTimerBar({super.key});
 
@@ -79,57 +82,67 @@ class GroomTimerBar extends StatelessWidget {
     return ListenableBuilder(
       listenable: timer,
       builder: (context, _) {
-        if (!timer.hasSession) return const SizedBox.shrink();
-        final phase = timer.runningPhase;
-        return Material(
-          color: timer.isRunning ? AppColors.primaryBright : context.mojo.tint,
-          child: InkWell(
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (_) => GroomTimerScreen(
-                  dogId: timer.dogId!,
-                  dogName: timer.dogName,
-                  usualMinutes: timer.usualMinutes,
-                ),
-              ),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              child: Row(
-                children: [
-                  Icon(
-                    timer.isRunning ? Icons.timer : Icons.pause_circle_outline,
-                    size: 20,
-                    color: timer.isRunning ? Colors.black : context.mojo.onTint,
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      phase == null
-                          ? '${timer.dogName} — paused'
-                          : '${timer.dogName} — ${PhaseTiming.labelFor(phase)}',
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: timer.isRunning ? Colors.black : context.mojo.onTint,
-                      ),
-                    ),
-                  ),
-                  Text(
-                    formatClock(timer.totalSeconds),
-                    style: TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w700,
-                      fontFeatures: const [FontFeature.tabularFigures()],
-                      color: timer.isRunning ? Colors.black : context.mojo.onTint,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
+        final sessions = timer.liveSessions;
+        if (sessions.isEmpty) return const SizedBox.shrink();
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final session in sessions) _row(context, session),
+          ],
         );
       },
+    );
+  }
+
+  Widget _row(BuildContext context, GroomTimerSession session) {
+    final phase = session.runningPhase;
+    return Material(
+      color: session.isRunning ? AppColors.primaryBright : context.mojo.tint,
+      child: InkWell(
+        onTap: () => Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => GroomTimerScreen(
+              dogId: session.dogId,
+              dogName: session.dogName,
+              usualMinutes: session.usualMinutes,
+            ),
+          ),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: Row(
+            children: [
+              Icon(
+                session.isRunning ? Icons.timer : Icons.pause_circle_outline,
+                size: 20,
+                color: session.isRunning ? Colors.black : context.mojo.onTint,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  phase == null
+                      ? '${session.dogName} — paused'
+                      : '${session.dogName} — ${PhaseTiming.labelFor(phase)}',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: session.isRunning ? Colors.black : context.mojo.onTint,
+                  ),
+                ),
+              ),
+              Text(
+                formatClock(session.totalSeconds),
+                style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                  color: session.isRunning ? Colors.black : context.mojo.onTint,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

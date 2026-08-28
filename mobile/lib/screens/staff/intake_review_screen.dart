@@ -10,6 +10,8 @@ import '../../widgets/common.dart';
 import '../../widgets/contact_actions.dart';
 import '../../widgets/dog_silhouette.dart';
 import 'booking_form_screen.dart';
+import 'calendar_screen.dart';
+import 'dog_profile_screen.dart';
 
 /// Review what comes in from the outside: intake forms and profile claims.
 ///
@@ -30,6 +32,7 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
   List<IntakeSubmission> _submissions = const [];
   List<ClaimRequest> _claims = const [];
   List<ChangeRequest> _changes = const [];
+  List<DogChangeRequest> _dogChanges = const [];
   List<AppointmentChangeRequest> _bookingChanges = const [];
   List<Appointment> _requests = const [];
   bool _loading = true;
@@ -47,6 +50,7 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
       final submissions = await _data.getIntakeSubmissions();
       final claims = await _data.getClaimRequests();
       final changes = await _data.getChangeRequests(status: 'PENDING');
+      final dogChanges = await _data.getDogChangeRequests(status: 'PENDING');
       final bookingChanges =
           await _data.getAppointmentChangeRequests(status: 'PENDING');
       // A client's booking request. This screen is what the More badge points
@@ -60,6 +64,7 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
         _submissions = submissions;
         _claims = claims;
         _changes = changes;
+        _dogChanges = dogChanges;
         _bookingChanges = bookingChanges;
         _requests = requests;
         _loading = false;
@@ -93,7 +98,7 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
                   : pendingClaims.isNotEmpty
                       ? 3
                       : 0,
-      length: 5,
+      length: 6,
       child: Scaffold(
         appBar: AppBar(
           title: const Text('Waiting for you'),
@@ -112,6 +117,7 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
               _tab(Icons.person_search_outlined, 'Profile claims',
                   pendingClaims.length),
               _tab(Icons.edit_note_outlined, 'Detail changes', _changes.length),
+              _tab(Icons.pets_outlined, 'Dog updates', _dogChanges.length),
             ],
           ),
         ),
@@ -126,6 +132,7 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
                       _submissionList(pendingSubmissions),
                       _claimList(pendingClaims),
                       _changeList(),
+                      _dogChangeList(),
                     ],
                   ),
       ),
@@ -171,6 +178,84 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
         },
       ),
     );
+  }
+
+  /// Owners suggesting updates to their dogs' details.
+  ///
+  /// The message is prose, so approving applies nothing by itself — tapping
+  /// the row opens the dog so Jess can make the edit, and the tick marks the
+  /// suggestion dealt with once she has.
+  Widget _dogChangeList() {
+    if (_dogChanges.isEmpty) {
+      return const EmptyState(
+        icon: Icons.pets_outlined,
+        title: 'Nothing to check',
+        message: "When an owner suggests an update to their dog's details it lands here.",
+      );
+    }
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: ListView.separated(
+        itemCount: _dogChanges.length,
+        separatorBuilder: (_, _) => const Divider(height: 1),
+        itemBuilder: (context, index) {
+          final change = _dogChanges[index];
+          return ListTile(
+            isThreeLine: true,
+            leading: Icon(Icons.pets_outlined, color: context.mojo.accent),
+            title: Text('${change.dogName} — ${change.clientName}'),
+            subtitle: Text(
+              '“${change.message}”',
+              style: TextStyle(fontStyle: FontStyle.italic, color: context.mojo.muted),
+            ),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  tooltip: 'Dismiss without changing anything',
+                  onPressed: () => _decideDogChange(change, approve: false),
+                ),
+                IconButton(
+                  icon: Icon(Icons.check, color: context.mojo.accent),
+                  tooltip: 'Mark it dealt with',
+                  onPressed: () => _decideDogChange(change, approve: true),
+                ),
+              ],
+            ),
+            // The dog itself, so the edit and the suggestion are side by side.
+            onTap: () async {
+              await Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => DogProfileScreen(dogId: change.dogId),
+                ),
+              );
+              if (mounted) _load();
+            },
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _decideDogChange(DogChangeRequest change, {required bool approve}) async {
+    try {
+      if (approve) {
+        await _data.approveDogChange(change.id);
+      } else {
+        await _data.rejectDogChange(change.id);
+      }
+    } catch (error) {
+      if (mounted) showSnack(context, error.toString(), isError: true);
+      return;
+    }
+    if (mounted) {
+      // "Marked done" rather than "updated": approving records that Jess has
+      // dealt with it, and the dog record only changes when she edits it.
+      showSnack(context, approve ? 'Marked as dealt with.' : 'Dismissed.');
+    }
+    _load();
+    unawaited(_data.getPending());
   }
 
   /// One icon tab, with its outstanding count as a badge.
@@ -247,6 +332,15 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
                     tooltip: 'Ring ${request.clientName}',
                     onPressed: () => callNumber(context, request.clientPhone),
                   ),
+                // Jess: "can there be an option to view the item in the
+                // diary, then have the ability to approve/deny it from
+                // there?" — this opens that day, and tapping the requested
+                // block there offers the same book-in / turn-down choice.
+                IconButton(
+                  icon: const Icon(Icons.calendar_month_outlined),
+                  tooltip: 'See it in the diary',
+                  onPressed: () => _seeInDiary(request.startAt),
+                ),
                 IconButton(
                   icon: const Icon(Icons.close),
                   tooltip: 'Turn it down',
@@ -336,6 +430,17 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
     unawaited(_data.getPending());
   }
 
+  /// Push the diary open on [day], and re-check the queue on the way back —
+  /// a request can be answered from the diary itself now.
+  Future<void> _seeInDiary(DateTime day) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => CalendarScreen(initialDate: day)),
+    );
+    if (!mounted) return;
+    _load();
+    unawaited(_data.getPending());
+  }
+
   Future<void> _openRequest(Appointment request) async {
     final saved = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
@@ -413,6 +518,15 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
                     icon: const Icon(Icons.phone_outlined),
                     tooltip: 'Ring ${change.clientName}',
                     onPressed: () => callNumber(context, change.clientPhone),
+                  ),
+                // The day they would rather have, or failing that the day
+                // they are booked — so the gap they are asking about is
+                // visible before deciding.
+                if (wanted != null || when != null)
+                  IconButton(
+                    icon: const Icon(Icons.calendar_month_outlined),
+                    tooltip: 'See it in the diary',
+                    onPressed: () => _seeInDiary((wanted ?? when)!),
                   ),
                 IconButton(
                   icon: const Icon(Icons.close),

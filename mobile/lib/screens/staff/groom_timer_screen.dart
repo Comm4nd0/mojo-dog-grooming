@@ -18,9 +18,17 @@ import 'visit_record_screen.dart';
 ///
 /// **The counts do not live here.** They live in [GroomTimerService], because
 /// Jess asked to be able to leave: *"just need to be able to check notes as I
-/// figured out today whilst doing bunny"*. This screen is a view over that —
-/// closing it pauses nothing and loses nothing, and the running clock stays on
-/// the staff shell until the groom is written up.
+/// figured out today whilst doing bunny"*. This screen is a view over one
+/// dog's session — closing it pauses nothing and loses nothing, and the
+/// running clocks stay on the staff shell until each groom is written up.
+///
+/// **Opening a second dog no longer asks what to do with the first.** Jess:
+/// *"I will bath one and they can 'dry' in the crate for a bit and I will get
+/// on with 'bathing' the other dog"* — dogs from one household are groomed
+/// interleaved, so the service keeps a session per dog and this screen offers
+/// the others as one-tap switches. The old dialog made her choose between
+/// discarding Teddy's hour and backing out; now Teddy's dry simply keeps
+/// counting while Bunny is on screen.
 ///
 /// The total can be written back to the dog as its default groom time, which
 /// then sizes the diary block for future bookings.
@@ -57,17 +65,16 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
 
   bool _busy = false;
 
-  /// Jess's own figure for what the timer never sees — nails, ears, the health
-  /// check, drop-off and collection. Null until she sets it in Settings, and
-  /// nothing is guessed: until then a timed groom books at exactly what it
-  /// timed, which is what it has always done.
+  /// Jess's own figure for what the phases never cover — the handover at both
+  /// ends and anything done off the clock. Null until she sets it in
+  /// Settings, and nothing is guessed: until then a timed groom books at
+  /// exactly what it timed, which is what it has always done.
   int? _bookingBuffer;
 
   @override
   void initState() {
     super.initState();
-    // After the first frame, so a dialog has a Navigator to sit in.
-    WidgetsBinding.instance.addPostFrameCallback((_) => _open());
+    unawaited(_open());
     unawaited(_loadBuffer());
   }
 
@@ -81,79 +88,12 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
     }
   }
 
-  /// How long this groom says to book the dog in for.
-  ///
-  /// Jess: the groom time was *"nowhere near the appointment time (which would
-  /// be how long to book them in for)"*. It could not be — the timer counts
-  /// five phases and this figure has to cover a whole visit. The server does
-  /// the same sum when it writes the dog's default; this is so the button says
-  /// which number it is about to write rather than quoting the stopwatch back.
-  int get _bookableMinutes => _timer.totalMinutes + (_bookingBuffer ?? 0);
-
   Future<void> _open() async {
-    // Before anything reads which dog the timer is on. The session on disk is
-    // read back asynchronously, and a restore landing after this would put the
-    // previous dog back — the timer stuck on Teddy while Jess grooms Bunny.
+    // Before anything reads which dogs the timer is on. The sessions on disk
+    // are read back asynchronously, and opening before the restore lands is
+    // handled by the service — memory wins, disk loses.
     await _timer.ready;
     if (!mounted) return;
-
-    if (_timer.holdsAnotherDog(widget.dogId)) {
-      final held = _timer.dogName;
-      // Never silently roll one dog's time into another's, and never throw the
-      // first one away without asking — neither is a guess worth making.
-      //
-      // The way out used to be discard or nothing, which is why an unfinished
-      // session could sit in front of every other dog: the only button that
-      // moved things on destroyed an hour of timing, so the honest answer was
-      // to back out, and then the timer said Teddy for good. Writing the other
-      // dog up is the third way, and it is the one Jess actually wants —
-      // that time belongs on a record card, not in a dialog.
-      final choice = await showDialog<_HeldSession>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: Text('$held is still being timed'),
-          content: Text(
-            '${models.formatClock(_timer.totalSeconds)} recorded so far. '
-            "Write it up to keep it, or discard it to start ${widget.dogName}.",
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, _HeldSession.goBack),
-              child: const Text('GO BACK'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, _HeldSession.discard),
-              child: const Text('DISCARD IT'),
-            ),
-            ElevatedButton(
-              onPressed: () => Navigator.pop(context, _HeldSession.writeUp),
-              child: Text('WRITE UP ${held.toUpperCase()}'),
-            ),
-          ],
-        ),
-      );
-      if (!mounted) return;
-
-      switch (choice) {
-        case null:
-        case _HeldSession.goBack:
-          Navigator.of(context).pop();
-          return;
-        case _HeldSession.writeUp:
-          final wroteUp = await _writeUpHeldSession();
-          if (!mounted) return;
-          if (!wroteUp) {
-            // The card was backed out of, so nothing was saved and the held
-            // session is still the held session. Leaving this screen open on
-            // the new dog would show the other one's clock.
-            Navigator.of(context).pop();
-            return;
-          }
-        case _HeldSession.discard:
-          await _timer.clear();
-          if (!mounted) return;
-      }
-    }
     _timer.openFor(
       dogId: widget.dogId,
       dogName: widget.dogName,
@@ -162,49 +102,38 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
     );
   }
 
-  /// Send the *other* dog's timing to a record card, so switching dogs never
-  /// costs a groom.
+  GroomTimerSession? get _session => _timer.sessionFor(widget.dogId);
+
+  int get _totalSeconds => _session?.totalSeconds ?? 0;
+  int get _totalMinutes => _session?.totalMinutes ?? 0;
+
+  /// How long this groom says to book the dog in for.
   ///
-  /// Returns whether it was saved. The timer is only cleared on a save — a
-  /// card Jess backed out of has not recorded anything, and clearing anyway
-  /// would throw the session away by a quieter route than the button that says
-  /// so.
-  Future<bool> _writeUpHeldSession() async {
-    final heldDogId = _timer.dogId;
-    if (heldDogId == null) return true;
-    final saved = await Navigator.of(context).push<bool>(
-      MaterialPageRoute(
-        builder: (_) => VisitRecordScreen(
-          dogId: heldDogId,
-          dogName: _timer.dogName,
-          appointmentId: _timer.appointmentId,
-          timings: _timer.timingsNow,
-        ),
-      ),
-    );
-    if (saved != true) return false;
-    await _timer.clear();
-    return true;
-  }
+  /// Jess: the groom time was *"nowhere near the appointment time (which would
+  /// be how long to book them in for)"*. It could not be — the timer counts
+  /// five phases and this figure has to cover a whole visit. The server does
+  /// the same sum when it writes the dog's default; this is so the button says
+  /// which number it is about to write rather than quoting the stopwatch back.
+  int get _bookableMinutes => _totalMinutes + (_bookingBuffer ?? 0);
 
   Future<void> _editManually(String phase) async {
     final entered = await promptForText(
       context,
       title: '${models.PhaseTiming.labelFor(phase)} — enter minutes',
-      initialValue: (_timer.secondsFor(phase) ~/ 60).toString(),
+      initialValue: ((_session?.secondsFor(phase) ?? 0) ~/ 60).toString(),
       suffixText: 'minutes',
       keyboardType: TextInputType.number,
       confirmLabel: 'SET',
     );
     if (entered == null) return;
-    _timer.setMinutes(phase, int.tryParse(entered) ?? 0);
+    _timer.setMinutes(widget.dogId, phase, int.tryParse(entered) ?? 0);
   }
 
   /// Hand the timings to the record card rather than saving here, so the
   /// session is created once with the whole groom written up — matting,
-  /// shampoo, equipment and all.
+  /// checklist, equipment and all.
   Future<void> _writeUp() async {
-    final timings = _timer.timingsNow;
+    final timings = _timer.timingsNow(widget.dogId);
     if (timings.isEmpty) {
       showSnack(context, 'No time recorded yet.', isError: true);
       return;
@@ -214,20 +143,21 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
         builder: (_) => VisitRecordScreen(
           dogId: widget.dogId,
           dogName: widget.dogName,
-          appointmentId: _timer.appointmentId,
+          appointmentId: _session?.appointmentId,
           timings: timings,
         ),
       ),
     );
     if (saved != true || !mounted) return;
     // The card saved the session, so this timing is spent. Leaving it running
-    // is how the next dog inherits this one's clip time.
-    await _timer.clear();
+    // is how the next dog inherits this one's clip time. Only this dog's —
+    // any other dog still drying keeps its clock.
+    await _timer.clearSession(widget.dogId);
     if (mounted) Navigator.of(context).pop(true);
   }
 
   Future<void> _save({required bool applyToDog}) async {
-    final timings = _timer.timingsNow;
+    final timings = _timer.timingsNow(widget.dogId);
     if (timings.isEmpty) {
       showSnack(context, 'No time recorded yet.', isError: true);
       return;
@@ -237,13 +167,13 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
     try {
       final session = await _data.createGroomSession(
         dogId: widget.dogId,
-        appointmentId: _timer.appointmentId,
+        appointmentId: _session?.appointmentId,
         timings: timings,
       );
       if (applyToDog) {
         await _data.applySessionToDog(session.id);
       }
-      await _timer.clear();
+      await _timer.clearSession(widget.dogId);
       if (!mounted) return;
       // One bar carrying both halves, and the undo if a booking was closed.
       reportSavedVisit(
@@ -271,7 +201,7 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
       builder: (context) => AlertDialog(
         title: const Text('Discard this timing?'),
         content: Text(
-          '${models.formatClock(_timer.totalSeconds)} recorded for ${widget.dogName}, '
+          '${models.formatClock(_totalSeconds)} recorded for ${widget.dogName}, '
           'and not saved to a visit record.',
         ),
         actions: [
@@ -284,8 +214,22 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
       ),
     );
     if (confirmed != true) return;
-    await _timer.clear();
+    await _timer.clearSession(widget.dogId);
     if (mounted) Navigator.of(context).pop();
+  }
+
+  /// Swap the screen over to another dog already on the clock — one tap, and
+  /// this dog's phases keep doing whatever they were doing.
+  void _switchTo(GroomTimerSession other) {
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (_) => GroomTimerScreen(
+          dogId: other.dogId,
+          dogName: other.dogName,
+          usualMinutes: other.usualMinutes,
+        ),
+      ),
+    );
   }
 
   @override
@@ -295,8 +239,12 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
       body: ListenableBuilder(
         listenable: _timer,
         builder: (context, _) {
-          final totalMinutes = _timer.totalMinutes;
-          final leftRunning = _timer.leftRunningPhase;
+          final totalMinutes = _totalMinutes;
+          final leftRunning = _session?.leftRunningPhase;
+          final others = [
+            for (final session in _timer.liveSessions)
+              if (session.dogId != widget.dogId) session,
+          ];
           return ListView(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
             children: [
@@ -306,7 +254,7 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
                 alignment: Alignment.center,
                 child: Column(
                   children: [
-                    Text(models.formatClock(_timer.totalSeconds), style: AppColors.display(44)),
+                    Text(models.formatClock(_totalSeconds), style: AppColors.display(44)),
                     const SizedBox(height: 4),
                     Text(
                       'Usual: ${models.formatDuration(widget.usualMinutes)}',
@@ -315,6 +263,31 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
                   ],
                 ),
               ),
+              // The other dogs on the clock right now. This is the shared
+              // visit Jess described — bath one, crate-dry it, bath the next
+              // — so the switch is one tap and nothing pauses on the way.
+              if (others.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Wrap(
+                    spacing: 8,
+                    runSpacing: 6,
+                    children: [
+                      for (final other in others)
+                        ActionChip(
+                          avatar: Icon(
+                            other.isRunning ? Icons.timer : Icons.pause_circle_outline,
+                            size: 17,
+                          ),
+                          label: Text(
+                            '${other.dogName} · ${models.formatClock(other.totalSeconds)}'
+                            '${other.isRunning ? '' : ' — paused'}',
+                          ),
+                          onPressed: () => _switchTo(other),
+                        ),
+                    ],
+                  ),
+                ),
               if (leftRunning != null)
                 Padding(
                   padding: const EdgeInsets.only(top: 12),
@@ -323,8 +296,8 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
                     color: AppColors.warning.withValues(alpha: 0.12),
                     child: Text(
                       '${models.PhaseTiming.labelFor(leftRunning)} has been running for '
-                      '${models.formatClock(_timer.secondsFor(leftRunning))}. If it was left on, '
-                      'pause it and type the real time in.',
+                      '${models.formatClock(_session?.secondsFor(leftRunning) ?? 0)}. '
+                      'If it was left on, pause it and type the real time in.',
                       style: const TextStyle(fontSize: 12.5, color: AppColors.warning),
                     ),
                   ),
@@ -334,7 +307,8 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
                 padding: const EdgeInsets.symmetric(vertical: 8),
                 child: Text(
                   'Tap a phase to start or pause it. Skip any you did not do. '
-                  'The clock keeps going if you leave this screen.',
+                  'The clock keeps going if you leave this screen — and another '
+                  "dog's timer keeps counting while you work on this one.",
                   style: TextStyle(fontSize: 12.5, color: context.mojo.muted),
                 ),
               ),
@@ -371,21 +345,24 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
                 ),
               ],
               const SizedBox(height: 12),
+              // Careful wording: not "nails, ears, health check" — Jess does
+              // those inside the prep and health-check parts of the groom, so
+              // the timer does see them. What the phases genuinely never
+              // cover is the handover at both ends and anything off the clock.
               Text(
                 _bookingBuffer == null
                     // Said plainly rather than silently booking the raw timing.
-                    // Nothing is added until Jess sets a figure, and a groom
-                    // is more than the five phases this screen counts.
+                    // Nothing is added until Jess sets a figure.
                     ? "Setting the default changes how much diary time this dog's "
                         'future bookings block out. It will use the '
-                        '${models.formatDuration(totalMinutes)} timed here — the timer '
-                        'does not count the nails, ears, health check or handover, so '
-                        'if that is short, set "Add to a timed groom" in Settings.'
+                        '${models.formatDuration(totalMinutes)} timed here — if the '
+                        'booking needs more for drop-off, collection and anything '
+                        'done off the clock, set "Add to a timed groom" in Settings.'
                     : "Setting the default changes how much diary time this dog's "
                         'future bookings block out: '
                         '${models.formatDuration(totalMinutes)} timed + '
-                        '${models.formatDuration(_bookingBuffer!)} for the nails, ears, '
-                        'health check and handover = '
+                        '${models.formatDuration(_bookingBuffer!)} for what happens '
+                        'off the clock = '
                         '${models.formatDuration(_bookableMinutes)}.',
                 style: TextStyle(fontSize: 12, color: context.mojo.muted),
               ),
@@ -397,14 +374,14 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
   }
 
   Widget _phaseTile(String phase) {
-    final seconds = _timer.secondsFor(phase);
-    final isRunning = _timer.runningPhase == phase;
+    final seconds = _session?.secondsFor(phase) ?? 0;
+    final isRunning = _session?.runningPhase == phase;
     final used = seconds > 0;
 
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       child: ListTile(
-        onTap: () => _timer.toggle(phase),
+        onTap: () => _timer.toggle(widget.dogId, phase),
         leading: Container(
           width: 44,
           height: 44,
@@ -419,7 +396,9 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
           models.PhaseTiming.labelFor(phase),
           style: TextStyle(fontWeight: used ? FontWeight.w700 : FontWeight.w400),
         ),
-        subtitle: _timer.wasEnteredManually(phase) ? const Text('Entered by hand') : null,
+        subtitle: (_session?.wasEnteredManually(phase) ?? false)
+            ? const Text('Entered by hand')
+            : null,
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -443,6 +422,3 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
     );
   }
 }
-
-/// What to do with a timing that belongs to a different dog.
-enum _HeldSession { goBack, writeUp, discard }

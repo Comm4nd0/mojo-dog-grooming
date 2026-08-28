@@ -47,6 +47,7 @@ from .models import (
     Consent,
     ConsentKind,
     Dog,
+    DogChangeRequest,
     DogDocument,
     DogPhoto,
     Equipment,
@@ -5295,3 +5296,156 @@ class TemplateCommentSyntaxTests(TestCase):
             'Multi-line {# #} renders as visible text; use {% comment %} instead. '
             f'Found at: {", ".join(offenders)}',
         )
+
+
+class DogChangeRequestTests(BaseAPITestCase):
+    """An owner suggesting an update to their dog's details.
+
+    Dogs stay read-only to clients — StaffWriteOnlyMixin on DogViewSet is
+    untouched by this. The message is free text and approving applies nothing:
+    Jess edits the dog herself with the suggestion in front of her.
+    """
+
+    def _suggest(self, client, dog, message='He was neutered in June.'):
+        return client.post('/api/dog-change-requests/', {
+            'dog': dog.pk, 'message': message,
+        }, format='json')
+
+    def test_an_owner_can_suggest_a_change_for_their_own_dog(self):
+        response = self._suggest(self.alice_client, self.alice_dog)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['status'], ReviewStatus.PENDING)
+
+        # Suggesting is not doing. The dog record is untouched.
+        self.alice_dog.refresh_from_db()
+        self.assertIsNone(self.alice_dog.is_neutered)
+
+    def test_not_for_somebody_elses_dog(self):
+        response = self._suggest(self.alice_client, self.bob_dog)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(DogChangeRequest.objects.count(), 0)
+
+    def test_a_blank_message_is_refused(self):
+        response = self._suggest(self.alice_client, self.alice_dog, message='   ')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_a_client_sees_only_their_own_suggestions(self):
+        DogChangeRequest.objects.create(
+            dog=self.alice_dog, requested_by=self.alice_user, message='Alice says',
+        )
+        DogChangeRequest.objects.create(
+            dog=self.bob_dog, requested_by=self.bob_user, message='Bob says',
+        )
+        response = self.alice_client.get('/api/dog-change-requests/')
+        messages = [row['message'] for row in response.data['results']]
+        self.assertEqual(messages, ['Alice says'])
+
+    def test_staff_can_filter_to_pending(self):
+        DogChangeRequest.objects.create(
+            dog=self.alice_dog, requested_by=self.alice_user, message='One',
+        )
+        DogChangeRequest.objects.create(
+            dog=self.bob_dog, requested_by=self.bob_user, message='Two',
+            status=ReviewStatus.REJECTED,
+        )
+        response = self.staff_client.get('/api/dog-change-requests/?status=PENDING')
+        self.assertEqual(len(response.data['results']), 1)
+        self.assertEqual(response.data['results'][0]['message'], 'One')
+
+    def test_approving_marks_it_dealt_with_and_writes_nothing_to_the_dog(self):
+        change = DogChangeRequest.objects.create(
+            dog=self.alice_dog, requested_by=self.alice_user,
+            message='Please change his breed to Poodle',
+        )
+        before = Dog.objects.get(pk=self.alice_dog.pk)
+        response = self.staff_client.post(
+            f'/api/dog-change-requests/{change.pk}/approve/', {}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        change.refresh_from_db()
+        self.assertEqual(change.status, ReviewStatus.APPROVED)
+
+        after = Dog.objects.get(pk=self.alice_dog.pk)
+        self.assertEqual(after.breed_id, before.breed_id)
+        self.assertEqual(after.name, before.name)
+
+    def test_a_client_cannot_approve(self):
+        change = DogChangeRequest.objects.create(
+            dog=self.alice_dog, requested_by=self.alice_user, message='Hi',
+        )
+        response = self.alice_client.post(
+            f'/api/dog-change-requests/{change.pk}/approve/', {}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_deciding_twice_is_refused(self):
+        change = DogChangeRequest.objects.create(
+            dog=self.alice_dog, requested_by=self.alice_user, message='Hi',
+            status=ReviewStatus.APPROVED,
+        )
+        response = self.staff_client.post(
+            f'/api/dog-change-requests/{change.pk}/reject/', {}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+
+    def test_it_counts_towards_the_pending_badge(self):
+        DogChangeRequest.objects.create(
+            dog=self.alice_dog, requested_by=self.alice_user, message='Hi',
+        )
+        response = self.staff_client.get('/api/pending/')
+        self.assertEqual(response.data['dog_change_requests'], 1)
+        self.assertEqual(response.data['total'], 1)
+
+
+class BathingAndDryingNotesTests(BaseAPITestCase):
+    """The typed bathing and drying answers Jess asked for — "not quite as
+    simple as yes or no well behaved". Free text, with the same entailment the
+    yes/no carried: a note about how the bath went means a bath went."""
+
+    def test_a_bathing_note_ticks_bathed_by_entailment(self):
+        response = self.staff_client.post('/api/groom-sessions/', {
+            'dog': self.alice_dog.pk,
+            'bathing_notes': 'Fine once the water was running.',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(response.data['bathed'])
+        self.assertEqual(
+            response.data['bathing_notes'], 'Fine once the water was running.',
+        )
+
+    def test_a_drying_note_says_nothing_about_the_blow_dry_box(self):
+        # "Dried off in the crate" describes drying without a blow dry, so no
+        # entailment holds in either direction.
+        response = self.staff_client.post('/api/groom-sessions/', {
+            'dog': self.alice_dog.pk,
+            'drying_notes': 'Crate-dried while the other dog was bathed.',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIsNone(response.data['blow_dried'])
+
+    def test_not_bathed_beside_a_bathing_note_is_refused(self):
+        response = self.staff_client.post('/api/groom-sessions/', {
+            'dog': self.alice_dog.pk,
+            'bathed': False,
+            'bathing_notes': 'Hated every second.',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_an_explicit_bathed_answer_is_never_overwritten(self):
+        session = GroomSession.objects.create(
+            dog=self.alice_dog, bathed=True, bathing_notes='',
+        )
+        session.bathing_notes = 'Good as gold.'
+        session.save()
+        session.refresh_from_db()
+        self.assertTrue(session.bathed)
+
+    def test_the_notes_stay_off_the_owner_report(self):
+        # The report whitelist is pinned by its own test; this one states the
+        # intent for the two new fields directly.
+        GroomSession.objects.create(dog=self.alice_dog, bathing_notes='Bit nippy in the bath.')
+        response = self.alice_client.get('/api/groom-reports/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        row = response.data['results'][0]
+        self.assertNotIn('bathing_notes', row)
+        self.assertNotIn('drying_notes', row)

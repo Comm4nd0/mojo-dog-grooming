@@ -74,6 +74,7 @@ from .models import (
     Consent,
     ConsentKind,
     Dog,
+    DogChangeRequest,
     DogDocument,
     DogPhoto,
     Equipment,
@@ -113,6 +114,7 @@ from .serializers import (
     ClientSerializer,
     ConsentWriteSerializer,
     ClosureDaySerializer,
+    DogChangeRequestSerializer,
     DogListSerializer,
     DogDocumentSerializer,
     DogPhotoSerializer,
@@ -2101,6 +2103,77 @@ class AppointmentChangeRequestViewSet(viewsets.ModelViewSet):
         return Response(self.get_serializer(change).data)
 
 
+class DogChangeRequestViewSet(viewsets.ModelViewSet):
+    """An owner suggesting an update to their dog's details.
+
+    Dogs are read-only to clients (``StaffWriteOnlyMixin`` on ``DogViewSet``)
+    and stay that way — this is the asking path. The message is free text and
+    **approving applies nothing**: it marks the suggestion dealt with, and
+    Jess edits the dog herself. See the model for why there is no whitelist
+    to apply here.
+    """
+
+    queryset = DogChangeRequest.objects.select_related('dog', 'dog__client', 'requested_by')
+    serializer_class = DogChangeRequestSerializer
+    permission_classes = [IsAuthenticated]
+    http_method_names = ['get', 'post', 'head', 'options']
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if self.request.user.is_staff:
+            status_filter = self.request.query_params.get('status')
+            if status_filter:
+                queryset = queryset.filter(status=status_filter)
+            return queryset
+        return queryset.filter(requested_by=self.request.user)
+
+    def perform_create(self, serializer):
+        user = self.request.user
+        dog = serializer.validated_data['dog']
+
+        if not user.is_staff:
+            client = getattr(user, 'client', None)
+            if client is None or dog.client_id != client.pk:
+                # The same 403 whether the dog belongs to somebody else or does
+                # not exist — same rule as AppointmentChangeRequestViewSet, so
+                # this cannot be used to probe which dog ids are real.
+                raise PermissionDenied('You can only suggest changes for your own dogs.')
+
+        serializer.save(requested_by=user)
+
+    @action(detail=True, methods=['post'], permission_classes=[IsAdminUser])
+    def approve(self, request, pk=None):
+        change = self.get_object()
+        if change.status != ReviewStatus.PENDING:
+            return Response(
+                {'detail': 'That request has already been dealt with.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+        # Deliberately writes nothing to the dog — the message is prose, and
+        # Jess makes the edit herself. This records that she has.
+        change.status = ReviewStatus.APPROVED
+        change.reviewed_by = request.user
+        change.reviewed_at = timezone.now()
+        change.review_notes = request.data.get('review_notes', '')
+        change.save()
+        return Response(self.get_serializer(change).data)
+
+    @action(detail=True, methods=['post'], permission_classes=[IsAdminUser])
+    def reject(self, request, pk=None):
+        change = self.get_object()
+        if change.status != ReviewStatus.PENDING:
+            return Response(
+                {'detail': 'That request has already been dealt with.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+        change.status = ReviewStatus.REJECTED
+        change.reviewed_by = request.user
+        change.reviewed_at = timezone.now()
+        change.review_notes = request.data.get('review_notes', '')
+        change.save()
+        return Response(self.get_serializer(change).data)
+
+
 class PendingView(APIView):
     """How much is waiting for Jess, for the badge on the More tab.
 
@@ -2139,6 +2212,10 @@ class PendingView(APIView):
             # others are not — an unseen cancellation is a slot Jess could have
             # refilled and now cannot.
             'appointment_change_requests': AppointmentChangeRequest.objects.filter(
+                status=ReviewStatus.PENDING,
+            ).count(),
+            # An owner suggesting an update to their dog's details.
+            'dog_change_requests': DogChangeRequest.objects.filter(
                 status=ReviewStatus.PENDING,
             ).count(),
         }

@@ -37,6 +37,7 @@ from .models import (
     Consent,
     ConsentKind,
     Dog,
+    DogChangeRequest,
     DogDocument,
     DogPhoto,
     Equipment,
@@ -702,6 +703,33 @@ class AppointmentChangeRequestSerializer(serializers.ModelSerializer):
         return attrs
 
 
+class DogChangeRequestSerializer(serializers.ModelSerializer):
+    dog_name = serializers.CharField(source='dog.name', read_only=True)
+    client_name = serializers.CharField(source='dog.client.full_name', read_only=True)
+    client_phone = serializers.CharField(source='dog.client.phone', read_only=True)
+    requested_by_username = serializers.CharField(source='requested_by.username', read_only=True)
+
+    class Meta:
+        model = DogChangeRequest
+        fields = [
+            'id', 'dog', 'dog_name', 'client_name', 'client_phone',
+            'requested_by', 'requested_by_username',
+            'message', 'status', 'review_notes', 'reviewed_at', 'created_at',
+        ]
+        # `requested_by` comes from the session and `status` from staff review.
+        # `dog` IS accepted from the body — an owner has to say which dog they
+        # mean — and the viewset checks it is theirs before saving, same as
+        # `appointment` above. Ownership is not something a serializer can
+        # settle.
+        read_only_fields = ['id', 'requested_by', 'status', 'reviewed_at', 'created_at']
+
+    def validate_message(self, value):
+        text = (value or '').strip()
+        if not text:
+            raise serializers.ValidationError('Say what you would like changed.')
+        return text
+
+
 # ── Dogs ───────────────────────────────────────────────────────────────
 
 class ProblemAreaSerializer(serializers.ModelSerializer):
@@ -1122,7 +1150,8 @@ class GroomSessionSerializer(serializers.ModelSerializer):
             'health_check_notes',
             'matting_paws', 'matting_armpits', 'matting_ears', 'matting_elsewhere',
             'matting_notes', 'matting_found',
-            'bathed_well_behaved', 'high_velocity_dryer', 'shampoo_used',
+            'bathed_well_behaved', 'high_velocity_dryer',
+            'bathing_notes', 'drying_notes', 'shampoo_used',
             'equipment_used', 'equipment_used_detail',
             'final_body', 'final_feet', 'final_tail', 'final_face',
             'nails_done', 'hygiene_area_done', 'health_check_done', 'ears_cleaned',
@@ -1161,7 +1190,10 @@ class GroomSessionSerializer(serializers.ModelSerializer):
         def value(name, default=None):
             return attrs.get(name, getattr(self.instance, name, default))
 
-        if value('bathed') is False and value('bathed_well_behaved') is not None:
+        if value('bathed') is False and (
+            value('bathed_well_behaved') is not None
+            or str(value('bathing_notes', '') or '').strip()
+        ):
             raise serializers.ValidationError(
                 {'bathed': 'The bathing answer above says a bath happened — clear that first.'},
             )

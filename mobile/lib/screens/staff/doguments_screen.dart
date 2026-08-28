@@ -136,6 +136,14 @@ class _DogumentsScreenState extends State<DogumentsScreen> {
             tooltip: _includeInactive ? 'Hide retired dogs' : 'Show retired dogs',
             onPressed: () {
               setState(() => _includeInactive = !_includeInactive);
+              // Say what the tap just did. A tooltip only shows on long-press,
+              // so this icon was a mystery — Jess asked what it was.
+              showSnack(
+                context,
+                _includeInactive
+                    ? 'Showing retired dogs too.'
+                    : 'Retired dogs hidden again.',
+              );
               _load(search: _query.trim().isEmpty ? null : _query.trim());
             },
           ),

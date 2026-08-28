@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:table_calendar/table_calendar.dart';
 
@@ -9,6 +11,7 @@ import '../../widgets/calendar/day_timeline.dart';
 import '../../widgets/calendar/timeline_metrics.dart';
 import '../../widgets/calendar/week_timeline.dart';
 import '../../widgets/common.dart';
+import '../../widgets/contact_actions.dart';
 import 'booking_form_screen.dart';
 import 'dog_profile_screen.dart';
 
@@ -29,7 +32,12 @@ enum CalendarView { day, week, month }
 /// The to-do list used to be docked at the bottom of this screen; it lives
 /// under More now — see [TodosScreen] for why.
 class CalendarScreen extends StatefulWidget {
-  const CalendarScreen({super.key});
+  const CalendarScreen({super.key, this.initialDate});
+
+  /// Opens the diary on this day rather than today. Set when the screen is
+  /// *pushed* — "see it in the diary" from the Waiting for you queue — rather
+  /// than sitting in the shell as a tab.
+  final DateTime? initialDate;
 
   @override
   State<CalendarScreen> createState() => _CalendarScreenState();
@@ -54,6 +62,12 @@ class _CalendarScreenState extends State<CalendarScreen> {
   @override
   void initState() {
     super.initState();
+    final initial = widget.initialDate;
+    if (initial != null) {
+      _focusedDay = initial;
+      _selectedDay = initial;
+      _loadedMonth = DateTime(initial.year, initial.month);
+    }
     _load();
   }
 
@@ -112,6 +126,150 @@ class _CalendarScreenState extends State<CalendarScreen> {
       ),
     );
     if (saved == true) _load();
+  }
+
+  /// What tapping a block does.
+  ///
+  /// A client's request opens a decision sheet rather than the edit form —
+  /// Jess: *"within the 'Waiting for you' requests can there be an option to
+  /// view the item in the diary, then have the ability to approve/deny it
+  /// from there?"*. The diary is where the clash is visible, so the diary is
+  /// where the answer should be one tap away. Everything else opens the form
+  /// as before.
+  Future<void> _openAppointment(Appointment appointment) async {
+    if (appointment.status != 'REQUESTED') {
+      await _openBooking(existing: appointment);
+      return;
+    }
+
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 20, 16, 4),
+              child: Text(
+                '${appointment.dogName} — requested by ${appointment.clientName}',
+                style: Theme.of(sheetContext).textTheme.titleMedium,
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: Text(
+                '${formatDate(appointment.startAt)} · ${appointment.timeRange}'
+                '${appointment.notes.isEmpty ? '' : '\n“${appointment.notes}”'}',
+                style: TextStyle(fontSize: 12.5, color: sheetContext.mojo.muted),
+              ),
+            ),
+            ListTile(
+              leading: Icon(Icons.check, color: sheetContext.mojo.accent),
+              title: const Text('Book it in'),
+              subtitle: const Text('At the time they asked for'),
+              onTap: () => Navigator.pop(sheetContext, 'accept'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.close, color: AppColors.error),
+              title: const Text('Turn it down'),
+              onTap: () => Navigator.pop(sheetContext, 'decline'),
+            ),
+            ListTile(
+              leading: Icon(Icons.edit_calendar_outlined, color: sheetContext.mojo.accent),
+              title: const Text('Open the booking'),
+              subtitle: const Text('Pick a different time before booking it'),
+              onTap: () => Navigator.pop(sheetContext, 'open'),
+            ),
+            if (appointment.clientPhone.isNotEmpty)
+              ListTile(
+                leading: Icon(Icons.phone_outlined, color: sheetContext.mojo.accent),
+                title: Text('Ring ${appointment.clientName}'),
+                onTap: () => Navigator.pop(sheetContext, 'ring'),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || choice == null) return;
+
+    switch (choice) {
+      case 'accept':
+        await _acceptRequest(appointment);
+      case 'decline':
+        await _declineRequest(appointment);
+      case 'open':
+        await _openBooking(existing: appointment);
+      case 'ring':
+        await callNumber(context, appointment.clientPhone);
+    }
+  }
+
+  /// Same shape as the Waiting for you queue: check first — not to refuse,
+  /// the diary never refuses, but because a request arrives without anyone
+  /// having looked at the day — then book it at the time asked.
+  Future<void> _acceptRequest(Appointment request) async {
+    try {
+      final check = await _data.checkBooking(
+        dogId: request.dogId,
+        startAt: request.startAt,
+        endAt: request.endAt,
+        excludeAppointmentId: request.id,
+        serviceType: request.serviceType,
+      );
+      if (!mounted) return;
+      final go = await showWarningsDialog(
+        context,
+        check,
+        title: 'Before you book them in',
+        confirmLabel: 'BOOK ANYWAY',
+      );
+      if (!go || !mounted) return;
+      await _data.updateAppointment(request.id, {'status': 'BOOKED'});
+    } catch (error) {
+      if (mounted) showSnack(context, error.toString(), isError: true);
+      return;
+    }
+    if (!mounted) return;
+    showSnack(context, 'Booked in.');
+    _load();
+    unawaited(_data.getPending());
+  }
+
+  Future<void> _declineRequest(Appointment request) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Turn down ${request.dogName}?'),
+        content: const Text(
+          'The booking is cancelled. Ring them if you want to offer another '
+          'time — there are no notifications, so nothing tells them by itself.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('KEEP IT'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('TURN IT DOWN', style: TextStyle(color: AppColors.error)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    try {
+      await _data.updateAppointment(request.id, {'status': 'CANCELLED'});
+    } catch (error) {
+      if (mounted) showSnack(context, error.toString(), isError: true);
+      return;
+    }
+    if (!mounted) return;
+    showSnack(context, 'Turned down.');
+    _load();
+    unawaited(_data.getPending());
   }
 
   @override
@@ -227,7 +385,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
               closeMinutes: hours?.$2,
               isClosedDay: closed,
               movingId: _movingId,
-              onOpen: (appointment) => _openBooking(existing: appointment),
+              onOpen: _openAppointment,
               onCreateAt: (at) => _openBooking(at: at),
               onMove: _move,
             ),
@@ -353,7 +511,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
             // Zoomed out by default so the whole week fits without scrolling
             // — scanning is the point of this view.
             metrics: const TimelineMetrics(scale: 0.55),
-            onOpen: (appointment) => _openBooking(existing: appointment),
+            onOpen: _openAppointment,
             onOpenDay: (day) => setState(() {
               _selectedDay = day;
               _view = CalendarView.day;
@@ -584,7 +742,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
       itemBuilder: (context, index) {
         final appointment = appointments[index];
         return ListTile(
-          onTap: () => _openBooking(existing: appointment),
+          onTap: () => _openAppointment(appointment),
           leading: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [

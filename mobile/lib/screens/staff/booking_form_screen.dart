@@ -49,6 +49,14 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
   Set<int> _selectedServices = {};
   String _status = 'BOOKED';
 
+  /// Other dogs from the same household to book into the same slot — Jess:
+  /// *"as usually people book all their dogs together for a groom, can it be
+  /// made easy to 'share an appointment'?"*. Each extra dog gets its own
+  /// appointment at the same start time, sized to its own groom time, so the
+  /// diary shows them overlapping in one visit the way she works them — one
+  /// bathing while the other dries.
+  Set<int> _extraDogIds = {};
+
   // A repeating booking creates a BookingSeries, which materialises
   // appointments ahead at this interval.
   bool _repeat = false;
@@ -129,6 +137,20 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
     }
   }
 
+  /// The same owner's other dogs, offered for booking into this slot.
+  List<DogSummary> get _householdDogs {
+    final dog = _selectedDog;
+    if (dog == null || _isEditing) return const [];
+    return [
+      for (final other in _dogs)
+        if (other.clientId == dog.clientId && other.id != dog.id && other.isActive)
+          other,
+    ];
+  }
+
+  List<DogSummary> get _extraDogs =>
+      [for (final d in _dogs) if (_extraDogIds.contains(d.id)) d];
+
   DogSummary? get _selectedDog {
     for (final dog in _dogs) {
       if (dog.id == _dogId) return dog;
@@ -177,6 +199,12 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
     }
   }
 
+  /// How long an extra dog's block runs — its own figure, not the primary
+  /// dog's. A spaniel and a chihuahua booked together are not the same visit
+  /// length.
+  int _minutesFor(DogSummary dog) =>
+      _serviceType == ServiceType.nailsFleasTicks ? _nailVisitMinutes : dog.groomMinutes;
+
   Future<void> _save() async {
     if (_dogId == null) {
       showSnack(context, 'Choose a dog first.', isError: true);
@@ -192,10 +220,39 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
         serviceType: _serviceType,
         serviceIds: _selectedServices.toList(),
       );
+
+      // The companions' warnings too, so a bitey second dog on a full day is
+      // said out loud before anything is created. Deduplicated on the message
+      // and prefixed with the dog, or two dogs from one household warn twice
+      // in the same words. What no check can see is the overlap between the
+      // dogs being booked together — none of them exist yet — and that
+      // overlap is the point, not a mistake.
+      final warnings = [...check.warnings];
+      for (final extra in _extraDogs) {
+        final extraCheck = await _data.checkBooking(
+          dogId: extra.id,
+          startAt: _startAt,
+          endAt: _startAt.add(Duration(minutes: _minutesFor(extra))),
+          serviceType: _serviceType,
+        );
+        for (final warning in extraCheck.warnings) {
+          final message = '${extra.name}: ${warning.message}';
+          if (!warnings.any((w) => w.message == message)) {
+            warnings.add(BookingWarning(code: warning.code, message: message));
+          }
+        }
+      }
       if (!mounted) return;
 
       // Advisory only — "book anyway" is always available.
-      final proceed = await showWarningsDialog(context, check);
+      final proceed = await showWarningsDialog(
+        context,
+        BookingCheck(
+          warnings: warnings,
+          suggestedEndAt: check.suggestedEndAt,
+          suggestedPrice: check.suggestedPrice,
+        ),
+      );
       if (!proceed) {
         setState(() => _busy = false);
         return;
@@ -231,6 +288,26 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
           serviceIds: _selectedServices.toList(),
           notes: _notes.text.trim(),
         );
+        // The companions: one booking each at the same start, sized to their
+        // own groom times, with no services named — the server resolves each
+        // dog's own price and length exactly as a booking made alone would.
+        for (final extra in _extraDogs) {
+          await _data.createAppointment(
+            dogId: extra.id,
+            startAt: _startAt,
+            endAt: _startAt.add(Duration(minutes: _minutesFor(extra))),
+            bookingType: _bookingType,
+            serviceType: _serviceType,
+            notes: _notes.text.trim(),
+          );
+        }
+        if (_extraDogIds.isNotEmpty && mounted) {
+          final names = [
+            _selectedDog?.name ?? '',
+            for (final extra in _extraDogs) extra.name,
+          ].where((name) => name.isNotEmpty).join(', ');
+          showSnack(context, 'Booked in together: $names.');
+        }
       }
       if (mounted) Navigator.of(context).pop(true);
     } catch (error) {
@@ -387,6 +464,9 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
             onSelected: (dog) {
               setState(() {
                 _dogId = dog?.id;
+                // A different owner's household — the old companions don't
+                // carry over.
+                _extraDogIds = {};
                 // Re-size the slot to the newly chosen dog's groom time.
                 if (dog != null && !_isEditing) _durationMinutes = dog.groomMinutes;
               });
@@ -411,6 +491,48 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
                 ],
               ),
             ),
+
+          // "Usually people book all their dogs together for a groom" — the
+          // same household's other dogs, one tap each. Every ticked dog gets
+          // its own booking at the same start time, sized to its own groom
+          // time, so they overlap in the diary the way she actually works
+          // them: one in the bath while the other dries in the crate.
+          if (_householdDogs.isNotEmpty) ...[
+            const SectionHeader(title: 'Book together'),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                "${dog!.clientFirstName}'s other dog"
+                '${_householdDogs.length == 1 ? '' : 's'} — tick to book into '
+                'the same visit. Each gets its own diary block.',
+                style: TextStyle(fontSize: 12.5, color: context.mojo.muted),
+              ),
+            ),
+            Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              children: [
+                for (final other in _householdDogs)
+                  FilterChip(
+                    label: Text(
+                      '${other.name} · ${formatDuration(other.groomMinutes)}',
+                    ),
+                    selected: _extraDogIds.contains(other.id),
+                    onSelected: (ticked) => setState(() {
+                      if (ticked) {
+                        _extraDogIds.add(other.id);
+                        // A shared visit and a repeating series don't mix —
+                        // the series materialises one dog. Booked together is
+                        // one-off; the repeat can be set up per dog.
+                        _repeat = false;
+                      } else {
+                        _extraDogIds.remove(other.id);
+                      }
+                    }),
+                  ),
+              ],
+            ),
+          ],
 
           const SectionHeader(title: 'When'),
           Row(
@@ -550,7 +672,7 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
             onSelectionChanged: (value) => setState(() => _bookingType = value.first),
           ),
 
-          if (!_isEditing && _serviceType == ServiceType.groom) ...[
+          if (!_isEditing && _serviceType == ServiceType.groom && _extraDogIds.isEmpty) ...[
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               value: _repeat,

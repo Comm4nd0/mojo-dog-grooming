@@ -8,8 +8,10 @@ import 'package:mojo_app/services/groom_timer_service.dart';
 ///
 /// Jess asked to be able to leave the screen mid-clip to read a dog's notes.
 /// Every count used to live in the screen's State, so backing out threw the
-/// groom away without a word. These cover the two things that replaced it:
-/// state that outlives the view, and a session that outlives the process.
+/// groom away without a word. Then she asked for the shared-visit workflow —
+/// *"I will bath one and they can 'dry' in the crate for a bit and I will get
+/// on with 'bathing' the other dog"* — so the service holds a session per dog
+/// and two clocks genuinely run at once.
 ///
 /// Elapsed time is never asserted by waiting — it comes from wall-clock
 /// stamps, so a restore with a stamp hours in the past exercises the same
@@ -46,8 +48,10 @@ void main() {
     });
   }
 
-  /// A stored session, as the service writes one.
-  void storeSession({
+  /// A stored session **in the pre-multi-dog format** — one session's fields
+  /// at the top level, exactly as the previous build wrote it. The phone
+  /// updates with a groom on the clock, so this shape must keep restoring.
+  void storeLegacySession({
     int dogId = 7,
     String dogName = 'Bunny',
     int? appointmentId,
@@ -85,13 +89,14 @@ void main() {
     test('a phase typed in by hand is kept, and marked as such', () async {
       final timer = await service();
       timer.openFor(dogId: 1, dogName: 'Teddy');
-      timer.setMinutes('CLIP', 25);
+      timer.setMinutes(1, 'CLIP', 25);
 
-      expect(timer.secondsFor('CLIP'), 25 * 60);
-      expect(timer.wasEnteredManually('CLIP'), isTrue);
-      expect(timer.totalMinutes, 25);
+      final session = timer.sessionFor(1)!;
+      expect(session.secondsFor('CLIP'), 25 * 60);
+      expect(session.wasEnteredManually('CLIP'), isTrue);
+      expect(session.totalMinutes, 25);
 
-      final timings = timer.timingsNow;
+      final timings = timer.timingsNow(1);
       expect(timings, hasLength(1));
       expect(timings.single.phase, 'CLIP');
       expect(timings.single.enteredManually, isTrue);
@@ -100,165 +105,212 @@ void main() {
     test('a phase set back to zero drops out entirely', () async {
       final timer = await service();
       timer.openFor(dogId: 1, dogName: 'Teddy');
-      timer.setMinutes('CLIP', 25);
-      timer.setMinutes('CLIP', 0);
+      timer.setMinutes(1, 'CLIP', 25);
+      timer.setMinutes(1, 'CLIP', 0);
 
-      expect(timer.timingsNow, isEmpty);
-      expect(timer.wasEnteredManually('CLIP'), isFalse);
+      expect(timer.timingsNow(1), isEmpty);
+      expect(timer.sessionFor(1)!.wasEnteredManually('CLIP'), isFalse);
     });
 
     test('re-opening the same dog keeps every count', () async {
       final timer = await service();
       timer.openFor(dogId: 1, dogName: 'Teddy');
-      timer.setMinutes('PREP', 10);
+      timer.setMinutes(1, 'PREP', 10);
 
       // What happens when Jess goes off to read the notes and comes back.
       timer.openFor(dogId: 1, dogName: 'Teddy');
-      expect(timer.secondsFor('PREP'), 10 * 60);
+      expect(timer.sessionFor(1)!.secondsFor('PREP'), 10 * 60);
     });
 
-    test('another dog is flagged rather than merged into this one', () async {
+    test('opening a second dog keeps the first, and never merges them', () async {
+      // The shared visit: Teddy's time stays Teddy's while Bunny starts from
+      // nothing beside it. The one thing this must never do is quietly add
+      // one dog's clip time to the other's groom.
       final timer = await service();
       timer.openFor(dogId: 1, dogName: 'Teddy');
-      timer.setMinutes('PREP', 10);
+      timer.setMinutes(1, 'PREP', 10);
 
-      // The screen asks before doing anything with this.
-      expect(timer.holdsAnotherDog(2), isTrue);
-      expect(timer.holdsAnotherDog(1), isFalse);
-
-      // And taking it over starts from nothing — Teddy's ten minutes must not
-      // become part of Bunny's groom.
       timer.openFor(dogId: 2, dogName: 'Bunny');
-      expect(timer.secondsFor('PREP'), 0);
-      expect(timer.totalSeconds, 0);
+      expect(timer.sessionFor(1)!.secondsFor('PREP'), 10 * 60);
+      expect(timer.sessionFor(2)!.secondsFor('PREP'), 0);
+      expect(timer.sessionFor(2)!.totalSeconds, 0);
+      expect(timer.liveSessions.map((s) => s.dogName), ['Teddy']);
+    });
+
+    test('two dogs can run a phase each at the same time', () async {
+      // Jess: "I will bath one and they can 'dry' in the crate for a bit and
+      // I will get on with 'bathing' the other dog."
+      final timer = await service();
+      timer.openFor(dogId: 1, dogName: 'Teddy');
+      timer.openFor(dogId: 2, dogName: 'Bunny');
+      timer.toggle(1, 'DRY');
+      timer.toggle(2, 'WASH');
+
+      expect(timer.sessionFor(1)!.runningPhase, 'DRY');
+      expect(timer.sessionFor(2)!.runningPhase, 'WASH');
+
+      // Pausing one leaves the other counting.
+      timer.toggle(1, 'DRY');
+      expect(timer.sessionFor(1)!.isRunning, isFalse);
+      expect(timer.sessionFor(2)!.runningPhase, 'WASH');
+      timer.pauseAll();
     });
 
     test('an empty session is not one worth going back to', () async {
       final timer = await service();
-      expect(timer.hasSession, isFalse);
+      expect(timer.hasAnySession, isFalse);
       timer.openFor(dogId: 1, dogName: 'Teddy');
       // Opened but nothing timed: the shell bar has nothing to show.
-      expect(timer.hasSession, isFalse);
-      timer.toggle('PREP');
-      expect(timer.hasSession, isTrue);
+      expect(timer.hasAnySession, isFalse);
+      timer.toggle(1, 'PREP');
+      expect(timer.hasAnySession, isTrue);
+      timer.pauseAll();
     });
 
-    test('only one phase runs at a time', () async {
+    test('only one phase runs at a time per dog', () async {
       final timer = await service();
       timer.openFor(dogId: 1, dogName: 'Teddy');
-      timer.toggle('PREP');
-      expect(timer.runningPhase, 'PREP');
-      timer.toggle('CLIP');
-      expect(timer.runningPhase, 'CLIP');
-      timer.toggle('CLIP');
-      expect(timer.runningPhase, isNull);
-      expect(timer.isRunning, isFalse);
+      timer.toggle(1, 'PREP');
+      expect(timer.sessionFor(1)!.runningPhase, 'PREP');
+      timer.toggle(1, 'CLIP');
+      expect(timer.sessionFor(1)!.runningPhase, 'CLIP');
+      timer.toggle(1, 'CLIP');
+      expect(timer.sessionFor(1)!.runningPhase, isNull);
+      expect(timer.sessionFor(1)!.isRunning, isFalse);
+    });
+
+    test('clearing one dog leaves the other on the clock', () async {
+      final timer = await service();
+      timer.openFor(dogId: 1, dogName: 'Teddy');
+      timer.setMinutes(1, 'PREP', 10);
+      timer.openFor(dogId: 2, dogName: 'Bunny');
+      timer.setMinutes(2, 'WASH', 5);
+
+      await timer.clearSession(1);
+      expect(timer.sessionFor(1), isNull);
+      expect(timer.sessionFor(2)!.secondsFor('WASH'), 5 * 60);
+      expect(stored.containsKey('mojo_groom_timer'), isTrue);
+
+      await timer.clearSession(2);
+      expect(timer.hasAnySession, isFalse);
+      expect(stored.containsKey('mojo_groom_timer'), isFalse);
     });
   });
 
   group('Surviving the app closing', () {
-    test('a session written up survives a restart', () async {
+    test('sessions written up survive a restart, both dogs', () async {
       final first = await service();
       first.openFor(dogId: 4, dogName: 'Bunny', usualMinutes: 105);
-      first.setMinutes('STRIP', 40);
+      first.setMinutes(4, 'STRIP', 40);
+      first.openFor(dogId: 5, dogName: 'Teddy', usualMinutes: 60);
+      first.setMinutes(5, 'WASH', 15);
 
       final second = await service();
-      expect(second.dogId, 4);
-      expect(second.dogName, 'Bunny');
-      expect(second.usualMinutes, 105);
-      expect(second.secondsFor('STRIP'), 40 * 60);
-      expect(second.wasEnteredManually('STRIP'), isTrue);
+      final bunny = second.sessionFor(4)!;
+      expect(bunny.dogName, 'Bunny');
+      expect(bunny.usualMinutes, 105);
+      expect(bunny.secondsFor('STRIP'), 40 * 60);
+      expect(bunny.wasEnteredManually('STRIP'), isTrue);
+      expect(second.sessionFor(5)!.secondsFor('WASH'), 15 * 60);
+    });
+
+    test('the previous build\'s single-session blob still restores', () async {
+      // The format changed under a phone that may have a groom on the clock.
+      // Losing that to a shape change is exactly what persistence is for.
+      storeLegacySession(dogId: 4, dogName: 'Bunny', elapsed: {'STRIP': 2400});
+      final timer = await service();
+
+      final session = timer.sessionFor(4)!;
+      expect(session.dogName, 'Bunny');
+      expect(session.usualMinutes, 105);
+      expect(session.secondsFor('STRIP'), 2400);
     });
 
     test('a phase left running carries on from when it started', () async {
       // Not from now — restarting the count at zero would lose the groom that
       // has actually happened, which is the whole thing this guards.
-      storeSession(
+      storeLegacySession(
         runningPhase: 'DRY',
         runningSince: DateTime.now().subtract(const Duration(minutes: 12)),
         elapsed: {'PREP': 300},
       );
       final timer = await service();
 
-      expect(timer.runningPhase, 'DRY');
-      expect(timer.secondsFor('DRY'), closeTo(12 * 60, 5));
-      expect(timer.secondsFor('PREP'), 300);
+      final session = timer.sessionFor(7)!;
+      expect(session.runningPhase, 'DRY');
+      expect(session.secondsFor('DRY'), closeTo(12 * 60, 5));
+      expect(session.secondsFor('PREP'), 300);
+      timer.pauseAll();
     });
 
     test('a phase running implausibly long is flagged, never adjusted', () async {
       // An invented figure is indistinguishable from a measured one, so the
       // service says which phase looks wrong and leaves the number alone.
-      storeSession(
+      storeLegacySession(
         runningPhase: 'CLIP',
         runningSince: DateTime.now().subtract(const Duration(hours: 14)),
       );
       final timer = await service();
 
-      expect(timer.leftRunningPhase, 'CLIP');
-      expect(timer.secondsFor('CLIP'), closeTo(14 * 3600, 5));
+      final session = timer.sessionFor(7)!;
+      expect(session.leftRunningPhase, 'CLIP');
+      expect(session.secondsFor('CLIP'), closeTo(14 * 3600, 5));
+      timer.pauseAll();
     });
 
     test('a shorter run is not flagged', () async {
-      storeSession(
+      storeLegacySession(
         runningPhase: 'CLIP',
         runningSince: DateTime.now().subtract(const Duration(minutes: 40)),
       );
       final timer = await service();
-      expect(timer.leftRunningPhase, isNull);
+      expect(timer.sessionFor(7)!.leftRunningPhase, isNull);
+      timer.pauseAll();
     });
 
     test('a running phase with no start stamp is dropped, not restarted', () async {
       // Half a record is no record: counting it from now would read as a
       // phase that had only just begun.
-      storeSession(runningPhase: 'WASH', elapsed: {'WASH': 120});
+      storeLegacySession(runningPhase: 'WASH', elapsed: {'WASH': 120});
       final timer = await service();
 
-      expect(timer.isRunning, isFalse);
-      expect(timer.secondsFor('WASH'), 120);
+      final session = timer.sessionFor(7)!;
+      expect(session.isRunning, isFalse);
+      expect(session.secondsFor('WASH'), 120);
     });
 
     test('a restore landing late never puts the previous dog back', () async {
       // Jess: the timer was "stuck on teddy instead of the actual dog it's
-      // meant for". Reading the session back off the keystore is a round trip
+      // meant for". Reading the sessions back off the keystore is a round trip
       // the constructor does not block on, so a screen could open the timer
       // for the dog in front of her and have the restore land a moment later
-      // and overwrite it — name, clock and all. Memory is the live session;
+      // and overwrite it — name, clock and all. Memory is the live state;
       // disk is a snapshot of an older one, so disk loses.
-      storeSession(dogId: 7, dogName: 'Teddy', elapsed: {'CLIP': 600});
+      storeLegacySession(dogId: 7, dogName: 'Teddy', elapsed: {'CLIP': 600});
 
       final timer = GroomTimerService(); // restore in flight, deliberately
       timer.openFor(dogId: 9, dogName: 'Bunny', usualMinutes: 60);
       await timer.ready;
 
-      expect(timer.dogId, 9);
-      expect(timer.dogName, 'Bunny');
-      expect(timer.usualMinutes, 60);
-      expect(timer.totalSeconds, 0, reason: "Teddy's clip time must not land here");
+      expect(timer.sessionFor(7), isNull,
+          reason: "Teddy's clip time must not come back over the live state");
+      final session = timer.sessionFor(9)!;
+      expect(session.dogName, 'Bunny');
+      expect(session.usualMinutes, 60);
+      expect(session.totalSeconds, 0);
     });
 
     test('ready still completes when there was nothing stored', () async {
       final timer = GroomTimerService();
       await timer.ready;
-      expect(timer.dogId, isNull);
+      expect(timer.sessions, isEmpty);
     });
 
     test('an unreadable blob is cleared rather than wedging the timer', () async {
       stored['mojo_groom_timer'] = 'not json';
       final timer = await service();
 
-      expect(timer.dogId, isNull);
-      expect(stored.containsKey('mojo_groom_timer'), isFalse);
-    });
-
-    test('clearing it takes it off the disk too', () async {
-      final timer = await service();
-      timer.openFor(dogId: 4, dogName: 'Bunny');
-      timer.setMinutes('PREP', 5);
-      expect(stored.containsKey('mojo_groom_timer'), isTrue);
-
-      await timer.clear();
-      expect(timer.dogId, isNull);
-      expect(timer.hasSession, isFalse);
+      expect(timer.sessions, isEmpty);
       expect(stored.containsKey('mojo_groom_timer'), isFalse);
     });
 
@@ -267,7 +319,7 @@ void main() {
       timer.openFor(dogId: 4, dogName: 'Bunny', appointmentId: 88);
       // Re-opening from the shell bar, which has no appointment to offer.
       timer.openFor(dogId: 4, dogName: 'Bunny');
-      expect(timer.appointmentId, 88);
+      expect(timer.sessionFor(4)!.appointmentId, 88);
     });
   });
 }

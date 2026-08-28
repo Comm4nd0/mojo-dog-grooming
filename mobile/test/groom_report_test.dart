@@ -175,15 +175,16 @@ void main() {
     });
 
     testWidgets('an answer about the bath means a bath happened', (tester) async {
+      // The answer is typed now — Jess: "not quite as simple as yes or no
+      // well behaved" — but the entailment is the same one the dropdown
+      // carried: writing anything about the bath ticks Bathed.
       await pumpCard(tester, visitType: VisitType.groom);
       expect(find.text('Done'), findsNothing);
 
-      final bathingDropdown = find
-          .byWidgetPredicate((widget) => widget is DropdownButtonFormField<bool?>)
-          .first;
-      await tester.tap(bathingDropdown);
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Yes').last);
+      await tester.enterText(
+        find.widgetWithText(TextFormField, 'Bathing'),
+        'Good as gold once the water ran',
+      );
       await tester.pumpAndSettle();
 
       // The Bathed tile ticked itself — the same entailment the server

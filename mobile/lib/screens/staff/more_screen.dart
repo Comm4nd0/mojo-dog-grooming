@@ -12,6 +12,7 @@ import 'equipment_screen.dart';
 import 'intake_review_screen.dart';
 import 'invoices_screen.dart';
 import 'logins_screen.dart';
+import 'medical_and_breeds_screen.dart';
 import 'settings_screen.dart';
 import 'staff_shell.dart';
 import 'todos_screen.dart';
@@ -105,11 +106,20 @@ class _MoreScreenState extends State<MoreScreen> with WidgetsBindingObserver {
             subtitle: 'Blades, dryers — sharpening and PAT testing',
             builder: (_) => const EquipmentScreen(),
           ),
+          // Its own top-level entry, at Jess's request — this used to be two
+          // sections at the bottom of Settings, and neither is a setting.
+          _tile(
+            context,
+            icon: Icons.medical_information_outlined,
+            title: 'Medical and Breed Standards',
+            subtitle: 'Look a condition or a breed up',
+            builder: (_) => const MedicalAndBreedsScreen(),
+          ),
           _tile(
             context,
             icon: Icons.settings_outlined,
             title: 'Settings',
-            subtitle: 'Opening hours, temperament limits, breeds',
+            subtitle: 'Opening hours, temperament limits, services',
             builder: (_) => const SettingsScreen(),
           ),
           // Sending a reset link takes over an account, so it sits behind

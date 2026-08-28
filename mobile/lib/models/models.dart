@@ -496,6 +496,7 @@ class PendingCounts {
   final int intakeSubmissions;
   final int claimRequests;
   final int changeRequests;
+  final int dogChangeRequests;
   final int passwordResetRequests;
   final int total;
 
@@ -504,6 +505,7 @@ class PendingCounts {
     this.intakeSubmissions = 0,
     this.claimRequests = 0,
     this.changeRequests = 0,
+    this.dogChangeRequests = 0,
     this.passwordResetRequests = 0,
     this.total = 0,
   });
@@ -513,6 +515,7 @@ class PendingCounts {
         intakeSubmissions: (json['intake_submissions'] as num?)?.toInt() ?? 0,
         claimRequests: (json['claim_requests'] as num?)?.toInt() ?? 0,
         changeRequests: (json['change_requests'] as num?)?.toInt() ?? 0,
+        dogChangeRequests: (json['dog_change_requests'] as num?)?.toInt() ?? 0,
         // Absent unless the signed-in user is a superuser.
         passwordResetRequests: (json['password_reset_requests'] as num?)?.toInt() ?? 0,
         total: (json['total'] as num?)?.toInt() ?? 0,
@@ -842,6 +845,44 @@ class AppointmentChangeRequest {
   bool get isCancellation => kind == 'CANCEL';
   bool get isPending => status == 'PENDING';
   String get kindLabel => isCancellation ? 'Cancel' : 'Move';
+}
+
+/// An owner suggesting an update to their dog's details — free text, reviewed
+/// by staff. Approving it applies nothing by itself; Jess edits the dog with
+/// the message in front of her.
+class DogChangeRequest {
+  final int id;
+  final int dogId;
+  final String dogName;
+  final String clientName;
+  final String clientPhone;
+  final String message;
+  final String status;
+  final DateTime? createdAt;
+
+  const DogChangeRequest({
+    required this.id,
+    required this.dogId,
+    required this.dogName,
+    required this.clientName,
+    required this.clientPhone,
+    required this.message,
+    required this.status,
+    this.createdAt,
+  });
+
+  factory DogChangeRequest.fromJson(Map<String, dynamic> json) => DogChangeRequest(
+        id: (json['id'] as num).toInt(),
+        dogId: (json['dog'] as num).toInt(),
+        dogName: json['dog_name']?.toString() ?? '',
+        clientName: json['client_name']?.toString() ?? '',
+        clientPhone: json['client_phone']?.toString() ?? '',
+        message: json['message']?.toString() ?? '',
+        status: json['status']?.toString() ?? 'PENDING',
+        createdAt: DateTime.tryParse(json['created_at']?.toString() ?? '')?.toLocal(),
+      );
+
+  bool get isPending => status == 'PENDING';
 }
 
 /// One row of "who needs booking in" — `GET /api/dogs/due/`.
@@ -1434,6 +1475,12 @@ class GroomSession {
   /// a plain bool until Jess asked for it "like the bathed", and on a dog that
   /// will not tolerate one, which of the two it was is the point.
   final bool? highVelocityDryer;
+
+  /// The typed answers Jess asked for once she had used the yes/no pair —
+  /// "not quite as simple as yes or no well behaved". Free text; blank means
+  /// not recorded, same third state as everywhere else.
+  final String bathingNotes;
+  final String dryingNotes;
   final String shampooUsed;
   final List<Equipment> equipmentUsed;
 
@@ -1500,6 +1547,8 @@ class GroomSession {
     this.mattingFound = false,
     this.bathedWellBehaved,
     this.highVelocityDryer,
+    this.bathingNotes = '',
+    this.dryingNotes = '',
     this.shampooUsed = '',
     this.equipmentUsed = const [],
     this.finalBody = '',
@@ -1553,6 +1602,8 @@ class GroomSession {
             json['bathed_well_behaved'] is bool ? json['bathed_well_behaved'] as bool : null,
         highVelocityDryer:
             json['high_velocity_dryer'] is bool ? json['high_velocity_dryer'] as bool : null,
+        bathingNotes: json['bathing_notes']?.toString() ?? '',
+        dryingNotes: json['drying_notes']?.toString() ?? '',
         shampooUsed: json['shampoo_used']?.toString() ?? '',
         equipmentUsed: ((json['equipment_used_detail'] as List?) ?? const [])
             .map((e) => Equipment.fromJson(e as Map<String, dynamic>))

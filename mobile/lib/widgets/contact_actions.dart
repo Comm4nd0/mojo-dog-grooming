@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -61,15 +62,40 @@ Future<void> emailAddress(BuildContext context, String email) {
   );
 }
 
-Future<void> openMap(BuildContext context, String address, String postcode) {
-  final query = mapQuery(address, postcode);
-  return _open(
-    context,
-    // `geo:` with a `q` is understood by Google Maps and, on iOS, hands off to
-    // Apple Maps. `0,0` is the documented "no coordinates, use the query" form.
-    Uri.parse('geo:0,0?q=${Uri.encodeComponent(query)}'),
-    "Couldn't open a map for that address.",
-  );
+/// The map URIs to try for [query], most native first.
+///
+/// Jess hit "Couldn't open a map for that address" on a perfectly good
+/// postcode, and the address was never the problem: the old code sent `geo:`
+/// on every platform, and iOS has no native handler for `geo:` at all — it
+/// only opens if some third-party app happens to have registered the scheme.
+/// So iOS leads with the maps.apple.com universal link (Apple Maps claims it
+/// natively), Android leads with `geo:` (`0,0` is the documented "no
+/// coordinates, use the query" form), and both fall back to Google Maps in
+/// the browser, which works anywhere something can open a web page.
+List<Uri> mapUris(String query, {TargetPlatform? platform}) {
+  final encoded = Uri.encodeComponent(query);
+  return [
+    if ((platform ?? defaultTargetPlatform) == TargetPlatform.iOS)
+      Uri.parse('https://maps.apple.com/?q=$encoded')
+    else
+      Uri.parse('geo:0,0?q=$encoded'),
+    Uri.parse('https://www.google.com/maps/search/?api=1&query=$encoded'),
+  ];
+}
+
+Future<void> openMap(BuildContext context, String address, String postcode) async {
+  for (final uri in mapUris(mapQuery(address, postcode))) {
+    bool launched;
+    try {
+      launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (_) {
+      launched = false;
+    }
+    if (launched) return;
+  }
+  if (context.mounted) {
+    showSnack(context, "Couldn't open a map for that address.", isError: true);
+  }
 }
 
 /// A [DetailRow] whose value is tappable — the row shape used all over the

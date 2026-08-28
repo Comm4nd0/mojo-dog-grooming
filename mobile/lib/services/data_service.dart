@@ -460,6 +460,29 @@ class DataService {
   Future<void> rejectAppointmentChange(int id) =>
       _api.post('/appointment-change-requests/$id/reject/', {});
 
+  // ── Dog change requests ────────────────────────────────────────────
+  //
+  // A dog's record is read-only to its owner. This is how they *suggest* an
+  // update — free text, reviewed by Jess, who makes any edit herself.
+
+  Future<List<DogChangeRequest>> getDogChangeRequests({String? status}) async {
+    final payload = await _api.get('/dog-change-requests/', query: {
+      'status': ?status,
+    });
+    return ApiClient.resultsOf(payload).map(DogChangeRequest.fromJson).toList();
+  }
+
+  Future<void> suggestDogChange({required int dogId, required String message}) =>
+      _api.post('/dog-change-requests/', {'dog': dogId, 'message': message});
+
+  /// Marks the suggestion dealt with. Deliberately changes nothing on the dog
+  /// — the message is prose, and Jess edits the record herself.
+  Future<void> approveDogChange(int id) =>
+      _api.post('/dog-change-requests/$id/approve/', {});
+
+  Future<void> rejectDogChange(int id) =>
+      _api.post('/dog-change-requests/$id/reject/', {});
+
   // ── Documents ──────────────────────────────────────────────────────
 
   Future<List<DogDocument>> getDogDocuments(int dogId) async {

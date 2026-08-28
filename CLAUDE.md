@@ -39,7 +39,8 @@ mobile/lib/
                       groom_timer_service, service_locator
   screens/            login_screen, lock_screen, account_switcher
   screens/staff/      doguments, dog/client profiles, calendar, timers, visit records,
-                      invoices, services, equipment, to-dos, documents, logins
+                      invoices, services, equipment, to-dos, documents, logins,
+                      medical_and_breeds (the reference shelf under More)
   screens/client/     my dogs, my bookings, my profile, claim profile
   widgets/            common.dart, dog_silhouette.dart, biometric_toggle.dart,
                       searchable_picker.dart, duration_picker.dart,
@@ -54,7 +55,7 @@ mobile/lib/
 Backend:
 ```bash
 python manage.py migrate && python manage.py seed_breeds
-python manage.py test api        # 406 tests
+python manage.py test api        # 437 tests
 python manage.py runserver 0.0.0.0:8000
 python manage.py accounts        # who can sign in — usernames live only in the DB
 python manage.py reset_link jess # a way back in when the superuser is locked out
@@ -63,7 +64,7 @@ python manage.py reset_link jess # a way back in when the superuser is locked ou
 Mobile:
 ```bash
 cd mobile && flutter pub get
-flutter analyze && flutter test  # 213 tests
+flutter analyze && flutter test  # 225 tests
 flutter run --dart-define=MOJO_API_BASE=http://192.168.1.20:8000/api
 ```
 
@@ -281,6 +282,25 @@ does not go round it.
 - The app says "request sent", never "cancelled" or "moved". Nothing has changed until she
   approves it, and saying otherwise is how somebody doesn't turn up to a groom that is still on.
 
+**`DogChangeRequest`** is the same review shape for the dog record — Jess's *"Can the owner
+have an option to 'suggest changes / update details' about the dog?"*. One deliberate
+difference from `ClientChangeRequest`: **`message` is free text and approval applies
+nothing**. There is no safe whitelist of dog fields to `setattr` — breed drives pricing and
+the preferences carry Jess's own wording — so approving records "dealt with" and she makes
+the edit herself; the queue row opens the dog so the suggestion and the form sit side by
+side. Ownership of `dog` is checked in the viewset with the same single 403 as
+`AppointmentChangeRequest`, so the endpoint cannot probe which dog ids exist. It counts into
+`PendingView` and has its own tab on Waiting for you. The client's button is on the dog
+profile, in the spot the staff book-bar occupies.
+
+**A client asking for an out-of-hours slot is told so before they send** — Jess: *"if it's
+'out of hours' can it come up with a message letting them know"*. The request sheet and the
+reschedule flow read `/opening-hours/` and `/closures/` (both already client-readable) and
+show her message — likely to be moved or turned down — inline. It warns and never blocks,
+same as every rule in `scheduling.py`; a fetch failure or **no hours configured at all**
+warns about nothing, because a salon with no hours set must not tell every client they are
+out of hours.
+
 ## The breed record is a reference sheet that also prices
 
 `Breed` began as three numbers and is now Jess's breed standards record — *"a little snippet of
@@ -344,6 +364,11 @@ carries a `source`, and one without a source is shown as unattributed rather tha
 Not on `Dog`: a particular dog's conditions are `Dog.medical_issues` and `Dog.medical_notes`,
 staff-gated with the rest of that profile. This is the dictionary, not the record.
 `IsStaffOrReadOnly`, because a client reading a general reference harms nothing.
+
+In the app it lives under **More → Medical and Breed Standards**
+(`medical_and_breeds_screen.dart`), beside the breed list — both used to close out Settings,
+and Jess asked for the move: neither is a setting, they are what she looks things up in
+mid-groom.
 
 ## Breeds price off a grid, not per breed
 
@@ -648,6 +673,16 @@ Things worth knowing:
   and on a dog that will not tolerate one that is the fact worth having. `0017` clears the
   existing `False` values to null, exactly as `0007` did for `is_neutered` and for the same
   reason: not one of them can be told apart from a switch nobody touched.
+- **`bathing_notes` and `drying_notes` superseded the yes/no pair on the card** — her next
+  message once she had used it: *"Can the bathing and high velocity dryer be option to type as
+  not quite as simple as yes or no well behaved"*. Free text (`0021`), blank meaning "not
+  recorded". The booleans **stay**: every old card stores its answer there, the app renders an
+  old boolean as words ("Well behaved") rather than losing it, and older builds still write
+  them. A bathing note entails `bathed` exactly as the boolean did; a drying note deliberately
+  entails nothing — "dried off in the crate" is drying without a blow dry. Neither note is on
+  the groom report. `shampoo_used` was retired from the card at the same time (*"the shampoo
+  used is a bit irrelevant so just get rid of it"*) — the column stays so nothing typed is
+  lost, the app no longer shows or sends it.
 - **A saved visit finds its booking and marks it done** — `link_to_appointment()`. Jess: *"did
   a 'groom for teddy', set an appointment and then did the timer and managed to add the session
   but wasn't automatically assigned to the appointment?"* It wasn't: `GroomTimerScreen` took an
@@ -678,7 +713,11 @@ is what booked a 55-minute slot for a 90-minute job, and the *average* did it ag
 route.
 
 `AppSettings.groom_time_buffer_minutes` is the distance between the two figures, and
-`GroomSession.bookable_minutes` is where it lands.
+`GroomSession.bookable_minutes` is where it lands. **Describe it as "drop-off, collection and
+anything done off the clock", never "nails, ears, the health check"** — the first wording
+shipped said that, and Jess corrected it: she does the nails and ears inside the timed
+phases, so the timer does see them. What the phases genuinely never cover is the handover at
+both ends.
 
 - **Null until Jess sets it, and nothing is guessed.** Same call as `nail_visit_price` and for
   the same reason — a buffer this codebase invented would be indistinguishable from one she
@@ -839,6 +878,19 @@ screen directly underneath.
 singleton in `service_locator`. `GroomTimerScreen` is a view over it, and closing that screen
 pauses nothing.
 
+**It holds one session per dog now, and two can run at once.** Jess: *"can it be 'paused' so
+once all the 'prep' done on one, the 'prep' for the other can be added? Like I will bath one
+and they can 'dry' in the crate for a bit and I will get on with 'bathing' the other dog?"*.
+Dogs from one household are groomed interleaved, so `openFor` a second dog **adds** a session
+rather than asking what to do with the first — the old held-dog dialog is gone, and with it
+the trap where the only button that moved things on threw an hour of timing away. One phase
+runs at a time *per dog*; another dog's phase keeps counting. The shell bar shows a strip per
+live session and the timer screen offers the other dogs as one-tap switches. Saving or
+discarding clears **only that dog's** session (`clearSession`). The persisted blob is now
+`{sessions: [...]}` but `restore()` still reads the old single-session shape — the format
+changed under phones that may have a groom on the clock, and there is a test for it. The
+"disk loses to memory" rule is unchanged and now guards the whole list.
+
 - **Elapsed time is always a wall-clock difference, never a tick count.** A backgrounded app
   stops getting `Timer.periodic` callbacks; `DateTime.now().difference(since)` does not care.
   The ticker exists only to repaint.
@@ -918,6 +970,24 @@ first code ever to read `AppSettings.booking_slot_buffer_minutes` — that setti
 the start with no screen and no reader, which is exactly how it stayed dead; Settings now has
 a row for it. It returns `reason: 'no_opening_hours'` when the table is empty, because an
 empty list would read as "fully booked" when the real answer is "set your hours up".
+
+**A REQUESTED block in the day view opens a decision sheet, not the edit form** — book it in
+(with the same advisory check the queue runs), turn it down, open the booking, or ring. Jess:
+*"view the item in the diary, then have the ability to approve/deny it from there?"* — the
+diary is where the clash is visible, so the answer is one tap away there. Waiting for you
+gained "See it in the diary" buttons that push `CalendarScreen(initialDate:)`, which is why
+that screen takes an optional date at all: pushed it shows a back button and lands on the day
+in question; as a shell tab nothing passes one.
+
+**Booking a household together** — *"usually people book all their dogs together for a
+groom"*. The booking form offers the owner's other dogs as chips once a dog is picked; each
+ticked dog gets **its own appointment at the same start time**, sized to its own groom time
+with no services named, so the server resolves each dog's price exactly as a booking made
+alone. The deliberate overlap is the point (one bathing while the other crate-dries) and no
+check can see it anyway — none of the bookings exist when the checks run — but each extra
+dog's *other* warnings (temperament caps, hours) are merged into the one confirm dialog,
+prefixed with the dog's name. Book-together and the repeat switch exclude each other: a
+series materialises one dog.
 
 ## Scanned paperwork is not a photo
 

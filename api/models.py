@@ -1659,6 +1659,49 @@ class AppointmentChangeRequest(models.Model):
         return appointment
 
 
+class DogChangeRequest(models.Model):
+    """An owner suggesting an update to their dog's details.
+
+    Jess: *"Can the owner have an option to 'suggest changes / update details'
+    about the dog?"*. Same review shape as :class:`ClientChangeRequest` — a
+    client's dogs are read-only to them (``StaffWriteOnlyMixin`` on
+    ``DogViewSet``), so this is the asking path, not a write.
+
+    ``message`` is **free text, deliberately**, unlike ClientChangeRequest's
+    whitelisted field map. A dog record is mostly Jess's working record —
+    breed drives pricing, the preferences carry her own wording — so there is
+    no safe set of fields to apply with ``setattr``. Approving this marks it
+    dealt with and changes nothing by itself; Jess edits the dog herself with
+    the message in front of her.
+
+    ``dog`` is checked against the requester's own client record in the
+    viewset, never trusted alone from the body — same rule as ``appointment``
+    on :class:`AppointmentChangeRequest`.
+    """
+
+    dog = models.ForeignKey(Dog, on_delete=models.CASCADE, related_name='change_requests')
+    requested_by = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name='dog_change_requests',
+    )
+    message = models.TextField(
+        help_text='What the owner would like changed or added, in their words.',
+    )
+    status = models.CharField(max_length=10, choices=ReviewStatus.choices, default=ReviewStatus.PENDING)
+    reviewed_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='reviewed_dog_changes',
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'Update suggested for {self.dog.name} ({self.status})'
+
+
 # ── Groom timing ───────────────────────────────────────────────────────
 
 class GroomSession(models.Model):
@@ -1706,12 +1749,31 @@ class GroomSession(models.Model):
     matting_notes = models.TextField(blank=True, help_text='Where else, and how bad.')
     # Null, not False: "not bathed" and "bathed and hated it" are different
     # things, and defaulting to False would claim the second.
+    #
+    # Kept alongside ``bathing_notes`` below rather than replaced by it: every
+    # visit written up before Jess asked for words instead of a yes/no stores
+    # its answer here, and the card renders an old boolean as words rather
+    # than losing it. New writes go to the notes; nothing coerces between the
+    # two.
     bathed_well_behaved = models.BooleanField(null=True, blank=True)
     # Nullable for the same reason, at Jess's request — "can we change to well
     # behaved like the bathed". A switch that starts off cannot tell "the dryer
     # was not used" from "nobody wrote it down", and on a dog that will not
     # tolerate one that is the fact worth having.
     high_velocity_dryer = models.BooleanField(null=True, blank=True)
+    # Jess again, once she had used the yes/no: *"Can the bathing and high
+    # velocity dryer be option to type as not quite as simple as yes or no
+    # well behaved"*. Free text, hers — how the bath and the drying actually
+    # went. Blank means not recorded, the same third state as everywhere else.
+    bathing_notes = models.TextField(
+        blank=True, help_text='How bathing went, in her words.',
+    )
+    drying_notes = models.TextField(
+        blank=True, help_text='How drying went — dryer, crate, towel — in her words.',
+    )
+    # Retired from the card at Jess's request ("the shampoo used is a bit
+    # irrelevant so just get rid of it"). The column stays so nothing already
+    # typed is lost; the app no longer shows or sends it.
     shampoo_used = models.CharField(max_length=120, blank=True)
     equipment_used = models.ManyToManyField(
         'Equipment', blank=True, related_name='groom_sessions',
@@ -1985,7 +2047,13 @@ class GroomSession(models.Model):
         write, and mutating columns it didn't name would not persist anyway.
         """
         if kwargs.get('update_fields') is None:
-            if self.bathed is None and self.bathed_well_behaved is not None:
+            # A note about how the bath went means a bath went — same
+            # entailment as the old yes/no. Nothing is inferred from
+            # ``drying_notes``: "dried off in the crate" describes drying
+            # without a blow dry, so the note says nothing about the box.
+            if self.bathed is None and (
+                self.bathed_well_behaved is not None or self.bathing_notes.strip()
+            ):
                 self.bathed = True
             if self.blow_dried is None and self.high_velocity_dryer:
                 self.blow_dried = True

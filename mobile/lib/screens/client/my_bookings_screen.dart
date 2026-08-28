@@ -24,6 +24,46 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
   bool _loading = true;
   Object? _error;
 
+  /// Opening hours and closure days, for the out-of-hours note on a request.
+  /// Null until fetched; a failed fetch just means the sheet doesn't warn —
+  /// the server still shows Jess the same thing when she reviews it.
+  Map<int, (int, int)>? _hours;
+  Set<DateTime>? _closures;
+
+  Future<void> _loadHoursIfNeeded() async {
+    if (_hours != null && _closures != null) return;
+    try {
+      _hours = await _data.getOpeningHoursByWeekday();
+      _closures = await _data.getClosureDates();
+    } catch (_) {
+      // Advisory only. Nothing here blocks a request.
+    }
+  }
+
+  /// Whether [when] falls outside normal grooming hours.
+  ///
+  /// Jess: *"if it's 'out of hours' can it come up with a message letting
+  /// them know"*. False when the hours are unknown or none are set up at all
+  /// — a salon with no hours configured must not tell every client their
+  /// request is out of hours.
+  bool _isOutOfHours(DateTime when) {
+    final hours = _hours;
+    final closures = _closures;
+    if (hours == null || closures == null || hours.isEmpty) return false;
+    if (closures.contains(DateTime.utc(when.year, when.month, when.day))) {
+      return true;
+    }
+    final day = hours[when.weekday];
+    if (day == null) return true;
+    final minutes = when.hour * 60 + when.minute;
+    return minutes < day.$1 || minutes >= day.$2;
+  }
+
+  /// Her wording, near enough: it warns, it never stops the request going in.
+  static const _outOfHoursMessage =
+      'Please note this is out of normal hours for grooming — '
+      'it is likely to be moved or turned down.';
+
   @override
   void initState() {
     super.initState();
@@ -66,6 +106,7 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
 
   Future<void> _request() async {
     final dogs = await _data.getDogs();
+    await _loadHoursIfNeeded();
     if (!mounted) return;
     if (dogs.isEmpty) {
       showSnack(context, 'No dogs on your account yet.', isError: true);
@@ -146,6 +187,20 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
                   ),
                 ],
               ),
+              if (_isOutOfHours(DateTime(
+                date.year, date.month, date.day, time.hour, time.minute,
+              )))
+                Padding(
+                  padding: const EdgeInsets.only(top: 10),
+                  child: Container(
+                    padding: const EdgeInsets.all(10),
+                    color: AppColors.warning.withValues(alpha: 0.12),
+                    child: const Text(
+                      _outOfHoursMessage,
+                      style: TextStyle(fontSize: 12.5, color: AppColors.warning),
+                    ),
+                  ),
+                ),
               const SizedBox(height: 14),
               TextField(
                 controller: notes,
@@ -305,6 +360,32 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
     );
     if (time == null || !mounted) return;
 
+    await _loadHoursIfNeeded();
+    if (!mounted) return;
+    final preferred =
+        DateTime(date.year, date.month, date.day, time.hour, time.minute);
+    if (_isOutOfHours(preferred)) {
+      // A message, not a refusal — same rule as every warning in the diary.
+      final goOn = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Out of normal hours'),
+          content: const Text(_outOfHoursMessage),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('GO BACK'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('ASK ANYWAY'),
+            ),
+          ],
+        ),
+      );
+      if (goOn != true || !mounted) return;
+    }
+
     final note = await promptForText(
       context,
       title: 'Ask to move it',
@@ -317,8 +398,7 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
     await _send(
       appointmentId: appointment.id,
       kind: 'RESCHEDULE',
-      preferredStartAt:
-          DateTime(date.year, date.month, date.day, time.hour, time.minute),
+      preferredStartAt: preferred,
       note: note,
     );
   }

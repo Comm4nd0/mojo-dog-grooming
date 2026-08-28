@@ -60,7 +60,8 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
   late final TextEditingController _recordedMinutes;
   late final TextEditingController _healthCheck;
   late final TextEditingController _mattingNotes;
-  late final TextEditingController _shampoo;
+  late final TextEditingController _bathing;
+  late final TextEditingController _drying;
   late final TextEditingController _finalBody;
   late final TextEditingController _finalFeet;
   late final TextEditingController _finalTail;
@@ -119,7 +120,27 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
         TextEditingController(text: session?.recordedMinutes?.toString() ?? '');
     _healthCheck = TextEditingController(text: session?.healthCheckNotes ?? '');
     _mattingNotes = TextEditingController(text: session?.mattingNotes ?? '');
-    _shampoo = TextEditingController(text: session?.shampooUsed ?? '');
+    // The typed answers lead; a card from before they existed renders its old
+    // yes/no as words rather than losing it. The words are a faithful reading
+    // of a box labelled "well behaved" — nothing further is invented.
+    _bathing = TextEditingController(
+      text: (session?.bathingNotes.isNotEmpty ?? false)
+          ? session!.bathingNotes
+          : switch (session?.bathedWellBehaved) {
+              true => 'Well behaved',
+              false => 'Not well behaved',
+              null => '',
+            },
+    );
+    _drying = TextEditingController(
+      text: (session?.dryingNotes.isNotEmpty ?? false)
+          ? session!.dryingNotes
+          : switch (session?.highVelocityDryer) {
+              true => 'High velocity dryer used',
+              false => 'High velocity dryer not used',
+              null => '',
+            },
+    );
     _finalBody = TextEditingController(text: session?.finalBody ?? '');
     _finalFeet = TextEditingController(text: session?.finalFeet ?? '');
     _finalTail = TextEditingController(text: session?.finalTail ?? '');
@@ -156,7 +177,7 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
   @override
   void dispose() {
     for (final controller in [
-      _recordedMinutes, _healthCheck, _mattingNotes, _shampoo,
+      _recordedMinutes, _healthCheck, _mattingNotes, _bathing, _drying,
       _finalBody, _finalFeet, _finalTail, _finalFace, _notes, _sensitive,
       _checklistNotes,
     ]) {
@@ -216,7 +237,8 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
         'matting_notes': _mattingNotes.text.trim(),
         'bathed_well_behaved': _bathedWellBehaved,
         'high_velocity_dryer': _hvDryer,
-        'shampoo_used': _shampoo.text.trim(),
+        'bathing_notes': _bathing.text.trim(),
+        'drying_notes': _drying.text.trim(),
         'equipment_used': _equipmentIds.toList(),
         'final_body': _finalBody.text.trim(),
         'final_feet': _finalFeet.text.trim(),
@@ -361,9 +383,12 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
               ),
             ),
           const SizedBox(height: 4),
+          // Not "nails, ears" — Jess does those inside the timed phases, so
+          // the stopwatch does see them. What it never counts is the handover
+          // at both ends and anything done off the clock.
           Text(
-            'What the stopwatch measured. The figure above is the whole groom '
-            "— drop-off, nails, ears and collection are in it and aren't timed.",
+            'What the stopwatch measured. The figure above is the whole visit '
+            "— drop-off, collection and anything done off the clock are in it.",
             style: TextStyle(fontSize: 11.5, color: context.mojo.muted),
           ),
         ],
@@ -561,7 +586,12 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
                   _bathed,
                   (value) => setState(() {
                     _bathed = value;
-                    if (value == false) _bathedWellBehaved = null;
+                    // "Not bathed" cannot sit beside an answer about how the
+                    // bath went — the pair moves together, words included.
+                    if (value == false) {
+                      _bathedWellBehaved = null;
+                      _bathing.clear();
+                    }
                   }),
                 ),
                 _checklistTile(
@@ -647,46 +677,45 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
                 ),
 
                 const SectionHeader(title: 'Bathing and drying'),
-                // Three states on purpose: "not bathed" is not the same as
-                // "bathed and hated it", and the card leaves it blank when
-                // there was no bath. Answering either of these ticks the
-                // matching checklist box above — an answer about how it went
-                // means it happened.
-                DropdownButtonFormField<bool?>(
-                  initialValue: _bathedWellBehaved,
-                  decoration: const InputDecoration(labelText: 'Bathing, well behaved'),
-                  items: const [
-                    DropdownMenuItem(value: null, child: Text('Not recorded')),
-                    DropdownMenuItem(value: true, child: Text('Yes')),
-                    DropdownMenuItem(value: false, child: Text('No')),
-                  ],
-                  onChanged: (value) => setState(() {
-                    _bathedWellBehaved = value;
-                    if (value != null && _bathed != true) _bathed = true;
-                  }),
-                ),
-                const SizedBox(height: 12),
-                // Jess asked for this "like the bathed", and for the same
-                // reason: a switch that starts off cannot tell "we didn't
-                // use one" from "nobody wrote it down".
-                DropdownButtonFormField<bool?>(
-                  initialValue: _hvDryer,
-                  decoration: const InputDecoration(labelText: 'High velocity dryer'),
-                  items: const [
-                    DropdownMenuItem(value: null, child: Text('Not recorded')),
-                    DropdownMenuItem(value: true, child: Text('Used')),
-                    DropdownMenuItem(value: false, child: Text('Not used')),
-                  ],
-                  onChanged: (value) => setState(() {
-                    _hvDryer = value;
-                    if (value == true && _blowDried != true) _blowDried = true;
-                  }),
-                ),
-                const SizedBox(height: 12),
+                // Typed, at Jess's request — *"Can the bathing and high
+                // velocity dryer be option to type as not quite as simple as
+                // yes or no well behaved"*. The old yes/no answers still show
+                // here as words on an old card, so nothing already recorded is
+                // lost. Blank means not recorded, the same third state the
+                // dropdowns carried.
                 MojoTextField(
-                  controller: _shampoo,
-                  decoration: const InputDecoration(labelText: 'Shampoo used'),
+                  controller: _bathing,
+                  decoration: const InputDecoration(
+                    labelText: 'Bathing',
+                    helperText: 'How it went, in your words. Writing anything '
+                        'here ticks Bathed above.',
+                  ),
+                  maxLines: 2,
+                  textCapitalization: TextCapitalization.sentences,
+                  // The same entailment the dropdown carried: an answer about
+                  // how the bath went means a bath went.
+                  onChanged: (value) {
+                    if (value.trim().isNotEmpty && _bathed != true) {
+                      setState(() => _bathed = true);
+                    }
+                  },
                 ),
+                const SizedBox(height: 12),
+                // Nothing is inferred from this one: "dried off in the crate"
+                // is drying without a blow dry, so the words say nothing
+                // about the Blow dried box.
+                MojoTextField(
+                  controller: _drying,
+                  decoration: const InputDecoration(
+                    labelText: 'Drying',
+                    helperText: 'Dryer, crate, towel — and how they took it.',
+                  ),
+                  maxLines: 2,
+                  textCapitalization: TextCapitalization.sentences,
+                ),
+                // The shampoo box used to sit here. Jess: "the shampoo used is
+                // a bit irrelevant so just get rid of it" — anything already
+                // typed is still on the server, just no longer asked for.
                 const SizedBox(height: 14),
                 _equipmentField(),
 

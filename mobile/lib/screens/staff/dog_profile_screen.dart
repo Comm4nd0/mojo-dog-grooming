@@ -190,7 +190,10 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
           ? ListenableBuilder(
               listenable: _timer,
               builder: (context, _) {
-                final timing = _timer.hasSession && _timer.dogId == dog.id;
+                // This dog's own clock, not whichever dog happens to be
+                // running — the service holds one session per dog now.
+                final session = _timer.sessionFor(dog.id);
+                final timing = session != null && session.hasTime;
                 return FloatingActionButton.extended(
                   onPressed: () async {
                     await Navigator.of(context).push(
@@ -201,7 +204,7 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
                   icon: Icon(timing ? Icons.timer : Icons.timer_outlined),
                   label: Text(
                     timing
-                        ? 'TIMING · ${formatClock(_timer.totalSeconds)}'
+                        ? 'TIMING · ${formatClock(session.totalSeconds)}'
                         : 'TIME A GROOM',
                   ),
                 );
@@ -212,7 +215,15 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
       // the next groom is the thing Jess reaches for straight off a dog's
       // profile, and it used to mean backing out to the diary and searching
       // for the dog again.
-      bottomNavigationBar: (_isStaff && dog != null) ? _bookBar(dog) : null,
+      //
+      // A client gets the suggestion bar in the same spot instead — their
+      // side of "can the owner have an option to suggest changes / update
+      // details about the dog?".
+      bottomNavigationBar: dog == null
+          ? null
+          : _isStaff
+              ? _bookBar(dog)
+              : _suggestBar(dog),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
@@ -285,6 +296,91 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
         ),
       ),
     );
+  }
+
+  /// The owner's counterpart of [_bookBar]: ask for the record to be updated.
+  ///
+  /// A suggestion, not an edit — the dog stays read-only to them, and nothing
+  /// changes until Jess has read it and made the edit herself. Same review
+  /// rule as everything else a client sends in.
+  Widget _suggestBar(Dog dog) {
+    return SafeArea(
+      child: Container(
+        decoration: BoxDecoration(
+          border: Border(top: BorderSide(color: context.mojo.hairline)),
+          color: Theme.of(context).colorScheme.surface,
+        ),
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+        child: Row(
+          children: [
+            OutlinedButton.icon(
+              icon: const Icon(Icons.edit_note_outlined, size: 18),
+              label: const Text('SUGGEST AN UPDATE'),
+              onPressed: () => _suggestUpdate(dog),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _suggestUpdate(Dog dog) async {
+    final message = TextEditingController();
+    final send = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetContext) => Padding(
+        padding: EdgeInsets.only(
+          left: 16, right: 16, top: 16,
+          bottom: MediaQuery.of(sheetContext).viewInsets.bottom + 24,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text('Update ${dog.name}\'s details',
+                style: Theme.of(sheetContext).textTheme.headlineSmall),
+            const SizedBox(height: 6),
+            Text(
+              'Tell Mojo and Co what has changed — a new vet, neutered since, '
+              'how you would like the groom. They will update the record.',
+              style: TextStyle(fontSize: 12.5, color: sheetContext.mojo.muted),
+            ),
+            const SizedBox(height: 16),
+            MojoTextField(
+              controller: message,
+              decoration: const InputDecoration(labelText: 'What should change?'),
+              maxLines: 4,
+              autofocus: true,
+              textCapitalization: TextCapitalization.sentences,
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(sheetContext, true),
+              child: const Text('SEND SUGGESTION'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    final text = message.text.trim();
+    message.dispose();
+    if (send != true || !mounted) return;
+    if (text.isEmpty) {
+      showSnack(context, 'Say what you would like changed.', isError: true);
+      return;
+    }
+    try {
+      await _data.suggestDogChange(dogId: dog.id, message: text);
+      if (!mounted) return;
+      // "Sent", never "changed" — nothing moves until Jess reviews it, and
+      // saying otherwise is how somebody believes the record already reads
+      // the way they asked.
+      showSnack(context, 'Sent. Mojo and Co will update ${dog.name}\'s record.');
+    } catch (error) {
+      if (mounted) showSnack(context, error.toString(), isError: true);
+    }
   }
 
   Widget _header(Dog dog) {
@@ -955,7 +1051,6 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
       if (visit.checklistSkipped.isNotEmpty)
         'not done: ${visit.checklistSkipped.join(', ')}',
       if (visit.mattingPlaces.isNotEmpty) 'matting: ${visit.mattingPlaces.join(', ')}',
-      if (visit.shampooUsed.isNotEmpty) visit.shampooUsed,
       if (visit.temperamentObservedDisplay.isNotEmpty) visit.temperamentObservedDisplay,
     ];
     return ListTile(
