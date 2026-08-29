@@ -53,6 +53,7 @@ mobile/build/
 mobile/.dart_tool/
 mobile/ios/
 mobile/android/
+mobile/macos/
 mobile/test/
 
 # ── Docs and editor noise ──────────────────────────────────────────────

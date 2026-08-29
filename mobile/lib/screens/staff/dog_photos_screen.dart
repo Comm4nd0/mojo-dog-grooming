@@ -76,6 +76,14 @@ class _DogPhotosScreenState extends State<DogPhotosScreen> {
   }
 
   Future<void> _pickSource() async {
+    // On macOS the picker is a file dialog and there is no camera source —
+    // asking the plugin rather than sniffing the platform, so a future
+    // platform that grows one gets it for free. With one real choice the
+    // sheet would be a question with one answer, so it is skipped.
+    if (!ImagePicker().supportsImageSource(ImageSource.camera)) {
+      _add(ImageSource.gallery);
+      return;
+    }
     final source = await showModalBottomSheet<ImageSource>(
       context: context,
       builder: (context) => SafeArea(

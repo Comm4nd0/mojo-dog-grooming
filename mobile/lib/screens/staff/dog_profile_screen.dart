@@ -733,27 +733,33 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
   /// about a bite) is not the same as the form the owner signed and should be
   /// able to read back.
   Future<void> _addDocument(Dog dog) async {
-    final source = await showModalBottomSheet<ImageSource>(
-      context: context,
-      builder: (sheetContext) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: Icon(Icons.photo_camera_outlined, color: sheetContext.mojo.accent),
-              title: const Text('Photograph it'),
-              onTap: () => Navigator.pop(sheetContext, ImageSource.camera),
+    // No camera on macOS — the picker there is a file dialog, and a sheet
+    // whose only live option is "choose a file" is a question with one
+    // answer. Asked of the plugin, not the platform, same as the photo
+    // screen.
+    final source = !ImagePicker().supportsImageSource(ImageSource.camera)
+        ? ImageSource.gallery
+        : await showModalBottomSheet<ImageSource>(
+            context: context,
+            builder: (sheetContext) => SafeArea(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  ListTile(
+                    leading: Icon(Icons.photo_camera_outlined, color: sheetContext.mojo.accent),
+                    title: const Text('Photograph it'),
+                    onTap: () => Navigator.pop(sheetContext, ImageSource.camera),
+                  ),
+                  ListTile(
+                    leading: Icon(Icons.photo_library_outlined, color: sheetContext.mojo.accent),
+                    title: const Text('Choose from photos'),
+                    subtitle: const Text('A scan already on the phone'),
+                    onTap: () => Navigator.pop(sheetContext, ImageSource.gallery),
+                  ),
+                ],
+              ),
             ),
-            ListTile(
-              leading: Icon(Icons.photo_library_outlined, color: sheetContext.mojo.accent),
-              title: const Text('Choose from photos'),
-              subtitle: const Text('A scan already on the phone'),
-              onTap: () => Navigator.pop(sheetContext, ImageSource.gallery),
-            ),
-          ],
-        ),
-      ),
-    );
+          );
     if (source == null || !mounted) return;
 
     final picked = await ImagePicker().pickImage(source: source, imageQuality: 85);

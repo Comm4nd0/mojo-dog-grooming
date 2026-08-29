@@ -74,8 +74,11 @@ Future<void> emailAddress(BuildContext context, String email) {
 /// the browser, which works anywhere something can open a web page.
 List<Uri> mapUris(String query, {TargetPlatform? platform}) {
   final encoded = Uri.encodeComponent(query);
+  final resolved = platform ?? defaultTargetPlatform;
   return [
-    if ((platform ?? defaultTargetPlatform) == TargetPlatform.iOS)
+    // Apple platforms open Apple Maps from the universal link; macOS has no
+    // geo: handler any more than iOS does.
+    if (resolved == TargetPlatform.iOS || resolved == TargetPlatform.macOS)
       Uri.parse('https://maps.apple.com/?q=$encoded')
     else
       Uri.parse('geo:0,0?q=$encoded'),

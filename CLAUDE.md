@@ -64,7 +64,7 @@ python manage.py reset_link jess # a way back in when the superuser is locked ou
 Mobile:
 ```bash
 cd mobile && flutter pub get
-flutter analyze && flutter test  # 232 tests
+flutter analyze && flutter test  # 236 tests
 flutter run --dart-define=MOJO_API_BASE=http://192.168.1.20:8000/api
 ```
 
@@ -1221,6 +1221,27 @@ The tag, `pubspec.yaml` and the `CHANGELOG.md` heading must agree — both CI sc
 rather than ship a binary whose version contradicts its tag.
 
 Android is not shippable: `build.gradle.kts` signs release builds with the debug key.
+
+**macOS builds exist but have never been compiled.** `mobile/macos/` was scaffolded so the
+app can run as a real desktop app (same bundle id as iOS, window opens at 1100×800 so the
+rail layout shows, minimum 400×600). Three things worth knowing:
+
+- **The sandbox entitlements are load-bearing and live in both files.**
+  `network.client` (no sockets at all without it, and the failure is a silent connection
+  error), `files.user-selected.read-only` (image_picker on macOS is an open panel, and the
+  powerbox grants nothing undeclared), and the keychain group for `flutter_secure_storage`.
+  An entitlement present only in `DebugProfile.entitlements` is a release build that cannot
+  reach the API, so both it and `Release.entitlements` carry all three.
+- **There is no camera on macOS**, so the two "photograph it / choose from photos" sheets
+  ask `ImagePicker().supportsImageSource(ImageSource.camera)` and skip straight to the file
+  dialog when it says no — asked of the plugin, not the platform. `mapUris` treats macOS
+  like iOS (Apple Maps first; macOS has no `geo:` handler either), pinned in
+  `test/contact_actions_test.dart`.
+- **Nothing distributes it.** Xcode Cloud builds iOS only; there is no signing, notarising
+  or Mac App Store setup, and none is invented — running it on a Mac is
+  `flutter run -d macos` from the repo, which also happens to be the first machine that
+  can *compile* it: the target was scaffolded and configured on Linux, where `flutter build
+  macos` cannot run. Verify there before claiming it works.
 
 ## Host constraints
 
