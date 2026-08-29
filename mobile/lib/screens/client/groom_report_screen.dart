@@ -30,7 +30,7 @@ class GroomReportScreen extends StatelessWidget {
 
     return Scaffold(
       appBar: AppBar(title: Text('${report.dogName} · ${formatDate(report.startedAt)}')),
-      body: ListView(
+      body: PageBody(child: ListView(
         padding: const EdgeInsets.fromLTRB(0, 16, 0, 40),
         children: [
           Padding(
@@ -123,7 +123,7 @@ class GroomReportScreen extends StatelessWidget {
             ),
           ],
         ],
-      ),
+      )),
     );
   }
 }

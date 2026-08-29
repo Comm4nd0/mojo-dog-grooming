@@ -447,7 +447,7 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
             IconButton(icon: const Icon(Icons.delete_outline), onPressed: _delete),
         ],
       ),
-      body: ListView(
+      body: PageBody(child: ListView(
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
         children: [
           SearchablePicker<DogSummary>(
@@ -739,7 +739,7 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
             child: Text(_busy ? 'CHECKING…' : (_isEditing ? 'SAVE CHANGES' : 'BOOK')),
           ),
         ],
-      ),
+      )),
     );
   }
 }

@@ -64,7 +64,7 @@ class _MoreScreenState extends State<MoreScreen> with WidgetsBindingObserver {
     final user = getIt<AuthService>().user;
     return Scaffold(
       appBar: AppBar(title: const Text('More')),
-      body: ListView(
+      body: PageBody(child: ListView(
         children: [
           _tile(
             context,
@@ -160,7 +160,7 @@ class _MoreScreenState extends State<MoreScreen> with WidgetsBindingObserver {
             ),
           ),
         ],
-      ),
+      )),
     );
   }
 

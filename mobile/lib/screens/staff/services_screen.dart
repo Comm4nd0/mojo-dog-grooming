@@ -62,7 +62,7 @@ class _ServicesScreenState extends State<ServicesScreen> {
 
     return Scaffold(
       appBar: AppBar(title: const Text('Services')),
-      body: _loading
+      body: PageBody(child: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null && _services.isEmpty
               ? ErrorRetry(error: _error!, onRetry: _load)
@@ -97,7 +97,7 @@ class _ServicesScreenState extends State<ServicesScreen> {
                       const SizedBox(height: 24),
                     ],
                   ),
-                ),
+                )),
     );
   }
 

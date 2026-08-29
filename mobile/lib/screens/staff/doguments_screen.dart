@@ -161,7 +161,7 @@ class _DogumentsScreenState extends State<DogumentsScreen> {
         tooltip: 'Quick actions',
         child: const Icon(Icons.add),
       ),
-      body: Column(
+      body: PageBody(child: Column(
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
@@ -186,7 +186,7 @@ class _DogumentsScreenState extends State<DogumentsScreen> {
           ),
           Expanded(child: _body()),
         ],
-      ),
+      )),
     );
   }
 
@@ -456,7 +456,7 @@ class _ClientListScreenState extends State<_ClientListScreen> {
         },
         child: const Icon(Icons.person_add_outlined),
       ),
-      body: _buildBody(),
+      body: PageBody(child: _buildBody()),
     );
   }
 

@@ -214,13 +214,13 @@ class _BreedDetailScreenState extends State<BreedDetailScreen> {
             ),
         ],
       ),
-      body: _loading
+      body: PageBody(child: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null && breed == null
               ? ErrorRetry(error: _error!, onRetry: _load)
               : _editing
                   ? _form(breed!)
-                  : _record(breed!),
+                  : _record(breed!)),
     );
   }
 

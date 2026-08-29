@@ -489,7 +489,7 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Visit record')),
-      body: _loading
+      body: PageBody(child: _loading
           ? const Center(child: CircularProgressIndicator())
           : ListView(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
@@ -796,7 +796,7 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
                   child: Text(_busy ? 'SAVING…' : 'SAVE RECORD'),
                 ),
               ],
-            ),
+            )),
     );
   }
 }

@@ -78,13 +78,13 @@ class _LoginsScreenState extends State<LoginsScreen> {
             ],
           ),
         ),
-        body: _loading
+        body: PageBody(child: _loading
             ? const Center(child: CircularProgressIndicator())
             : _error != null
                 ? ErrorRetry(error: _error!, onRetry: _load)
                 : TabBarView(
                     children: [_requestList(pending), _accountList()],
-                  ),
+                  )),
       ),
     );
   }

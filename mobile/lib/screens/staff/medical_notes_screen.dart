@@ -138,7 +138,7 @@ class _MedicalNotesScreenState extends State<MedicalNotesScreen> {
         tooltip: 'Add a note',
         child: const Icon(Icons.add),
       ),
-      body: _body(),
+      body: PageBody(child: _body()),
     );
   }
 

@@ -101,7 +101,7 @@ class _DueScreenState extends State<DueScreen> {
           ),
         ),
       ),
-      body: _buildBody(overdue),
+      body: PageBody(child: _buildBody(overdue)),
     );
   }
 

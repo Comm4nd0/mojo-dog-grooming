@@ -184,7 +184,7 @@ class _MyProfileScreenState extends State<MyProfileScreen> {
           ),
         ],
       ),
-      body: _loading
+      body: PageBody(child: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
               ? ErrorRetry(error: _error!, onRetry: _load)
@@ -276,7 +276,7 @@ class _MyProfileScreenState extends State<MyProfileScreen> {
                     ),
                     const SizedBox(height: 32),
                   ],
-                ),
+                )),
     );
   }
 }

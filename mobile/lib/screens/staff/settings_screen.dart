@@ -59,7 +59,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
-      body: _loading
+      body: PageBody(child: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
               ? ErrorRetry(error: _error!, onRetry: _load)
@@ -214,7 +214,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     // More → Medical and Breed Standards now, at Jess's request
                     // — neither is a setting.
                   ],
-                ),
+                )),
     );
   }
 

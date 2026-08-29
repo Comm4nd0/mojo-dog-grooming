@@ -123,7 +123,7 @@ class _DogPhotosScreenState extends State<DogPhotosScreen> {
                   : const Icon(Icons.add_a_photo_outlined),
             )
           : null,
-      body: _loading
+      body: PageBody(child: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
               ? ErrorRetry(error: _error!, onRetry: _load)
@@ -150,9 +150,14 @@ class _DogPhotosScreenState extends State<DogPhotosScreen> {
                               shrinkWrap: true,
                               physics: const NeverScrollableScrollPhysics(),
                               padding: const EdgeInsets.symmetric(horizontal: 16),
+                              // A max tile size, not a fixed column count: three
+                              // columns is right on a phone, but on an iPad it
+                              // makes every thumbnail the size of a hand. This
+                              // keeps tiles thumbnail-sized and lets the count
+                              // grow with the screen instead.
                               gridDelegate:
-                                  const SliverGridDelegateWithFixedCrossAxisCount(
-                                crossAxisCount: 3,
+                                  const SliverGridDelegateWithMaxCrossAxisExtent(
+                                maxCrossAxisExtent: 140,
                                 mainAxisSpacing: 6,
                                 crossAxisSpacing: 6,
                               ),
@@ -170,7 +175,7 @@ class _DogPhotosScreenState extends State<DogPhotosScreen> {
                           ],
                         ],
                       ),
-                    ),
+                    )),
     );
   }
 

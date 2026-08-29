@@ -110,7 +110,7 @@ class _ClientFormScreenState extends State<ClientFormScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: Text(_isEditing ? 'Edit client' : 'Add client')),
-      body: Form(
+      body: PageBody(child: Form(
         key: _formKey,
         child: ListView(
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
@@ -227,7 +227,7 @@ class _ClientFormScreenState extends State<ClientFormScreen> {
             ),
           ],
         ),
-      ),
+      )),
     );
   }
 }

@@ -224,11 +224,11 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
           : _isStaff
               ? _bookBar(dog)
               : _suggestBar(dog),
-      body: _loading
+      body: PageBody(child: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
               ? ErrorRetry(error: _error!, onRetry: _load)
-              : _content(dog!),
+              : _content(dog!)),
     );
   }
 
@@ -273,7 +273,10 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
         // screen and left the profile itself zero pixels tall. The dog's
         // details vanished, silently: no exception, no overflow stripe, just
         // this button and an empty page. A Row takes its height from its child.
-        child: Row(
+        //
+        // PageBody so the button sits under the profile's own column on a
+        // tablet rather than in the far corner of the screen.
+        child: PageBody(child: Row(
           children: [
             OutlinedButton.icon(
               icon: const Icon(Icons.event_available_outlined, size: 18),
@@ -293,7 +296,7 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
               },
             ),
           ],
-        ),
+        )),
       ),
     );
   }
@@ -311,7 +314,7 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
           color: Theme.of(context).colorScheme.surface,
         ),
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-        child: Row(
+        child: PageBody(child: Row(
           children: [
             OutlinedButton.icon(
               icon: const Icon(Icons.edit_note_outlined, size: 18),
@@ -319,7 +322,7 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
               onPressed: () => _suggestUpdate(dog),
             ),
           ],
-        ),
+        )),
       ),
     );
   }

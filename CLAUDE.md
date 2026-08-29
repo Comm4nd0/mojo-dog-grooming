@@ -64,7 +64,7 @@ python manage.py reset_link jess # a way back in when the superuser is locked ou
 Mobile:
 ```bash
 cd mobile && flutter pub get
-flutter analyze && flutter test  # 225 tests
+flutter analyze && flutter test  # 232 tests
 flutter run --dart-define=MOJO_API_BASE=http://192.168.1.20:8000/api
 ```
 
@@ -461,6 +461,33 @@ on both — and the checkmark stays on, because colour alone should not be what 
 is selected. The lesson generalises: an unset M3 colour role does not fall back to nothing, it
 falls back to *another role*, and that is how two perfectly good palette values end up on top
 of each other.
+
+### Big screens are real screens
+
+The iOS build targets iPad (`TARGETED_DEVICE_FAMILY = "1,2"`, all orientations), so every
+screen has to survive 1,300 logical pixels, not just a phone. Two rules carry it:
+
+- **`PageBody` in `widgets/common.dart` caps page content at a readable width** (720dp;
+  the silhouette editor uses 640 so grid cells stay finger-sized). Every list and form
+  screen's `body:` is wrapped in it — and both dog-profile bottom bars, so their buttons
+  sit under the content column. It is a **no-op below the cap**: phones and goldens are
+  byte-identical. Internally it is `Padding`, deliberately not `Align` + `ConstrainedBox`
+  — `Align` without a heightFactor expands to its incoming constraints, and Scaffold
+  measures `bottomNavigationBar` against the whole screen height, so the Align version
+  grew the book bar to 3,000pt and squeezed the profile body to zero. That is the same
+  trap `_bookBar`'s own comment documents; this widget wraps bars as well as bodies, so
+  it must add width margins and change nothing else.
+- **At `kRailBreakpoint` (840dp, in `staff_shell.dart`) both shells swap the bottom tabs
+  for a `NavigationRail`** — in tablet landscape a bottom bar spends the scarcest
+  dimension on navigation. The staff timer strips move to the foot of the content area:
+  the rail replaces the tabs, not the "a running clock is always visible" rule.
+
+Deliberately **not** capped: the diary (a time axis is the one screen that gets better
+with width — week view exists for exactly that), the document viewer, and the fullscreen
+photo. The photo grid uses `SliverGridDelegateWithMaxCrossAxisExtent` (140dp) rather than
+a fixed 3 columns, so an iPad gets more thumbnails instead of enormous ones. The
+server-rendered pages were always fine — `base.html` caps `.wrap` at 680px.
+`test/large_screen_test.dart` holds all of this.
 
 `test/theme_test.dart` holds the line: display text must resolve to the theme's colour, and
 every role must clear WCAG AA against the surface it is used on. The chip checks resolve

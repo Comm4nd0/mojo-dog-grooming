@@ -236,7 +236,7 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: Text('Timing ${widget.dogName}')),
-      body: ListenableBuilder(
+      body: PageBody(child: ListenableBuilder(
         listenable: _timer,
         builder: (context, _) {
           final totalMinutes = _totalMinutes;
@@ -369,7 +369,7 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
             ],
           );
         },
-      ),
+      )),
     );
   }
 

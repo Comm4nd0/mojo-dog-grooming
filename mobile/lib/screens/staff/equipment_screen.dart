@@ -62,7 +62,7 @@ class _EquipmentScreenState extends State<EquipmentScreen> {
         onPressed: () => _edit(),
         child: const Icon(Icons.add),
       ),
-      body: _loading
+      body: PageBody(child: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
               ? ErrorRetry(error: _error!, onRetry: _load)
@@ -118,7 +118,7 @@ class _EquipmentScreenState extends State<EquipmentScreen> {
                           trailing: const Icon(Icons.chevron_right),
                         );
                       },
-                    ),
+                    )),
     );
   }
 }

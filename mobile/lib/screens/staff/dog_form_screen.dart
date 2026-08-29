@@ -331,7 +331,7 @@ class _DogFormScreenState extends State<DogFormScreen> {
     final breed = _selectedBreed;
     return Scaffold(
       appBar: AppBar(title: Text(_isEditing ? 'Edit ${widget.dog!.name}' : 'Add dog')),
-      body: Form(
+      body: PageBody(child: Form(
         key: _formKey,
         child: ListView(
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
@@ -678,7 +678,7 @@ class _DogFormScreenState extends State<DogFormScreen> {
             ),
           ],
         ),
-      ),
+      )),
     );
   }
 

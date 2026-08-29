@@ -245,7 +245,7 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
         icon: const Icon(Icons.add),
         label: const Text('REQUEST'),
       ),
-      body: _loading
+      body: PageBody(child: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
               ? ErrorRetry(error: _error!, onRetry: _load)
@@ -271,7 +271,7 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
                       ],
                     ],
                   ),
-                ),
+                )),
     );
   }
 

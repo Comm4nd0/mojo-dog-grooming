@@ -4,6 +4,7 @@ import '../../constants/app_colors.dart';
 import '../../models/models.dart';
 import '../../services/data_service.dart';
 import '../../services/service_locator.dart';
+import '../../widgets/common.dart';
 import 'breed_detail_screen.dart';
 import 'medical_notes_screen.dart';
 
@@ -22,7 +23,7 @@ class MedicalAndBreedsScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Medical and Breed Standards')),
-      body: ListView(
+      body: PageBody(child: ListView(
         children: [
           ListTile(
             leading: Icon(Icons.medical_information_outlined, color: context.mojo.accent),
@@ -56,7 +57,7 @@ class MedicalAndBreedsScreen extends StatelessWidget {
             ),
           ),
         ],
-      ),
+      )),
     );
   }
 }
@@ -102,7 +103,7 @@ class _BreedListScreenState extends State<BreedListScreen> {
 
     return Scaffold(
       appBar: AppBar(title: const Text('Breeds')),
-      body: Column(
+      body: PageBody(child: Column(
         children: [
           Padding(
             padding: const EdgeInsets.all(16),
@@ -145,7 +146,7 @@ class _BreedListScreenState extends State<BreedListScreen> {
                   ),
           ),
         ],
-      ),
+      )),
     );
   }
 }

@@ -10,6 +10,14 @@ import 'doguments_screen.dart';
 import 'groom_timer_screen.dart';
 import 'more_screen.dart';
 
+/// The width at which the shells swap bottom tabs for a side rail.
+///
+/// Material's "expanded" breakpoint. Below it (every phone in portrait) the
+/// layout is untouched; at or above it — an iPad, or a big phone on its side —
+/// a bottom bar spends the scarcest dimension on navigation, so the tabs move
+/// to a [NavigationRail] on the left instead.
+const double kRailBreakpoint = 840;
+
 /// Jess's app. Three destinations: her dog list, her diary, and everything else.
 class StaffShell extends StatefulWidget {
   const StaffShell({super.key});
@@ -21,17 +29,61 @@ class StaffShell extends StatefulWidget {
 class _StaffShellState extends State<StaffShell> {
   int _index = 0;
 
+  static const _screens = [
+    DogumentsScreen(),
+    CalendarScreen(),
+    MoreScreen(),
+  ];
+
   @override
   Widget build(BuildContext context) {
+    final wide = MediaQuery.sizeOf(context).width >= kRailBreakpoint;
+
+    if (wide) {
+      // The timer strips stay pinned to the bottom of the content area — the
+      // rail replaces the tabs, not the "a running clock is always visible"
+      // rule.
+      return Scaffold(
+        body: Row(
+          children: [
+            NavigationRail(
+              selectedIndex: _index,
+              onDestinationSelected: (value) => setState(() => _index = value),
+              labelType: NavigationRailLabelType.all,
+              destinations: const [
+                NavigationRailDestination(
+                  icon: Icon(Icons.pets_outlined),
+                  selectedIcon: Icon(Icons.pets),
+                  label: Text('Doguments'),
+                ),
+                NavigationRailDestination(
+                  icon: Icon(Icons.calendar_month_outlined),
+                  selectedIcon: Icon(Icons.calendar_month),
+                  label: Text('Calendar'),
+                ),
+                NavigationRailDestination(
+                  icon: Icon(Icons.more_horiz_outlined),
+                  selectedIcon: Icon(Icons.more_horiz),
+                  label: Text('More'),
+                ),
+              ],
+            ),
+            const VerticalDivider(width: 1, thickness: 1),
+            Expanded(
+              child: Column(
+                children: [
+                  Expanded(child: IndexedStack(index: _index, children: _screens)),
+                  const GroomTimerBar(),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
     return Scaffold(
-      body: IndexedStack(
-        index: _index,
-        children: const [
-          DogumentsScreen(),
-          CalendarScreen(),
-          MoreScreen(),
-        ],
-      ),
+      body: IndexedStack(index: _index, children: _screens),
       // A timer that survives leaving its screen has to be visible from
       // wherever you went, or it is just a timer that gets left on. Sits above
       // the tabs so it is on every staff screen without each one knowing.

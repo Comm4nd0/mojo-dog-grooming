@@ -64,7 +64,7 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
         onPressed: _newInvoice,
         child: const Icon(Icons.add),
       ),
-      body: _loading
+      body: PageBody(child: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
               ? ErrorRetry(error: _error!, onRetry: _load)
@@ -142,7 +142,7 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
                             ),
                     ),
                   ],
-                ),
+                )),
     );
   }
 
@@ -420,7 +420,7 @@ class _InvoiceFormScreenState extends State<_InvoiceFormScreen> {
 
     return Scaffold(
       appBar: AppBar(title: const Text('New invoice')),
-      body: ListView(
+      body: PageBody(child: ListView(
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
         children: [
           DropdownButtonFormField<int>(
@@ -520,7 +520,7 @@ class _InvoiceFormScreenState extends State<_InvoiceFormScreen> {
             child: Text(_busy ? 'SAVING…' : 'CREATE INVOICE'),
           ),
         ],
-      ),
+      )),
     );
   }
 

@@ -82,7 +82,7 @@ class _TodosScreenState extends State<TodosScreen> {
         tooltip: 'Add a to-do',
         child: const Icon(Icons.add),
       ),
-      body: _loading
+      body: PageBody(child: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null && _todos.isEmpty
               ? ErrorRetry(error: _error!, onRetry: _load)
@@ -113,7 +113,7 @@ class _TodosScreenState extends State<TodosScreen> {
                               ),
                           ],
                         ),
-                ),
+                )),
     );
   }
 

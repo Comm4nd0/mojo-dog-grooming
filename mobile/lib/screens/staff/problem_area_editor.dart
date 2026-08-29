@@ -110,7 +110,7 @@ class _ProblemAreaEditorState extends State<ProblemAreaEditor> {
             ),
         ],
       ),
-      body: ListView(
+      body: PageBody(maxWidth: 640, child: ListView(
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
         children: [
           Text(
@@ -155,7 +155,7 @@ class _ProblemAreaEditorState extends State<ProblemAreaEditor> {
             style: TextStyle(fontSize: 12, color: context.mojo.muted),
           ),
         ],
-      ),
+      )),
     );
   }
 }

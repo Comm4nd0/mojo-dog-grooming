@@ -5,6 +5,49 @@ import '../constants/app_colors.dart';
 import '../models/models.dart';
 import '../services/api_client.dart';
 
+/// Keeps a page's content readable on a big screen.
+///
+/// Every screen here was laid out for a phone, and the app ships to iPad too
+/// (`TARGETED_DEVICE_FAMILY = "1,2"`, all orientations). A form field or a
+/// list row stretched across 1,300 logical pixels is not more usable, it is a
+/// line of text you turn your head to read — so on anything wider than
+/// [maxWidth] the content is top-centred at [maxWidth] and the rest is
+/// margin.
+///
+/// On a phone this returns the child **unchanged** — no extra layout, no
+/// shifted pixels — which is what keeps every existing screen and golden test
+/// byte-identical below the threshold.
+///
+/// Deliberately not used by the diary (`calendar_screen.dart`): a time axis
+/// is the one screen that gets *better* with width, and week view exists for
+/// exactly that. The document viewer and the fullscreen photo keep the full
+/// width for the same reason.
+class PageBody extends StatelessWidget {
+  const PageBody({super.key, required this.child, this.maxWidth = 720});
+
+  final Widget child;
+  final double maxWidth;
+
+  @override
+  Widget build(BuildContext context) {
+    // Padding, deliberately not Align + ConstrainedBox. `Align` without a
+    // heightFactor expands to its incoming constraints — the same trap that
+    // once let the dog profile's book bar grow to the whole screen height and
+    // squeeze the body to zero (see `_bookBar`). Scaffold measures
+    // bottomNavigationBar against the full screen height, and this widget
+    // wraps bars as well as bodies, so it must add width margins and change
+    // nothing else. Padding passes height straight through.
+    return LayoutBuilder(builder: (context, constraints) {
+      final width = constraints.maxWidth;
+      if (!width.isFinite || width <= maxWidth) return child;
+      return Padding(
+        padding: EdgeInsets.symmetric(horizontal: (width - maxWidth) / 2),
+        child: child,
+      );
+    });
+  }
+}
+
 /// Temperament badge. Staff-only — [temperament] is null for client logins,
 /// in which case this renders nothing at all.
 class TemperamentChip extends StatelessWidget {

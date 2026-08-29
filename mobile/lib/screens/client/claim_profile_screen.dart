@@ -99,11 +99,11 @@ class _ClaimProfileScreenState extends State<ClaimProfileScreen> {
           ),
         ],
       ),
-      body: _checking
+      body: PageBody(child: _checking
           ? const Center(child: CircularProgressIndicator())
           : _submitted
               ? _waiting()
-              : _form(),
+              : _form()),
     );
   }
 

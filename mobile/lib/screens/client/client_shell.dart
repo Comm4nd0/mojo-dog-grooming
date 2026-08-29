@@ -27,20 +27,55 @@ class _ClientShellState extends State<ClientShell> {
   final _auth = getIt<AuthService>();
   int _index = 0;
 
+  static const _screens = [
+    _MyDogsScreen(),
+    MyBookingsScreen(),
+    MyProfileScreen(),
+  ];
+
   @override
   Widget build(BuildContext context) {
     if (_auth.user?.needsToClaimProfile ?? false) {
       return const ClaimProfileScreen();
     }
+
+    // Same rule as the staff shell: on anything rail-wide, the tabs move to
+    // the side rather than spending the short dimension on a bottom bar.
+    if (MediaQuery.sizeOf(context).width >= kRailBreakpoint) {
+      return Scaffold(
+        body: Row(
+          children: [
+            NavigationRail(
+              selectedIndex: _index,
+              onDestinationSelected: (value) => setState(() => _index = value),
+              labelType: NavigationRailLabelType.all,
+              destinations: const [
+                NavigationRailDestination(
+                  icon: Icon(Icons.pets_outlined),
+                  selectedIcon: Icon(Icons.pets),
+                  label: Text('My dogs'),
+                ),
+                NavigationRailDestination(
+                  icon: Icon(Icons.event_outlined),
+                  selectedIcon: Icon(Icons.event),
+                  label: Text('Bookings'),
+                ),
+                NavigationRailDestination(
+                  icon: Icon(Icons.person_outline),
+                  selectedIcon: Icon(Icons.person),
+                  label: Text('Me'),
+                ),
+              ],
+            ),
+            const VerticalDivider(width: 1, thickness: 1),
+            Expanded(child: IndexedStack(index: _index, children: _screens)),
+          ],
+        ),
+      );
+    }
+
     return Scaffold(
-      body: IndexedStack(
-        index: _index,
-        children: const [
-          _MyDogsScreen(),
-          MyBookingsScreen(),
-          MyProfileScreen(),
-        ],
-      ),
+      body: IndexedStack(index: _index, children: _screens),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _index,
         onDestinationSelected: (value) => setState(() => _index = value),
@@ -116,7 +151,7 @@ class _MyDogsScreenState extends State<_MyDogsScreen> {
           ),
         ],
       ),
-      body: _loading
+      body: PageBody(child: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
               ? ErrorRetry(error: _error!, onRetry: _load)
@@ -164,7 +199,7 @@ class _MyDogsScreenState extends State<_MyDogsScreen> {
                           );
                         },
                       ),
-                    ),
+                    )),
     );
   }
 }
