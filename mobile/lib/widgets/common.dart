@@ -48,6 +48,29 @@ class PageBody extends StatelessWidget {
   }
 }
 
+/// The Mojo & Co logo, in the colourway that reads on the current theme.
+///
+/// From the designer's pack, not drawn here: dark green on a light surface,
+/// the pale green colourway on a dark one — the same swap as the `accent`
+/// role, and for the same reason: the dark green sits at roughly 3.5:1 on
+/// #121212, and the pale version exists precisely for dark grounds.
+class BrandLogo extends StatelessWidget {
+  const BrandLogo({super.key, this.height = 120});
+
+  final double height;
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    return Image.asset(
+      dark ? 'assets/logo_light_green.png' : 'assets/logo_dark_green.png',
+      height: height,
+      fit: BoxFit.contain,
+      semanticLabel: 'Mojo & Co',
+    );
+  }
+}
+
 /// Temperament badge. Staff-only — [temperament] is null for client logins,
 /// in which case this renders nothing at all.
 class TemperamentChip extends StatelessWidget {

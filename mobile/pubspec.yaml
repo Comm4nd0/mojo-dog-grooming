@@ -76,3 +76,7 @@ flutter:
   uses-material-design: true
   assets:
     - assets/dog_silhouette.svg
+    # The brand logo, from the designer's pack — dark green for light mode,
+    # the pale colourway for dark mode. See assets/ATTRIBUTION.md.
+    - assets/logo_dark_green.png
+    - assets/logo_light_green.png

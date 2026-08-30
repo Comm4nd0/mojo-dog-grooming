@@ -4,6 +4,7 @@ import '../constants/app_colors.dart';
 import '../services/auth_service.dart';
 import '../services/biometric_service.dart';
 import '../services/service_locator.dart';
+import '../widgets/common.dart';
 
 /// What the app shows when a remembered session is waiting on a fingerprint
 /// or face check.
@@ -90,19 +91,12 @@ class _LockScreenState extends State<LockScreen> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Container(
-                    width: 64,
-                    height: 64,
-                    alignment: Alignment.center,
-                    color: AppColors.primaryBright,
-                    child: const Icon(Icons.lock_outline, size: 32, color: Colors.black),
-                  ),
-                  const SizedBox(height: 24),
-                  Text(
-                    'Mojo and Co',
-                    textAlign: TextAlign.center,
-                    style: AppColors.display(28),
-                  ),
+                  // The logo carries the name; the lock below it carries the
+                  // state. The green square with a padlock predated the brand
+                  // pack.
+                  const BrandLogo(height: 120),
+                  const SizedBox(height: 20),
+                  const Icon(Icons.lock_outline, size: 28),
                   const SizedBox(height: 8),
                   Text(
                     username.isEmpty

@@ -498,21 +498,13 @@ class _Wordmark extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // The real logo — the paw-in-a-green-square that sat here was a stand-in
+    // from before the brand pack existed. The lockup already says MOJO & CO,
+    // so the only text kept is what it doesn't say.
     return Column(
       children: [
-        Container(
-          width: 64,
-          height: 64,
-          color: AppColors.primaryBright,
-          alignment: Alignment.center,
-          child: const Icon(Icons.pets, size: 34, color: Colors.black),
-        ),
-        const SizedBox(height: 18),
-        Text(
-          'Mojo and Co',
-          style: AppColors.display(34, color: Theme.of(context).colorScheme.onSurface),
-        ),
-        const SizedBox(height: 6),
+        const BrandLogo(height: 150),
+        const SizedBox(height: 10),
         Text(
           'DOG GROOMING',
           style: TextStyle(

@@ -411,6 +411,16 @@ Sampled from the live site, not invented:
 - `#01821B` deep green (headings, icons), `#02D42C` bright green (CTAs, **black** label only —
   white fails contrast), `#D2FFD4` pale green (chips, selected cells), `#151515` ink.
 - **Playfair Display** for display text, **Montserrat** for UI.
+- **The logo is the designer's, not ours.** `assets/logo_dark_green.png` and
+  `logo_light_green.png` are the lockup (dog, MOJO & CO, EST. 2025) cropped from the brand
+  pack at `~/Projects/mojo-and-co` — see `assets/ATTRIBUTION.md`. Render it through
+  `BrandLogo` in `widgets/common.dart`, never a bare `Image.asset`: it swaps colourway with
+  the theme (dark green on light, the pale wash on dark — the same swap as the `accent`
+  role; the dark green is ~3.5:1 on #121212 and the pale version exists for dark grounds).
+  It carries the login and lock screens and the More footer. The app icons on all three
+  platforms are the dog mark from the same artwork on white — iOS opaque (Apple refuses
+  alpha), Android adaptive (foreground in the 66/108 safe zone) plus legacy, macOS on the
+  824/1024 rounded plate. The pack also has SVG, Black and Grey colourways unused so far.
 - Buttons: uppercase, weight 700, letter-spacing 3.0, **square corners** — the site rounds
   nothing, and softening it reads as a different brand.
 

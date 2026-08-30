@@ -36,3 +36,16 @@ Replacing the silhouette is a drop-in: swap this file, keeping a single closed
 path and a `viewBox` whose aspect matches `kSilhouetteAspect` in
 `lib/widgets/dog_silhouette.dart` (or update that constant to match), then
 regenerate the goldens with `flutter test --update-goldens`.
+
+## logo_dark_green.png / logo_light_green.png
+
+The Mojo & Co logo lockup (dog, wordmark, "EST. 2025"), cropped to its content
+from the designer's brand pack — the business's own artwork, not a third-party
+asset.
+
+- **Source:** "Mojo & Co. Logo" pack supplied by the business (High Res PNG,
+  4500 × 4500, Dark Green and Light Green colourways)
+- **Modifications:** cropped to the artwork's bounding box and downscaled to
+  1500 px wide; no recolouring. The app icons on all three platforms are the
+  dog mark from the same Dark Green artwork on a white ground.
+- The pack also contains SVG, Black and Grey versions if they are ever needed.

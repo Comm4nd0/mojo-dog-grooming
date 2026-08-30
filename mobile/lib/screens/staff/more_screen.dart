@@ -148,15 +148,10 @@ class _MoreScreenState extends State<MoreScreen> with WidgetsBindingObserver {
             onTap: () => confirmSignOut(context),
           ),
           const SizedBox(height: 24),
-          Center(
+          const Center(
             child: Padding(
               padding: EdgeInsets.all(16),
-              child: Text(
-                'Mojo and Co',
-                style: TextStyle(
-                  fontSize: 11, letterSpacing: 3, color: context.mojo.muted,
-                ),
-              ),
+              child: BrandLogo(height: 64),
             ),
           ),
         ],
