@@ -72,6 +72,11 @@ dev_dependencies:
     sdk: flutter
   flutter_lints: ^6.0.0
 
+  # Drives the real app on simulators/emulators to capture the store
+  # screenshots. See SCREENSHOTS.md and integration_test/screenshots_test.dart.
+  integration_test:
+    sdk: flutter
+
 flutter:
   uses-material-design: true
   assets:

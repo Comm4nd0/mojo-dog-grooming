@@ -5449,3 +5449,50 @@ class BathingAndDryingNotesTests(BaseAPITestCase):
         row = response.data['results'][0]
         self.assertNotIn('bathing_notes', row)
         self.assertNotIn('drying_notes', row)
+
+
+class SeedDemoDataTests(TestCase):
+    """The account the store screenshots (and eventually App Review) sign in
+    with. A client account on purpose — the credentials leave the building,
+    and a staff login is Jess's entire client book."""
+
+    def _run(self, password='screenshot-pw', **kwargs):
+        call_command('seed_demo_data', password=password, **kwargs)
+
+    def test_creates_a_signable_client_with_something_to_photograph(self):
+        self._run()
+        user = User.objects.get(username='demo')
+        self.assertTrue(user.check_password('screenshot-pw'))
+        self.assertFalse(user.is_staff, 'the demo login must never be staff')
+
+        client = Client.objects.get(uid='MOJO-DEMO')
+        self.assertEqual(client.user, user)
+        dog = client.dogs.get(name='Mojo')
+        self.assertEqual(dog.appointments.count(), 1)
+        self.assertGreater(dog.appointments.first().start_at, timezone.now())
+        self.assertEqual(dog.groom_sessions.count(), 2)
+
+    def test_running_twice_updates_in_place(self):
+        self._run()
+        self._run(password='rotated-pw')
+        self.assertEqual(User.objects.filter(username='demo').count(), 1)
+        self.assertEqual(Client.objects.filter(uid='MOJO-DEMO').count(), 1)
+        client = Client.objects.get(uid='MOJO-DEMO')
+        self.assertEqual(client.dogs.count(), 1)
+        dog = client.dogs.get()
+        self.assertEqual(dog.groom_sessions.count(), 2)
+        self.assertEqual(dog.appointments.count(), 1)
+        # The password is set on every run — rotating it is a re-run away.
+        self.assertTrue(User.objects.get(username='demo').check_password('rotated-pw'))
+
+    def test_the_seeded_visits_read_back_as_groom_reports(self):
+        # The whole point: the walkthrough opens a groom report on the demo
+        # dog's profile, and the demo account must only ever see its own rows.
+        self._run()
+        demo_api = APIClient()
+        demo_api.force_authenticate(User.objects.get(username='demo'))
+        response = demo_api.get('/api/groom-reports/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data['results']), 2)
+        for row in response.data['results']:
+            self.assertNotIn('sensitive_notes', row)

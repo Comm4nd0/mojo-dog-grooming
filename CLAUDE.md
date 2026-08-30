@@ -55,7 +55,7 @@ mobile/lib/
 Backend:
 ```bash
 python manage.py migrate && python manage.py seed_breeds
-python manage.py test api        # 437 tests
+python manage.py test api        # 440 tests
 python manage.py runserver 0.0.0.0:8000
 python manage.py accounts        # who can sign in — usernames live only in the DB
 python manage.py reset_link jess # a way back in when the superuser is locked out
@@ -1231,6 +1231,21 @@ The tag, `pubspec.yaml` and the `CHANGELOG.md` heading must agree — both CI sc
 rather than ship a binary whose version contradicts its tag.
 
 Android is not shippable: `build.gradle.kts` signs release builds with the debug key.
+
+**Store screenshots are a workflow, not an afternoon.** `.github/workflows/
+store-screenshots.yml` (manually triggered) drives the real app on an iPhone 17 Pro Max
+sim, an iPad Pro 13" sim and a Pixel 7 emulator, signed in as a demo **client** account,
+and shoots the client screens — see `mobile/SCREENSHOTS.md` for the secrets it needs and
+`mobile/integration_test/screenshots_test.dart` for the walkthrough. Copied from p4td's
+pipeline deliberately, hard-won quirks included (the purge-before-deliver, the duplicate
+reconcile, `SCREENSHOT_OUT` as step-level env). Three things that must stay true: the demo
+login is a client and **never staff** — the credentials sit in GitHub secrets and will go
+to App Review, and a staff login is Jess's whole client book; `manage.py seed_demo_data`
+is idempotent and touches nothing outside the `MOJO-DEMO` client; and the `upload` input
+defaults to **false** — until the ASC/Play secrets exist the PNGs land as workflow
+artifacts and nothing else is attempted. `mobile/.flutter-version` pins the same 3.41.9 as
+ci.yml, and `pubspec.lock` was regenerated on exactly that version when `integration_test`
+was added.
 
 **macOS builds exist but have never been compiled.** `mobile/macos/` was scaffolded so the
 app can run as a real desktop app (same bundle id as iOS, window opens at 1100×800 so the

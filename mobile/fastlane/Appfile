@@ -1,0 +1,8 @@
+# iOS (App Store Connect)
+app_identifier("uk.co.mojoandco.mojoApp")
+apple_id(ENV["FASTLANE_APPLE_ID"] || "you@example.com")
+
+# Android (Play Console) — package name is passed in the Fastfile's supply lane.
+for_platform :android do
+  package_name("uk.co.mojoandco.mojo_app")
+end

@@ -1,0 +1,129 @@
+# Fastlane lanes for store screenshots. Copied from p4td's Fastfile and cut to
+# the screenshot half — the listing-text and submit-for-review lanes can come
+# over the same way when the store listings exist to manage.
+#
+# Pipeline:
+#   1. ../tool/screenshots.sh         # capture raw PNGs into the layout below
+#   2. fastlane upload_ios            # push the shots to App Store Connect
+#   3. fastlane upload_android        # push the shots to Play Console
+#
+# Screenshots are uploaded plain (no device frames / no burned-in captions):
+# frameit has no bezels for the captured simulator/emulator resolutions, so
+# framing is intentionally not used — p4td learned that the slow way.
+#
+# Credentials (never commit these):
+#   iOS:     App Store Connect API key — ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_PATH
+#   Android: Play service-account JSON — path in SUPPLY_JSON_KEY
+
+IOS_BUNDLE_ID   = "uk.co.mojoandco.mojoApp"
+ANDROID_PACKAGE = "uk.co.mojoandco.mojo_app"
+LOCALE          = "en-GB"
+
+# Marketing version from pubspec.yaml ("1.0.0+7" -> "1.0.0") so screenshots
+# attach to the version this commit actually ships. Override with APP_VERSION.
+def marketing_version
+  return ENV["APP_VERSION"] unless ENV["APP_VERSION"].to_s.empty?
+
+  pubspec = File.read(File.expand_path("../pubspec.yaml", __dir__))
+  match = pubspec.match(/^version:\s*(\d+\.\d+\.\d+)/)
+  UI.user_error!("Could not read `version:` from mobile/pubspec.yaml") unless match
+  match[1]
+end
+
+default_platform(:ios)
+
+platform :ios do
+  # Delete every screenshot set on the editable version first. deliver's own
+  # overwrite deletes too, but on p4td its per-device quota check raced the
+  # deletion (skipping the tail of an upload) and its sync mode choked on
+  # assets stuck in failed processing. An explicit purge starts every upload
+  # from a clean slate, so neither failure mode can occur.
+  lane :purge_screenshots do
+    Spaceship::ConnectAPI.token = Spaceship::ConnectAPI::Token.create(
+      key_id:    ENV.fetch("ASC_KEY_ID"),
+      issuer_id: ENV.fetch("ASC_ISSUER_ID"),
+      filepath:  ENV.fetch("ASC_KEY_PATH"),
+    )
+    app = Spaceship::ConnectAPI::App.find(IOS_BUNDLE_ID)
+    version = app.get_edit_app_store_version(platform: Spaceship::ConnectAPI::Platform::IOS)
+    if version.nil?
+      UI.message("No editable version — nothing to purge (deliver will create one).")
+      next
+    end
+    version.get_app_store_version_localizations.each do |loc|
+      loc.get_app_screenshot_sets.each do |set|
+        UI.message("Deleting screenshot set #{set.screenshot_display_type} (#{loc.locale})")
+        set.delete!
+      end
+    end
+  end
+
+  lane :upload_ios do
+    purge_screenshots
+    api_key = app_store_connect_api_key(
+      key_id:       ENV.fetch("ASC_KEY_ID"),
+      issuer_id:    ENV.fetch("ASC_ISSUER_ID"),
+      key_filepath: ENV.fetch("ASC_KEY_PATH"),
+    )
+    deliver(
+      api_key:               api_key,
+      app_identifier:        IOS_BUNDLE_ID,
+      # Screenshots only attach to an EDITABLE version; when the latest is
+      # already released there is none and deliver fails. Name the version
+      # from pubspec and let deliver create the draft when it has to — a
+      # draft costs nothing, and the next release edits the same one.
+      app_version:           marketing_version,
+      screenshots_path:      File.expand_path("screenshots", __dir__),
+      skip_binary_upload:    true,
+      skip_metadata:         true,
+      # The purge above already emptied the sets; overwrite is a harmless
+      # no-op delete pass on an empty listing.
+      overwrite_screenshots: true,
+      run_precheck_before_submit: false,
+      force:                 true, # no interactive HTML preview
+    )
+
+    # deliver's processing-retry re-uploads shots it wrongly believes failed,
+    # leaving duplicates on the listing (p4td observed 01-03 doubled in every
+    # set). Reconcile — keep the first of each file name, delete the rest —
+    # then print the final state so the log proves what the listing holds.
+    version = Spaceship::ConnectAPI::App.find(IOS_BUNDLE_ID)
+      .get_edit_app_store_version(platform: Spaceship::ConnectAPI::Platform::IOS)
+    version.get_app_store_version_localizations.each do |loc|
+      loc.get_app_screenshot_sets(includes: "appScreenshots").each do |set|
+        seen = {}
+        set.app_screenshots.each do |shot|
+          if seen[shot.file_name]
+            UI.important("Deleting duplicate #{shot.file_name} (#{set.screenshot_display_type})")
+            shot.delete!
+          else
+            seen[shot.file_name] = true
+          end
+        end
+      end
+      loc.get_app_screenshot_sets(includes: "appScreenshots").each do |set|
+        shots = set.app_screenshots
+        UI.important("FINAL: #{loc.locale} #{set.screenshot_display_type}: #{shots.count} screenshots")
+        shots.each { |s| UI.message("  FINAL: #{s.file_name}") }
+      end
+    end
+  end
+end
+
+platform :android do
+  lane :upload_android do
+    supply(
+      package_name:            ANDROID_PACKAGE,
+      json_key:                ENV.fetch("SUPPLY_JSON_KEY"), # Play service account
+      metadata_path:           File.expand_path("metadata/android", __dir__),
+      track:                   "alpha",
+      skip_upload_apk:         true,
+      skip_upload_aab:         true,
+      skip_upload_metadata:    true,
+      skip_upload_changelogs:  true,
+      skip_upload_images:      true,   # feature graphic / icon — not screenshots
+      skip_upload_screenshots: false,
+      validate_only:           false,
+    )
+  end
+end

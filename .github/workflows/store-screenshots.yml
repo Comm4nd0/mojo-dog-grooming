@@ -1,0 +1,204 @@
+name: Store Screenshots
+
+# Generate plain App Store + Play Store screenshots and upload them — no local
+# Mac required. Manually triggered. Same shape as p4td's store-screenshots
+# workflow on the same account, deliberately — one pattern to learn.
+# (Screenshots are uploaded as-is, without device frames or burned-in
+# captions; frameit has no bezels for the captured simulator/emulator
+# resolutions, so framing is intentionally not used.)
+#
+# Required repository secrets:
+#   DEMO_USERNAME, DEMO_PASSWORD                  - the seeded demo CLIENT account
+#   ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8         - App Store Connect API key (.p8 contents)
+#   PLAY_STORE_SERVICE_ACCOUNT_JSON               - Play upload (when a listing exists)
+#
+# Run `python manage.py seed_demo_data --password ...` against the backend
+# first so the demo account exists and has a dog, bookings and groom reports
+# to photograph (see mobile/SCREENSHOTS.md). Until the store secrets are set,
+# run with upload=false and collect the PNGs from the workflow artifacts.
+
+on:
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: "Which platforms to generate"
+        type: choice
+        options: ["both", "ios", "android"]
+        default: "both"
+      upload:
+        description: "Upload to the stores (otherwise artifacts only)"
+        type: boolean
+        default: false
+      screenshots_run_id:
+        description: "Reuse the ios-screenshots artifact from this run id (skips iOS capture — for retrying just the upload)"
+        type: string
+        default: ""
+
+env:
+  LOCALE: en-GB
+
+jobs:
+  ios:
+    if: ${{ inputs.platforms == 'both' || inputs.platforms == 'ios' }}
+    runs-on: macos-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve the pinned Flutter version
+        if: ${{ inputs.screenshots_run_id == '' }}
+        id: flutter_pin
+        run: echo "version=$(cat "$GITHUB_WORKSPACE/mobile/.flutter-version")" >> "$GITHUB_OUTPUT"
+      - uses: subosito/flutter-action@v2
+        if: ${{ inputs.screenshots_run_id == '' }}
+        with:
+          flutter-version: ${{ steps.flutter_pin.outputs.version }}
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+      - name: Tooling (fastlane + coreutils for gtimeout)
+        run: |
+          brew install coreutils || true
+          gem install fastlane --no-document
+      - name: Install dependencies
+        if: ${{ inputs.screenshots_run_id == '' }}
+        run: flutter pub get
+      - name: Reuse screenshots from a previous run
+        if: ${{ inputs.screenshots_run_id != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ios-screenshots
+          path: mobile/fastlane/screenshots
+          run-id: ${{ inputs.screenshots_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Boot iPhone simulator (maintained action — reliable full boot)
+        if: ${{ inputs.screenshots_run_id == '' }}
+        uses: futureware-tech/simulator-action@v3
+        with:
+          model: "iPhone 17 Pro Max"
+      - name: Boot iPad simulator
+        if: ${{ inputs.screenshots_run_id == '' }}
+        # Multiple simulators can be booted at once; the capture script targets
+        # each by name. The iPad set also serves as the Mac App Store listing
+        # ("iPad app on Apple silicon Macs" shows the iPad screenshots).
+        uses: futureware-tech/simulator-action@v3
+        with:
+          model: "iPad Pro 13-inch (M5)"
+      - name: Capture iOS screenshots
+        if: ${{ inputs.screenshots_run_id == '' }}
+        timeout-minutes: 75
+        env:
+          DEMO_USERNAME: ${{ secrets.DEMO_USERNAME }}
+          DEMO_PASSWORD: ${{ secrets.DEMO_PASSWORD }}
+          # The simulator-action step above already booted the device, so the
+          # script must not try to boot/poll it again.
+          IOS_SKIP_BOOT: "1"
+          # Verbose flutter drive output, tee'd to a log we upload even on
+          # timeout — so a silent hang still leaves a readable trace.
+          SCREENSHOT_VERBOSE: "1"
+          # The 6.9" iPhone covers all iPhone sizes; the 13" iPad covers the
+          # iPad listing and, via "iPad app on Mac", the Mac App Store too.
+          IOS_DEVICES_ENV: |
+            iPhone 17 Pro Max
+            iPad Pro 13-inch (M5)
+        run: |
+          mkdir -p build
+          set -o pipefail
+          # The simulator <-> flutter VM-service handshake is intermittently
+          # flaky (can hang on "Waiting for VM Service port"). Cap each attempt
+          # with gtimeout and retry once so a single bad handshake isn't fatal.
+          # 2100s covers both devices in one attempt. A retry skips devices
+          # that already captured (.complete markers), so it only redoes
+          # failures.
+          attempt() { gtimeout 2100 ./tool/screenshots.sh ios 2>&1 | tee -a build/ios-drive.log; }
+          attempt || { echo "SS> iOS capture attempt 1 failed/timed out — retrying once"; attempt; }
+      - name: Upload iOS drive log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-drive-log
+          path: mobile/build/ios-drive.log
+          if-no-files-found: ignore
+      - name: Upload to App Store Connect
+        if: ${{ inputs.upload }}
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          mkdir -p fastlane/keys
+          printf '%s' "${{ secrets.ASC_KEY_P8 }}" > fastlane/keys/asc.p8
+          export ASC_KEY_PATH="$PWD/fastlane/keys/asc.p8"
+          (cd fastlane && fastlane ios upload_ios)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-screenshots
+          path: mobile/fastlane/screenshots/
+
+  android:
+    if: ${{ inputs.platforms == 'both' || inputs.platforms == 'android' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Resolve the pinned Flutter version
+        id: flutter_pin
+        run: echo "version=$(cat "$GITHUB_WORKSPACE/mobile/.flutter-version")" >> "$GITHUB_OUTPUT"
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ steps.flutter_pin.outputs.version }}
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+      - name: Tooling (fastlane)
+        run: gem install fastlane --no-document
+      - name: Install dependencies
+        run: flutter pub get
+      - name: Enable KVM (emulator acceleration)
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - name: Capture Android screenshots (phone)
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          DEMO_USERNAME: ${{ secrets.DEMO_USERNAME }}
+          DEMO_PASSWORD: ${{ secrets.DEMO_PASSWORD }}
+          # Where the host-side flutter_driver writes the captured PNGs. This
+          # MUST be a step-level env var, not an `export` inside `script:` — the
+          # emulator-runner action runs each script line in its own `sh -c`, so
+          # an export wouldn't survive to the `flutter drive` line (the driver
+          # would fall back to build/screenshots/raw and the copy below misses).
+          SCREENSHOT_OUT: build/screenshots/android-phone
+        with:
+          api-level: 34
+          arch: x86_64
+          profile: pixel_7
+          working-directory: mobile
+          # Emulator is already running here (device "emulator-5554").
+          # NOTE: keep each command on one line — the action's shell does not
+          # handle backslash line-continuations.
+          script: |
+            flutter drive --driver=test_driver/integration_test.dart --target=integration_test/screenshots_test.dart -d emulator-5554 --dart-define=DEMO_USERNAME="$DEMO_USERNAME" --dart-define=DEMO_PASSWORD="$DEMO_PASSWORD"
+            mkdir -p "fastlane/metadata/android/${LOCALE:-en-GB}/images/phoneScreenshots"
+            cp build/screenshots/android-phone/*.png "fastlane/metadata/android/${LOCALE:-en-GB}/images/phoneScreenshots/" || true
+      - name: Upload to Play Console
+        if: ${{ inputs.upload }}
+        run: |
+          printf '%s' '${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}' > fastlane/play.json
+          export SUPPLY_JSON_KEY="$PWD/fastlane/play.json"
+          (cd fastlane && fastlane android upload_android)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-screenshots
+          path: mobile/fastlane/metadata/android/
