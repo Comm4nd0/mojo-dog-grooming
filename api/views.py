@@ -19,6 +19,7 @@ from pathlib import Path
 
 from django.conf import settings as django_settings
 from django.contrib.auth.models import User
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.http import FileResponse
 from django.db.models import Q, Value
@@ -60,6 +61,8 @@ def load_silhouette_svg():
 
 from .models import (
     AppSettings,
+    BlockedTime,
+    BookingGroup,
     Appointment,
     AppointmentChangeRequest,
     AppointmentStatus,
@@ -100,9 +103,13 @@ from .models import (
     UserProfile,
 )
 from .passwords import build_reset_link, send_reset_email
-from .scheduling import booking_warnings, dogs_due, next_available_slots
+from .scheduling import blocked_time_refusal, booking_warnings, dogs_due, next_available_slots
 from .serializers import (
     AccountSerializer,
+    BlockedTimeSerializer,
+    BookingGroupCreateSerializer,
+    BookingGroupReshapeSerializer,
+    BookingGroupSerializer,
     AppSettingsSerializer,
     AppointmentChangeRequestSerializer,
     AppointmentCheckSerializer,
@@ -361,6 +368,35 @@ class ClosureDayViewSet(viewsets.ModelViewSet):
     queryset = ClosureDay.objects.all()
     serializer_class = ClosureDaySerializer
     permission_classes = [IsStaffOrReadOnly]
+
+
+class BlockedTimeViewSet(viewsets.ModelViewSet):
+    """Time Jess has taken off the table — see :class:`BlockedTime`.
+
+    Readable by every signed-in user, writable by staff. The read side is
+    what lets the client's request sheet say "not available" before they
+    send, and the serializer keeps the notes out of what they read.
+    """
+
+    queryset = BlockedTime.objects.all()
+    serializer_class = BlockedTimeSerializer
+    permission_classes = [IsStaffOrReadOnly]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        # Overlap, not containment: a block running Friday 15:00 to Monday
+        # 09:00 is on Saturday's diary even though it neither starts nor
+        # ends there.
+        date_from = self.request.query_params.get('from')
+        date_to = self.request.query_params.get('to')
+        if date_from:
+            queryset = queryset.filter(end_at__date__gte=date_from)
+        if date_to:
+            queryset = queryset.filter(start_at__date__lte=date_to)
+        return queryset
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
 
 
 class AppSettingsView(APIView):
@@ -1155,7 +1191,9 @@ class DogPhotoViewSet(StaffWriteOnlyMixin, ClientScopedMixin, viewsets.ModelView
 # ── Scheduling ─────────────────────────────────────────────────────────
 
 class AppointmentViewSet(ClientScopedMixin, viewsets.ModelViewSet):
-    queryset = Appointment.objects.select_related('dog', 'dog__client')
+    queryset = Appointment.objects.select_related('dog', 'dog__client').prefetch_related(
+        'group__appointments__dog',
+    )
     serializer_class = AppointmentSerializer
     permission_classes = [IsAuthenticated]
     client_lookup = 'dog__client'
@@ -1198,6 +1236,25 @@ class AppointmentViewSet(ClientScopedMixin, viewsets.ModelViewSet):
         dog = serializer.validated_data.get('dog')
         if client is None or dog is None or dog.client_id != client.pk:
             raise PermissionDenied('You can only request appointments for your own dogs.')
+
+        # A refusal, and the one place in the booking flow that is. Every
+        # rule in scheduling.py warns because Jess is the one deciding; a
+        # client asking for a time she has blocked out is asking for
+        # something that is not on offer, and telling them now beats a
+        # request that sits in her queue only to be turned down.
+        from rest_framework.exceptions import ValidationError
+
+        data = serializer.validated_data
+        start_at = data['start_at']
+        end_at = data.get('end_at')
+        if end_at is None:
+            minutes, _, _ = resolve_slot(
+                dog, data.get('service_type', ServiceType.GROOM), data.get('services', []),
+            )
+            end_at = start_at + timedelta(minutes=minutes)
+        refusal = blocked_time_refusal(start_at, end_at)
+        if refusal is not None:
+            raise ValidationError({'start_at': refusal})
         serializer.save(created_by=user, status=AppointmentStatus.REQUESTED)
 
     def perform_update(self, serializer):
@@ -1234,6 +1291,7 @@ class AppointmentViewSet(ClientScopedMixin, viewsets.ModelViewSet):
             exclude_appointment=data.get('exclude_appointment'),
             service_type=service_type,
             services=services,
+            exclude_group=data.get('exclude_group'),
         )
         # One resolver, so the figures the form pre-fills are the same ones
         # the booking will end up with. Price stays None when anything on it
@@ -1306,6 +1364,93 @@ class AppointmentViewSet(ClientScopedMixin, viewsets.ModelViewSet):
             'date': date,
             'appointments': self.get_serializer(appointments, many=True).data,
         })
+
+
+class BookingGroupViewSet(viewsets.GenericViewSet):
+    """A household booked in as one visit — see :class:`BookingGroup`.
+
+    Staff only. Three things it does: ``POST`` books several dogs into one
+    slot atomically (or links bookings already made), ``PATCH`` moves or
+    resizes every dog in the visit at once, and ``GET`` reads it back.
+    Removing one dog from a visit is a ``PATCH`` on that appointment with
+    ``group: null`` — the ordinary edit, not a group operation.
+    """
+
+    queryset = BookingGroup.objects.prefetch_related('appointments__dog__client')
+    permission_classes = [IsAdminUser]
+    serializer_class = BookingGroupSerializer
+
+    def retrieve(self, request, pk=None):
+        return Response(self.get_serializer(self.get_object()).data)
+
+    def create(self, request):
+        serializer = BookingGroupCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        with transaction.atomic():
+            group = BookingGroup.objects.create(created_by=request.user)
+            if data.get('appointments'):
+                Appointment.objects.filter(
+                    pk__in=[a.pk for a in data['appointments']],
+                ).update(group=group)
+            else:
+                for entry in data['bookings']:
+                    appointment = Appointment.objects.create(
+                        dog=entry['dog'],
+                        start_at=data['start_at'],
+                        end_at=data['end_at'],
+                        booking_type=data.get('booking_type') or BookingType.ADHOC,
+                        service_type=data.get('service_type') or ServiceType.GROOM,
+                        notes=data.get('notes', ''),
+                        group=group,
+                        created_by=request.user,
+                    )
+                    services = entry.get('services') or []
+                    if services:
+                        appointment.services.set(services)
+                        # The end is the visit's and stays; the price is the
+                        # dog's own, exactly as a booking made alone.
+                        appointment.apply_service_defaults(force_end=False, force_price=True)
+
+        group = self.get_queryset().get(pk=group.pk)
+        return Response(self.get_serializer(group).data, status=status.HTTP_201_CREATED)
+
+    def partial_update(self, request, pk=None):
+        group = self.get_object()
+        serializer = BookingGroupReshapeSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        try:
+            with transaction.atomic():
+                members = group.reshape(
+                    start_at=data.get('start_at'), end_at=data.get('end_at'),
+                )
+        except DjangoValidationError as error:
+            return Response(
+                {'detail': '; '.join(error.messages)}, status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Warnings, never a refusal, and the members are left out of each
+        # other's overlap check — they overlap because that is what a visit
+        # is. Prefixed with the dog so five dogs on one day read as five
+        # lines and not one.
+        warnings = []
+        for member in members:
+            for warning in booking_warnings(
+                member.dog, member.start_at, member.end_at,
+                exclude_appointment=member,
+                service_type=member.service_type,
+                services=list(member.services.all()),
+                exclude_group=group,
+            ):
+                message = f'{member.dog.name}: {warning["message"]}'
+                if not any(w['message'] == message for w in warnings):
+                    warnings.append({**warning, 'message': message})
+
+        group = self.get_queryset().get(pk=group.pk)
+        return Response({**self.get_serializer(group).data, 'warnings': warnings})
 
 
 class BookingSeriesViewSet(viewsets.ModelViewSet):
@@ -2028,6 +2173,19 @@ class AppointmentChangeRequestViewSet(viewsets.ModelViewSet):
                 # does not exist. A different answer for each would make this
                 # endpoint a way to probe which appointment ids are real.
                 raise PermissionDenied('You can only ask about your own bookings.')
+
+            # Same refusal as a fresh request: a move into time Jess has
+            # blocked out is not on offer. The slot keeps its booked length,
+            # exactly as `apply()` will carry it over if she approves.
+            preferred = serializer.validated_data.get('preferred_start_at')
+            if preferred is not None:
+                from rest_framework.exceptions import ValidationError
+
+                refusal = blocked_time_refusal(
+                    preferred, preferred + (appointment.end_at - appointment.start_at),
+                )
+                if refusal is not None:
+                    raise ValidationError({'preferred_start_at': refusal})
 
         serializer.save(requested_by=user)
 

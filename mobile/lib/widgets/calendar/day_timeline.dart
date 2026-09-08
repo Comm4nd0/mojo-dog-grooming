@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import '../../constants/app_colors.dart';
 import '../../models/models.dart';
 import 'appointment_block.dart';
+import 'blocked_band.dart';
 import 'timeline_grid_painter.dart';
 import 'timeline_layout.dart';
 import 'timeline_metrics.dart';
@@ -32,6 +33,9 @@ class DayTimeline extends StatefulWidget {
     required this.onOpen,
     required this.onCreateAt,
     required this.onMove,
+    this.onOpenVisit,
+    this.blocks = const [],
+    this.onOpenBlock,
     this.openMinutes,
     this.closeMinutes,
     this.isClosedDay = false,
@@ -43,7 +47,21 @@ class DayTimeline extends StatefulWidget {
   final List<Appointment> appointments;
   final TimelineMetrics metrics;
 
+  /// Time Jess has blocked out, drawn hatched under the bookings. Any block
+  /// that touches this day; clipping to the day happens in the layout.
+  final List<BlockedTime> blocks;
+
+  /// Tapping a blocked band. Null makes the bands inert, which is what a
+  /// read-only caller wants.
+  final ValueChanged<BlockedTime>? onOpenBlock;
+
   final ValueChanged<Appointment> onOpen;
+
+  /// Tapping a band that stands for several dogs of one visit. Handed every
+  /// booking on the band, leading dog first, so the parent can ask which
+  /// one to open — each dog's booking is still its own. Null falls back to
+  /// [onOpen] with the leading dog.
+  final ValueChanged<List<Appointment>>? onOpenVisit;
 
   /// Tapping empty space starts a booking at that time.
   final ValueChanged<DateTime> onCreateAt;
@@ -90,10 +108,12 @@ class _DayTimelineState extends State<DayTimeline> {
   Widget build(BuildContext context) {
     final window = dayWindowFor(
       widget.appointments,
+      spans: [for (final block in widget.blocks) ?block.minutesOn(widget.day)],
       openMinutes: widget.openMinutes,
       closeMinutes: widget.closeMinutes,
     );
     final placed = layoutDay(widget.appointments, window);
+    final placedBlocks = layoutBlocks(widget.blocks, widget.day, window);
     final metrics = widget.metrics;
     final totalHeight = window.height(metrics);
 
@@ -144,6 +164,21 @@ class _DayTimelineState extends State<DayTimeline> {
                     onTapUp: (details) => _createAt(details.localPosition.dy, window),
                   ),
                 ),
+                // Over the tap-to-create layer, so tapping a block opens it
+                // rather than starting a booking on top of it; under the
+                // bookings, so one Jess has put there anyway stays readable.
+                for (final item in placedBlocks)
+                  Positioned(
+                    top: item.top(metrics),
+                    left: metrics.gutterWidth,
+                    width: laneWidth,
+                    child: GestureDetector(
+                      onTap: widget.onOpenBlock == null
+                          ? null
+                          : () => widget.onOpenBlock!(item.block),
+                      child: BlockedBand(placed: item, metrics: metrics),
+                    ),
+                  ),
                 for (final item in placed)
                   _positioned(context, item, window, laneWidth, metrics),
                 ..._nowLine(context, window, metrics),
@@ -241,7 +276,9 @@ class _DayTimelineState extends State<DayTimeline> {
       left: metrics.gutterWidth + item.left(laneWidth),
       width: item.width(laneWidth),
       child: GestureDetector(
-        onTap: () => widget.onOpen(item.appointment),
+        onTap: () => item.companions.isNotEmpty && widget.onOpenVisit != null
+            ? widget.onOpenVisit!(item.all)
+            : widget.onOpen(item.appointment),
         // Not LongPressDraggable: its feedback follows the finger in two
         // dimensions and cannot snap, so the block floats free and then
         // teleports on drop. Driving `top` from state keeps it on the axis

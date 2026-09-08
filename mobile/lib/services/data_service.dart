@@ -212,6 +212,7 @@ class DataService {
     required DateTime startAt,
     DateTime? endAt,
     int? excludeAppointmentId,
+    int? excludeGroupId,
     String serviceType = ServiceType.groom,
     List<int> serviceIds = const [],
   }) async {
@@ -220,6 +221,8 @@ class DataService {
       'start_at': startAt.toUtc().toIso8601String(),
       'end_at': ?endAt?.toUtc().toIso8601String(),
       'exclude_appointment': ?excludeAppointmentId,
+      // The rest of a household visit: they overlap on purpose.
+      'exclude_group': ?excludeGroupId,
       'service_type': serviceType,
       'services': serviceIds,
     });
@@ -277,6 +280,65 @@ class DataService {
   Future<List<Appointment>> getAppointmentRequests() async {
     final payload = await _api.get('/appointments/', query: {'status': 'REQUESTED'});
     return ApiClient.resultsOf(payload).map(Appointment.fromJson).toList();
+  }
+
+  /// Book a household in as one visit: one appointment per dog, all from
+  /// [startAt] to [endAt], made together or not at all.
+  ///
+  /// [services] are the first dog's; the companions are booked with none,
+  /// so the server resolves each dog's own price exactly as a booking made
+  /// alone. Returns the appointments made.
+  Future<List<Appointment>> bookTogether({
+    required List<int> dogIds,
+    required DateTime startAt,
+    required DateTime endAt,
+    String bookingType = 'ADHOC',
+    String serviceType = ServiceType.groom,
+    List<int> services = const [],
+    String notes = '',
+  }) async {
+    final payload = await _api.post('/booking-groups/', {
+      'bookings': [
+        for (var i = 0; i < dogIds.length; i++)
+          {'dog': dogIds[i], if (i == 0) 'services': services},
+      ],
+      'start_at': startAt.toUtc().toIso8601String(),
+      'end_at': endAt.toUtc().toIso8601String(),
+      'booking_type': bookingType,
+      'service_type': serviceType,
+      'notes': notes,
+    });
+    final rows = (payload as Map<String, dynamic>)['appointments'] as List? ?? const [];
+    return rows.map((row) => Appointment.fromJson(row as Map<String, dynamic>)).toList();
+  }
+
+  /// Link bookings already in the diary into one visit.
+  ///
+  /// The fix for a household booked one dog at a time before visits
+  /// existed. Nothing moves: the members come back with their group set,
+  /// and giving them one length is a separate, visible step.
+  Future<List<Appointment>> groupAppointments(List<int> appointmentIds) async {
+    final payload = await _api.post('/booking-groups/', {'appointments': appointmentIds});
+    final rows = (payload as Map<String, dynamic>)['appointments'] as List? ?? const [];
+    return rows.map((row) => Appointment.fromJson(row as Map<String, dynamic>)).toList();
+  }
+
+  /// Move or resize every dog in a visit at once.
+  ///
+  /// A new start shifts each by the same amount, keeping its own length; a
+  /// new end sets every dog's end. Returns the server's warnings, prefixed
+  /// with the dog — advisory, as always.
+  Future<List<BookingWarning>> updateBookingGroup(
+    int id, {
+    DateTime? startAt,
+    DateTime? endAt,
+  }) async {
+    final payload = await _api.patch('/booking-groups/$id/', {
+      'start_at': ?startAt?.toUtc().toIso8601String(),
+      'end_at': ?endAt?.toUtc().toIso8601String(),
+    });
+    final rows = (payload as Map<String, dynamic>)['warnings'] as List? ?? const [];
+    return rows.map((row) => BookingWarning.fromJson(row as Map<String, dynamic>)).toList();
   }
 
   Future<Appointment> updateAppointment(int id, Map<String, dynamic> changes) async =>
@@ -451,7 +513,7 @@ class DataService {
   /// overlaps still happens, and she slides it in the day view.
   Future<List<String>> approveAppointmentChange(int id, {DateTime? startAt}) async {
     final payload = await _api.post('/appointment-change-requests/$id/approve/', {
-      if (startAt != null) 'start_at': startAt.toIso8601String(),
+      if (startAt != null) 'start_at': startAt.toUtc().toIso8601String(),
     });
     final warnings = (payload as Map<String, dynamic>)['warnings'] as List<dynamic>? ?? const [];
     return warnings.map((w) => w.toString()).toList();
@@ -545,6 +607,41 @@ class DataService {
           DateTime.utc(date.year, date.month, date.day),
     };
   }
+
+  /// Blocked-out time touching the window, by overlap rather than start —
+  /// a long weekend off is on Saturday's diary even though it starts Friday.
+  ///
+  /// Readable by clients too (minus the notes), which is what lets the
+  /// request sheet say "not available" before anything is sent.
+  Future<List<BlockedTime>> getBlockedTimes({DateTime? from, DateTime? to}) async {
+    String? asDate(DateTime? value) => value?.toIso8601String().split('T').first;
+    final payload = await _api.get('/blocked-times/', query: {
+      'from': asDate(from),
+      'to': asDate(to),
+      'page_size': '500',
+    });
+    return ApiClient.resultsOf(payload).map(BlockedTime.fromJson).toList();
+  }
+
+  Future<BlockedTime> createBlockedTime({
+    required DateTime startAt,
+    required DateTime endAt,
+    String notes = '',
+  }) async {
+    final payload = await _api.post('/blocked-times/', {
+      'start_at': startAt.toUtc().toIso8601String(),
+      'end_at': endAt.toUtc().toIso8601String(),
+      'notes': notes,
+    });
+    return BlockedTime.fromJson(payload as Map<String, dynamic>);
+  }
+
+  Future<BlockedTime> updateBlockedTime(int id, Map<String, dynamic> changes) async =>
+      BlockedTime.fromJson(
+        await _api.patch('/blocked-times/$id/', changes) as Map<String, dynamic>,
+      );
+
+  Future<void> deleteBlockedTime(int id) => _api.delete('/blocked-times/$id/');
 
   static int? _minutesOfTime(String? value) {
     if (value == null || value.isEmpty) return null;

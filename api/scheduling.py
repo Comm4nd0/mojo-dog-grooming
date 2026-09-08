@@ -16,6 +16,7 @@ from .models import (
     Appointment,
     AppointmentStatus,
     AppSettings,
+    BlockedTime,
     ClosureDay,
     Dog,
     FALLBACK_NAIL_VISIT_MINUTES,
@@ -105,8 +106,58 @@ def opening_hours_warning(start_at, end_at):
     return None
 
 
-def overlap_warning(start_at, end_at, exclude_appointment=None):
-    """Warn when the slot collides with another booking."""
+def _describe_block(block):
+    local_start = timezone.localtime(block.start_at)
+    local_end = timezone.localtime(block.end_at)
+    if local_start.date() == local_end.date():
+        return f'{local_start:%a %d %b} {local_start:%H:%M}–{local_end:%H:%M}'
+    return f'{local_start:%a %d %b %H:%M} to {local_end:%a %d %b %H:%M}'
+
+
+def blocked_time_warning(start_at, end_at):
+    """Warn **staff** that the slot runs into time Jess blocked out.
+
+    A warning, like everything else in this file: she can book over her own
+    lunch without first deleting it. The client-facing half is
+    :func:`blocked_time_refusal`, which is the one rule that refuses.
+    """
+    block = BlockedTime.overlapping(start_at, end_at).first()
+    if block is None:
+        return None
+    label = _describe_block(block)
+    if block.notes:
+        label += f' ({block.notes.splitlines()[0]})'
+    return {
+        'code': 'blocked_time',
+        'message': f'This runs into time you have blocked out: {label}.',
+        'detail': {
+            'blocked_time_id': block.pk,
+            'start_at': block.start_at.isoformat(),
+            'end_at': block.end_at.isoformat(),
+        },
+    }
+
+
+def blocked_time_refusal(start_at, end_at):
+    """The message a **client** gets when their slot runs into a block, or None.
+
+    Deliberately says nothing about why, and nothing about how long the
+    block is — the notes are Jess's, and the span itself is already
+    readable from ``/api/blocked-times/`` for anyone who wants to pick
+    round it.
+    """
+    if not BlockedTime.overlapping(start_at, end_at).exists():
+        return None
+    return 'That time is not available. Please choose another.'
+
+
+def overlap_warning(start_at, end_at, exclude_appointment=None, exclude_group=None):
+    """Warn when the slot collides with another booking.
+
+    ``exclude_group`` leaves out every member of a household visit: dogs
+    booked together overlap on purpose, and warning that Biscuit clashes
+    with Biscuit's own brother is noise that hides the clash that matters.
+    """
     clashes = Appointment.objects.filter(
         status__in=Appointment.ACTIVE_STATUSES,
         start_at__lt=end_at,
@@ -114,6 +165,8 @@ def overlap_warning(start_at, end_at, exclude_appointment=None):
     ).select_related('dog')
     if exclude_appointment is not None:
         clashes = clashes.exclude(pk=exclude_appointment.pk)
+    if exclude_group is not None:
+        clashes = clashes.exclude(group=exclude_group)
 
     clash = clashes.first()
     if clash is None:
@@ -289,6 +342,17 @@ def next_available_slots(
             )
         )
 
+    # Blocked-out time is busy time. A block can run across several days, so
+    # it is clipped to each one it touches rather than filed under the day
+    # it starts — a long weekend off must not leave Sunday looking free.
+    blocks = BlockedTime.objects.filter(
+        end_at__date__gte=start_date, start_at__date__lte=end_date,
+    )
+    for block in blocks:
+        for day, busy_from, busy_to in _clip_to_days(block.start_at, block.end_at):
+            if start_date <= day <= end_date:
+                booked.setdefault(day, []).append((busy_from, busy_to))
+
     now = timezone.localtime()
     now_minutes = now.hour * 60 + now.minute
 
@@ -341,6 +405,27 @@ def next_available_slots(
     return slots, len(slots) < count, None
 
 
+def _clip_to_days(start_at, end_at):
+    """Split a span into ``(date, from_minutes, to_minutes)`` per local day.
+
+    Half-open: a span ending exactly at midnight contributes nothing to the
+    day it ends on.
+    """
+    local_start = timezone.localtime(start_at)
+    local_end = timezone.localtime(end_at)
+    day = local_start.date()
+    while day <= local_end.date():
+        from_minutes = (
+            local_start.hour * 60 + local_start.minute if day == local_start.date() else 0
+        )
+        to_minutes = (
+            local_end.hour * 60 + local_end.minute if day == local_end.date() else 24 * 60
+        )
+        if to_minutes > from_minutes:
+            yield day, from_minutes, to_minutes
+        day += timedelta(days=1)
+
+
 def _slot(day, minutes_past_midnight, length):
     """Build an aware datetime for a local wall-clock time on ``day``.
 
@@ -362,7 +447,7 @@ def _slot(day, minutes_past_midnight, length):
 
 
 def booking_warnings(dog, start_at, end_at=None, exclude_appointment=None,
-                     service_type=ServiceType.GROOM, services=()):
+                     service_type=ServiceType.GROOM, services=(), exclude_group=None):
     """All warnings for a proposed slot, in the order they matter to Jess."""
     services = list(services)
     if end_at is None:
@@ -372,7 +457,8 @@ def booking_warnings(dog, start_at, end_at=None, exclude_appointment=None,
     checks = [
         temperament_warning(dog, start_at, exclude_appointment),
         opening_hours_warning(start_at, end_at),
-        overlap_warning(start_at, end_at, exclude_appointment),
+        blocked_time_warning(start_at, end_at),
+        overlap_warning(start_at, end_at, exclude_appointment, exclude_group),
         service_category_warning(service_type, services),
         unpriced_service_warning(service_type, services),
     ]

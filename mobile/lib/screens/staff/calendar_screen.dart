@@ -7,11 +7,14 @@ import '../../constants/app_colors.dart';
 import '../../models/models.dart';
 import '../../services/data_service.dart';
 import '../../services/service_locator.dart';
+import '../../widgets/booking_request.dart';
 import '../../widgets/calendar/day_timeline.dart';
+import '../../widgets/calendar/timeline_layout.dart';
 import '../../widgets/calendar/timeline_metrics.dart';
 import '../../widgets/calendar/week_timeline.dart';
 import '../../widgets/common.dart';
 import '../../widgets/contact_actions.dart';
+import 'blocked_time_form_screen.dart';
 import 'booking_form_screen.dart';
 import 'dog_profile_screen.dart';
 
@@ -51,6 +54,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
   DateTime _selectedDay = DateTime.now();
 
   Map<DateTime, List<Appointment>> _byDay = {};
+
+  /// Blocked-out time, under every day it touches. A block that runs across
+  /// a weekend is in Saturday's list as well as Friday's.
+  Map<DateTime, List<BlockedTime>> _blocksByDay = {};
   Map<int, (int, int)> _hoursByWeekday = const {};
   Set<DateTime> _closures = const {};
   TimelineMetrics _metrics = const TimelineMetrics();
@@ -82,6 +89,15 @@ class _CalendarScreenState extends State<CalendarScreen> {
       final from = DateTime(_loadedMonth.year, _loadedMonth.month - 1, 1);
       final to = DateTime(_loadedMonth.year, _loadedMonth.month + 2, 0);
       final appointments = await _data.getAppointments(from: from, to: to);
+      // Blocked time is fetched separately and a failure leaves the last
+      // answer standing rather than blanking the diary: bookings are the
+      // thing Jess cannot work without, the bands are the thing she set up.
+      var blocks = _blocksByDay;
+      try {
+        blocks = _groupBlocks(await _data.getBlockedTimes(from: from, to: to), from, to);
+      } catch (_) {
+        // Shown without them.
+      }
       // Opening hours shade the closed parts of the day, and closures wash
       // the whole thing. Both are advisory — a booking on a closed day still
       // renders, because the rule warns and never blocks.
@@ -102,6 +118,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
       }
       setState(() {
         _byDay = grouped;
+        _blocksByDay = blocks;
         _hoursByWeekday = hours;
         _closures = closures;
         _loading = false;
@@ -117,7 +134,40 @@ class _CalendarScreenState extends State<CalendarScreen> {
 
   static DateTime _dayKey(DateTime value) => DateTime.utc(value.year, value.month, value.day);
 
+  /// One entry per day a block touches, within the loaded window.
+  static Map<DateTime, List<BlockedTime>> _groupBlocks(
+    List<BlockedTime> blocks,
+    DateTime from,
+    DateTime to,
+  ) {
+    final grouped = <DateTime, List<BlockedTime>>{};
+    for (final block in blocks) {
+      var day = DateTime(block.startAt.year, block.startAt.month, block.startAt.day);
+      if (day.isBefore(from)) day = DateTime(from.year, from.month, from.day);
+      while (!day.isAfter(to) && block.coversDay(day)) {
+        grouped.putIfAbsent(_dayKey(day), () => []).add(block);
+        day = DateTime(day.year, day.month, day.day + 1);
+      }
+    }
+    return grouped;
+  }
+
   List<Appointment> _eventsFor(DateTime day) => _byDay[_dayKey(day)] ?? const [];
+
+  List<BlockedTime> _blocksFor(DateTime day) => _blocksByDay[_dayKey(day)] ?? const [];
+
+  /// Block time out, or open a block already there.
+  Future<void> _openBlock({BlockedTime? existing, DateTime? at}) async {
+    final changed = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => BlockedTimeFormScreen(
+          block: existing,
+          initialStart: at ?? _selectedDay,
+        ),
+      ),
+    );
+    if (changed == true) _load();
+  }
 
   Future<void> _openBooking({Appointment? existing, DateTime? at}) async {
     final saved = await Navigator.of(context).push<bool>(
@@ -142,97 +192,96 @@ class _CalendarScreenState extends State<CalendarScreen> {
       return;
     }
 
-    final choice = await showModalBottomSheet<String>(
+    final choice = await showRequestDecisionSheet(context, appointment);
+    if (!mounted || choice == null) return;
+
+    switch (choice) {
+      case RequestDecision.accept:
+        await _acceptRequest(appointment);
+      case RequestDecision.acceptElsewhen:
+        await _acceptRequestElsewhen(appointment);
+      case RequestDecision.decline:
+        await _declineRequest(appointment);
+      case RequestDecision.open:
+        await _openBooking(existing: appointment);
+      case RequestDecision.ring:
+        await callNumber(context, appointment.clientPhone);
+    }
+  }
+
+  /// A band with several dogs on it: ask which one.
+  ///
+  /// The visit is a link between bookings and nothing more — each dog keeps
+  /// its own notes, services, price, status and timer — so opening "the
+  /// visit" has to mean opening one dog's booking, and the diary should not
+  /// guess which.
+  Future<void> _chooseFromVisit(List<Appointment> dogs) async {
+    final chosen = await showModalBottomSheet<Appointment>(
       context: context,
       builder: (sheetContext) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 20, 16, 4),
-              child: Text(
-                '${appointment.dogName} — requested by ${appointment.clientName}',
-                style: Theme.of(sheetContext).textTheme.titleMedium,
+              child: Row(
+                children: [
+                  Icon(Icons.group_outlined, size: 18, color: sheetContext.mojo.accent),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      '${dogs.first.clientName} · ${dogs.first.timeRange}',
+                      style: Theme.of(sheetContext).textTheme.titleMedium,
+                    ),
+                  ),
+                ],
               ),
             ),
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-              child: Text(
-                '${formatDate(appointment.startAt)} · ${appointment.timeRange}'
-                '${appointment.notes.isEmpty ? '' : '\n“${appointment.notes}”'}',
-                style: TextStyle(fontSize: 12.5, color: sheetContext.mojo.muted),
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'One visit, ${dogs.length} bookings. Which dog?',
+                  style: TextStyle(fontSize: 12.5, color: sheetContext.mojo.muted),
+                ),
               ),
             ),
-            ListTile(
-              leading: Icon(Icons.check, color: sheetContext.mojo.accent),
-              title: const Text('Book it in'),
-              subtitle: const Text('At the time they asked for'),
-              onTap: () => Navigator.pop(sheetContext, 'accept'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.close, color: AppColors.error),
-              title: const Text('Turn it down'),
-              onTap: () => Navigator.pop(sheetContext, 'decline'),
-            ),
-            ListTile(
-              leading: Icon(Icons.edit_calendar_outlined, color: sheetContext.mojo.accent),
-              title: const Text('Open the booking'),
-              subtitle: const Text('Pick a different time before booking it'),
-              onTap: () => Navigator.pop(sheetContext, 'open'),
-            ),
-            if (appointment.clientPhone.isNotEmpty)
+            for (final dog in dogs)
               ListTile(
-                leading: Icon(Icons.phone_outlined, color: sheetContext.mojo.accent),
-                title: Text('Ring ${appointment.clientName}'),
-                onTap: () => Navigator.pop(sheetContext, 'ring'),
+                leading: const Icon(Icons.pets_outlined),
+                title: Text(dog.dogName),
+                subtitle: dog.status == 'BOOKED'
+                    ? null
+                    : Text(dog.statusLabel),
+                onTap: () => Navigator.pop(sheetContext, dog),
               ),
             const SizedBox(height: 8),
           ],
         ),
       ),
     );
-    if (!mounted || choice == null) return;
-
-    switch (choice) {
-      case 'accept':
-        await _acceptRequest(appointment);
-      case 'decline':
-        await _declineRequest(appointment);
-      case 'open':
-        await _openBooking(existing: appointment);
-      case 'ring':
-        await callNumber(context, appointment.clientPhone);
-    }
+    if (chosen != null && mounted) await _openAppointment(chosen);
   }
 
-  /// Same shape as the Waiting for you queue: check first — not to refuse,
-  /// the diary never refuses, but because a request arrives without anyone
-  /// having looked at the day — then book it at the time asked.
+  /// Book it at the time asked. The check-then-confirm shape lives in
+  /// [bookRequestIn], shared with the Waiting for you queue.
   Future<void> _acceptRequest(Appointment request) async {
-    try {
-      final check = await _data.checkBooking(
-        dogId: request.dogId,
-        startAt: request.startAt,
-        endAt: request.endAt,
-        excludeAppointmentId: request.id,
-        serviceType: request.serviceType,
-      );
-      if (!mounted) return;
-      final go = await showWarningsDialog(
-        context,
-        check,
-        title: 'Before you book them in',
-        confirmLabel: 'BOOK ANYWAY',
-      );
-      if (!go || !mounted) return;
-      await _data.updateAppointment(request.id, {'status': 'BOOKED'});
-    } catch (error) {
-      if (mounted) showSnack(context, error.toString(), isError: true);
-      return;
-    }
+    if (!await bookRequestIn(context, _data, request)) return;
     if (!mounted) return;
-    showSnack(context, 'Booked in.');
+    _load();
+    unawaited(_data.getPending());
+  }
+
+  /// Book it at a time Jess picks instead — the request is what the client
+  /// would like, and what she has free is a different question. The slot
+  /// keeps its length; only the start moves.
+  Future<void> _acceptRequestElsewhen(Appointment request) async {
+    final at = await pickDateAndTime(context, initial: request.startAt);
+    if (at == null || !mounted) return;
+    if (!await bookRequestIn(context, _data, request, at: at)) return;
+    if (!mounted) return;
+    setState(() => _selectedDay = at);
     _load();
     unawaited(_data.getPending());
   }
@@ -284,6 +333,14 @@ class _CalendarScreenState extends State<CalendarScreen> {
           // a slow downward drag near the top would sometimes reload the
           // screen instead of sliding the groom, which is the one interaction
           // Jess asked for by name.
+          // Its own button rather than a second thing behind the +. The FAB
+          // has just gone back to meaning one thing, and blocking time out
+          // is rarer than booking a dog.
+          IconButton(
+            icon: const Icon(Icons.event_busy_outlined),
+            tooltip: 'Block out time',
+            onPressed: () => _openBlock(at: _selectedDay),
+          ),
           IconButton(
             icon: const Icon(Icons.refresh),
             tooltip: 'Refresh',
@@ -365,6 +422,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
               style: TextStyle(fontSize: 12.5, color: AppColors.warning),
             ),
           ),
+        // A household booked one dog at a time — every booking made before
+        // visits existed looks like this. Offered, never done unasked.
+        for (final household in householdsBookedSeparately(_eventsFor(_selectedDay)))
+          _linkBanner(household),
         Expanded(
           child: GestureDetector(
             // Pinch changes the layout, not a pixel zoom, so a nail trim can
@@ -380,12 +441,15 @@ class _CalendarScreenState extends State<CalendarScreen> {
               key: ValueKey(_dayKey(_selectedDay)),
               day: _selectedDay,
               appointments: _eventsFor(_selectedDay),
+              blocks: _blocksFor(_selectedDay),
+              onOpenBlock: (block) => _openBlock(existing: block),
               metrics: _metrics,
               openMinutes: hours?.$1,
               closeMinutes: hours?.$2,
               isClosedDay: closed,
               movingId: _movingId,
               onOpen: _openAppointment,
+              onOpenVisit: _chooseFromVisit,
               onCreateAt: (at) => _openBooking(at: at),
               onMove: _move,
             ),
@@ -393,6 +457,66 @@ class _CalendarScreenState extends State<CalendarScreen> {
         ),
       ],
     );
+  }
+
+  /// "Rolo, Tank and Pip are booked separately — link as one visit?"
+  Widget _linkBanner(List<Appointment> household) {
+    final names = _joinNames([for (final a in household) a.dogName]);
+    return Material(
+      color: context.mojo.tintWash,
+      child: InkWell(
+        onTap: () => _linkVisit(household),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Row(
+            children: [
+              Icon(Icons.group_outlined, size: 18, color: context.mojo.accent),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  '$names are booked separately.',
+                  style: const TextStyle(fontSize: 12.5),
+                ),
+              ),
+              TextButton(
+                onPressed: () => _linkVisit(household),
+                child: const Text('LINK AS ONE VISIT'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  static String _joinNames(List<String> names) {
+    if (names.length <= 1) return names.join();
+    return '${names.sublist(0, names.length - 1).join(', ')} and ${names.last}';
+  }
+
+  /// Link the household's bookings into one visit, then open it.
+  ///
+  /// Linking moves nothing. The bookings keep the shapes they had, which
+  /// is exactly what made the diary wrong — so the leading booking's form
+  /// opens straight after with the "also change the others" switch on, and
+  /// the visit's length is one edit away rather than five.
+  Future<void> _linkVisit(List<Appointment> household) async {
+    List<Appointment> members;
+    try {
+      members = await _data.groupAppointments([for (final a in household) a.id]);
+    } catch (error) {
+      if (mounted) showSnack(context, error.toString(), isError: true);
+      return;
+    }
+    if (!mounted) return;
+    final names = _joinNames([for (final a in household) a.dogName]);
+    showSnack(context, 'Linked $names as one visit. Set how long they are in.');
+    members.sort((a, b) {
+      final byStart = a.startAt.compareTo(b.startAt);
+      return byStart != 0 ? byStart : a.id.compareTo(b.id);
+    });
+    await _openBooking(existing: members.first);
+    if (mounted) _load();
   }
 
   /// A week of dates across the top, so changing day is one tap.
@@ -508,10 +632,13 @@ class _CalendarScreenState extends State<CalendarScreen> {
           child: WeekTimeline(
             weekStart: _mondayOf(_selectedDay),
             appointmentsByDay: _byDay,
+            blocksByDay: _blocksByDay,
+            onOpenBlock: (block) => _openBlock(existing: block),
             // Zoomed out by default so the whole week fits without scrolling
             // — scanning is the point of this view.
             metrics: const TimelineMetrics(scale: 0.55),
             onOpen: _openAppointment,
+            onOpenVisit: _chooseFromVisit,
             onOpenDay: (day) => setState(() {
               _selectedDay = day;
               _view = CalendarView.day;
@@ -645,11 +772,26 @@ class _CalendarScreenState extends State<CalendarScreen> {
     setState(() => _movingId = appointment.id);
 
     try {
+      // A dog booked in with the rest of its household: ask whether the
+      // visit moves or just the one dog, before anything is checked. Asked,
+      // not assumed — the whole point of a visit is that a change to it is
+      // deliberate.
+      var wholeVisit = false;
+      if (appointment.isSharedVisit) {
+        final choice = await _askWholeVisit(appointment);
+        if (choice == null) {
+          setState(() => _movingId = null);
+          return;
+        }
+        wholeVisit = choice;
+      }
+
       final check = await _data.checkBooking(
         dogId: appointment.dogId,
         startAt: newStart,
         endAt: newEnd,
         excludeAppointmentId: appointment.id,
+        excludeGroupId: wholeVisit ? appointment.groupId : null,
         serviceType: appointment.serviceType,
         serviceIds: appointment.serviceIds,
       );
@@ -667,16 +809,27 @@ class _CalendarScreenState extends State<CalendarScreen> {
         return;
       }
 
-      await _data.updateAppointment(appointment.id, {
-        'start_at': newStart.toUtc().toIso8601String(),
-        'end_at': newEnd.toUtc().toIso8601String(),
-      });
-      if (!mounted) return;
-      showSnackWithUndo(
-        context,
-        '${appointment.dogName} moved to ${formatTime(newStart)}.',
-        onUndo: () => _undoMove(appointment, original),
-      );
+      if (wholeVisit) {
+        await _data.updateBookingGroup(appointment.groupId!, startAt: newStart);
+        if (!mounted) return;
+        final names = [appointment.dogName, ...appointment.companionNames].join(', ');
+        showSnackWithUndo(
+          context,
+          '$names moved to ${formatTime(newStart)}.',
+          onUndo: () => _undoMove(appointment, original, wholeVisit: true),
+        );
+      } else {
+        await _data.updateAppointment(appointment.id, {
+          'start_at': newStart.toUtc().toIso8601String(),
+          'end_at': newEnd.toUtc().toIso8601String(),
+        });
+        if (!mounted) return;
+        showSnackWithUndo(
+          context,
+          '${appointment.dogName} moved to ${formatTime(newStart)}.',
+          onUndo: () => _undoMove(appointment, original),
+        );
+      }
     } catch (error) {
       if (mounted) showSnack(context, error.toString(), isError: true);
     } finally {
@@ -685,15 +838,52 @@ class _CalendarScreenState extends State<CalendarScreen> {
     }
   }
 
-  Future<void> _undoMove(Appointment appointment, DateTime original) async {
+  /// Whole visit (true), just this dog (false), or put it back (null).
+  Future<bool?> _askWholeVisit(Appointment appointment) {
+    final names = appointment.companionNames.join(', ');
+    return showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Move the whole visit?'),
+        content: Text(
+          '${appointment.dogName} is booked in with $names. Move them all, '
+          'or just ${appointment.dogName}?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('PUT IT BACK'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: Text('JUST ${appointment.dogName.toUpperCase()}'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('MOVE ALL'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _undoMove(
+    Appointment appointment,
+    DateTime original, {
+    bool wholeVisit = false,
+  }) async {
     try {
-      await _data.updateAppointment(appointment.id, {
-        'start_at': original.toUtc().toIso8601String(),
-        'end_at': original
-            .add(Duration(minutes: appointment.durationMinutes))
-            .toUtc()
-            .toIso8601String(),
-      });
+      if (wholeVisit) {
+        await _data.updateBookingGroup(appointment.groupId!, startAt: original);
+      } else {
+        await _data.updateAppointment(appointment.id, {
+          'start_at': original.toUtc().toIso8601String(),
+          'end_at': original
+              .add(Duration(minutes: appointment.durationMinutes))
+              .toUtc()
+              .toIso8601String(),
+        });
+      }
     } catch (error) {
       if (mounted) showSnack(context, error.toString(), isError: true);
     }
@@ -723,7 +913,9 @@ class _CalendarScreenState extends State<CalendarScreen> {
     // throws on sort, and sorting in place would mutate _byDay during build.
     final appointments = [..._eventsFor(_selectedDay)]
       ..sort((a, b) => a.startAt.compareTo(b.startAt));
-    if (appointments.isEmpty) {
+    final blocks = [..._blocksFor(_selectedDay)]
+      ..sort((a, b) => a.startAt.compareTo(b.startAt));
+    if (appointments.isEmpty && blocks.isEmpty) {
       return EmptyState(
         icon: Icons.event_available_outlined,
         title: 'Nothing booked',
@@ -737,10 +929,11 @@ class _CalendarScreenState extends State<CalendarScreen> {
 
     return ListView.separated(
       padding: const EdgeInsets.only(bottom: 12),
-      itemCount: appointments.length,
+      itemCount: blocks.length + appointments.length,
       separatorBuilder: (_, _) => const Divider(height: 1),
       itemBuilder: (context, index) {
-        final appointment = appointments[index];
+        if (index < blocks.length) return _blockRow(blocks[index]);
+        final appointment = appointments[index - blocks.length];
         return ListTile(
           onTap: () => _openAppointment(appointment),
           leading: Column(
@@ -790,4 +983,19 @@ class _CalendarScreenState extends State<CalendarScreen> {
     );
   }
 
+  /// A blocked span in the month view's list, ahead of the bookings.
+  Widget _blockRow(BlockedTime block) {
+    final span = block.minutesOn(_selectedDay);
+    final (from, to) = span ?? (0, 24 * 60);
+    String clock(int minutes) => minutes >= 24 * 60
+        ? '24:00'
+        : '${(minutes ~/ 60).toString().padLeft(2, '0')}:${(minutes % 60).toString().padLeft(2, '0')}';
+    final headline = block.headline;
+    return ListTile(
+      onTap: () => _openBlock(existing: block),
+      leading: Icon(Icons.event_busy_outlined, color: context.mojo.muted),
+      title: Text('Blocked out · ${clock(from)} – ${clock(to)}'),
+      subtitle: headline.isEmpty ? null : Text(headline),
+    );
+  }
 }

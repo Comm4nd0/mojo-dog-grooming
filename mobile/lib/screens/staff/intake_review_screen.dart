@@ -6,6 +6,7 @@ import '../../constants/app_colors.dart';
 import '../../models/models.dart';
 import '../../services/data_service.dart';
 import '../../services/service_locator.dart';
+import '../../widgets/booking_request.dart';
 import '../../widgets/common.dart';
 import '../../widgets/contact_actions.dart';
 import '../../widgets/dog_silhouette.dart';
@@ -353,43 +354,48 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
                 ),
               ],
             ),
-            // Opening it goes to the booking form, which is where a different
-            // time gets picked — accepting here takes the time as asked.
-            onTap: () => _openRequest(request),
+            // The buttons take the time as asked. Tapping the row offers the
+            // rest — a different time, the edit form, ringing them — the same
+            // sheet the diary opens on a requested block.
+            onTap: () => _decideRequest(request),
           );
         },
       ),
     );
   }
 
-  Future<void> _acceptRequest(Appointment request) async {
-    // Check before confirming, not to refuse it — the diary never refuses —
-    // but because a request arrives without anyone having looked at the day,
-    // so this is the first moment a clash or an out-of-hours slot is visible.
-    try {
-      final check = await _data.checkBooking(
-        dogId: request.dogId,
-        startAt: request.startAt,
-        endAt: request.endAt,
-        excludeAppointmentId: request.id,
-        serviceType: request.serviceType,
-      );
-      if (!mounted) return;
-      final go = await showWarningsDialog(
-        context,
-        check,
-        title: 'Before you book them in',
-        confirmLabel: 'BOOK ANYWAY',
-      );
-      if (!go || !mounted) return;
-
-      await _data.updateAppointment(request.id, {'status': 'BOOKED'});
-    } catch (error) {
-      if (mounted) showSnack(context, error.toString(), isError: true);
-      return;
+  Future<void> _decideRequest(Appointment request) async {
+    final choice = await showRequestDecisionSheet(context, request);
+    if (!mounted || choice == null) return;
+    switch (choice) {
+      case RequestDecision.accept:
+        await _acceptRequest(request);
+      case RequestDecision.acceptElsewhen:
+        await _acceptRequestElsewhen(request);
+      case RequestDecision.decline:
+        await _declineRequest(request);
+      case RequestDecision.open:
+        await _openRequest(request);
+      case RequestDecision.ring:
+        await callNumber(context, request.clientPhone);
     }
+  }
+
+  /// Book it at the time asked. The check-then-confirm shape lives in
+  /// [bookRequestIn], shared with the diary.
+  Future<void> _acceptRequest(Appointment request) async {
+    if (!await bookRequestIn(context, _data, request)) return;
     if (!mounted) return;
-    showSnack(context, 'Booked in.');
+    _load();
+    unawaited(_data.getPending());
+  }
+
+  /// Book it at a time Jess picks instead. The slot keeps its length.
+  Future<void> _acceptRequestElsewhen(Appointment request) async {
+    final at = await pickDateAndTime(context, initial: request.startAt);
+    if (at == null || !mounted) return;
+    if (!await bookRequestIn(context, _data, request, at: at)) return;
+    if (!mounted) return;
     _load();
     unawaited(_data.getPending());
   }
@@ -481,6 +487,10 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
 
           return ListTile(
             isThreeLine: true,
+            // The tick moves it to the time they asked for. Tapping the row
+            // offers the other answer — a time of Jess's choosing — which
+            // the server has always accepted and the app never sent.
+            onTap: change.isCancellation ? null : () => _decideMove(change),
             leading: Icon(
               change.isCancellation
                   ? Icons.event_busy_outlined
@@ -546,14 +556,88 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
     );
   }
 
+  /// A move request, with the choice the tick button does not offer: put it
+  /// somewhere other than where they asked. The common case — the client
+  /// picks a slot that clashes and Jess puts them in the next real gap.
+  Future<void> _decideMove(AppointmentChangeRequest change) async {
+    final wanted = change.preferredStartAt;
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      // Scrolls rather than overflowing on a short phone — a modal sheet gets
+      // 9/16 of the screen and five rows with a header can be more than that.
+      builder: (sheetContext) => SafeArea(
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 20, 16, 12),
+                child: Text(
+                  'Move ${change.dogName} — ${change.clientName}',
+                  style: Theme.of(sheetContext).textTheme.titleMedium,
+                ),
+              ),
+              if (wanted != null)
+                ListTile(
+                  leading: Icon(Icons.check, color: sheetContext.mojo.accent),
+                  title: const Text('Move it'),
+                  subtitle: Text(
+                    'To ${formatDate(wanted)} · ${formatTime(wanted)}, as they asked',
+                  ),
+                  onTap: () => Navigator.pop(sheetContext, 'asked'),
+                ),
+              ListTile(
+                leading: Icon(Icons.schedule, color: sheetContext.mojo.accent),
+                title: const Text('Move it to a different time'),
+                subtitle: const Text('Pick the date and time'),
+                onTap: () => Navigator.pop(sheetContext, 'elsewhen'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.close, color: AppColors.error),
+                title: const Text('Leave the booking as it is'),
+                onTap: () => Navigator.pop(sheetContext, 'leave'),
+              ),
+              if (change.clientPhone.isNotEmpty)
+                ListTile(
+                  leading: Icon(Icons.phone_outlined, color: sheetContext.mojo.accent),
+                  title: Text('Ring ${change.clientName}'),
+                  onTap: () => Navigator.pop(sheetContext, 'ring'),
+                ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (!mounted || choice == null) return;
+    switch (choice) {
+      case 'asked':
+        await _decideBookingChange(change, approve: true);
+      case 'elsewhen':
+        final at = await pickDateAndTime(
+          context,
+          initial: wanted ?? change.appointmentStartAt ?? DateTime.now(),
+        );
+        if (at == null || !mounted) return;
+        await _decideBookingChange(change, approve: true, startAt: at);
+      case 'leave':
+        await _decideBookingChange(change, approve: false);
+      case 'ring':
+        await callNumber(context, change.clientPhone);
+    }
+  }
+
+  /// [startAt] moves the booking to a time other than the one asked for.
   Future<void> _decideBookingChange(
     AppointmentChangeRequest change, {
     required bool approve,
+    DateTime? startAt,
   }) async {
     List<String> warnings = const [];
     try {
       if (approve) {
-        warnings = await _data.approveAppointmentChange(change.id);
+        warnings = await _data.approveAppointmentChange(change.id, startAt: startAt);
       } else {
         await _data.rejectAppointmentChange(change.id);
       }
@@ -585,9 +669,17 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
     } else {
       showSnack(
         context,
-        approve
-            ? (change.isCancellation ? 'Booking cancelled.' : 'Booking moved.')
-            : 'Left as it was.',
+        !approve
+            ? 'Left as it was.'
+            : change.isCancellation
+                ? 'Booking cancelled.'
+                : startAt == null
+                    ? 'Booking moved.'
+                    // Not the time they asked for, and nothing tells them
+                    // by itself — so say so, as the prompt to ring.
+                    : 'Booking moved to ${formatDate(startAt)} · '
+                        '${formatTime(startAt)} — not the time they asked '
+                        'for, so let them know.',
       );
     }
 

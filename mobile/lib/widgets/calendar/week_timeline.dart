@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../constants/app_colors.dart';
 import '../../models/models.dart';
 import 'appointment_block.dart';
+import 'blocked_band.dart';
 import 'timeline_grid_painter.dart';
 import 'timeline_layout.dart';
 import 'timeline_metrics.dart';
@@ -22,8 +23,20 @@ class WeekTimeline extends StatelessWidget {
     required this.metrics,
     required this.onOpen,
     required this.onOpenDay,
+    this.onOpenVisit,
+    this.blocksByDay = const {},
+    this.onOpenBlock,
     this.hoursByWeekday = const {},
   });
+
+  /// Blocked-out time, keyed the same way as [appointmentsByDay]. A block
+  /// that spans several days appears under each of them.
+  final Map<DateTime, List<BlockedTime>> blocksByDay;
+
+  final ValueChanged<BlockedTime>? onOpenBlock;
+
+  /// A band standing for several dogs of one visit — see the day view.
+  final ValueChanged<List<Appointment>>? onOpenVisit;
 
   /// The Monday.
   final DateTime weekStart;
@@ -46,7 +59,14 @@ class WeekTimeline extends StatelessWidget {
     final everything = [
       for (final day in _days) ...?appointmentsByDay[_key(day)],
     ];
-    final window = dayWindowFor(everything);
+    final window = dayWindowFor(
+      everything,
+      spans: [
+        for (final day in _days)
+          for (final block in blocksByDay[_key(day)] ?? const <BlockedTime>[])
+            ?block.minutesOn(day),
+      ],
+    );
     final totalHeight = window.height(metrics);
 
     return Column(
@@ -122,14 +142,28 @@ class WeekTimeline extends StatelessWidget {
   ) {
     final day = _days[index];
     final placed = layoutDay(appointmentsByDay[_key(day)] ?? const [], window);
+    final placedBlocks = layoutBlocks(blocksByDay[_key(day)] ?? const [], day, window);
     return [
+      for (final item in placedBlocks)
+        Positioned(
+          top: item.top(metrics),
+          left: metrics.gutterWidth + index * laneWidth,
+          width: laneWidth,
+          child: GestureDetector(
+            onTap: onOpenBlock == null ? null : () => onOpenBlock!(item.block),
+            onLongPress: () => onOpenDay(day),
+            child: BlockedBand(placed: item, metrics: metrics, compact: true),
+          ),
+        ),
       for (final item in placed)
         Positioned(
           top: item.top(metrics),
           left: metrics.gutterWidth + index * laneWidth + item.left(laneWidth),
           width: item.width(laneWidth),
           child: GestureDetector(
-            onTap: () => onOpen(item.appointment),
+            onTap: () => item.companions.isNotEmpty && onOpenVisit != null
+                ? onOpenVisit!(item.all)
+                : onOpen(item.appointment),
             onLongPress: () => onOpenDay(day),
             child: AppointmentBlock(
               placed: item,

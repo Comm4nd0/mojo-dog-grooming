@@ -3,6 +3,8 @@ from django.contrib import admin
 from .models import (
     AppSettings,
     Appointment,
+    BlockedTime,
+    BookingGroup,
     Breed,
     MedicalNote,
     BookingSeries,
@@ -235,8 +237,21 @@ class TemperamentGradeAdmin(admin.ModelAdmin):
     readonly_fields = ['temperament']
 
 
+@admin.register(BlockedTime)
+class BlockedTimeAdmin(admin.ModelAdmin):
+    list_display = ['__str__', 'notes', 'created_by']
+    date_hierarchy = 'start_at'
+    readonly_fields = ['created_by', 'created_at', 'updated_at']
+
+    def save_model(self, request, obj, form, change):
+        if not change and obj.created_by_id is None:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+
+
 admin.site.register([
     AppSettings,
+    BookingGroup,
     BookingSeries,
     ClosureDay,
     DogPhoto,

@@ -30,6 +30,8 @@ from .serializers import DogSerializer
 
 from .management.commands.seed_breeds import BREEDS
 from .models import (
+    BlockedTime,
+    BookingGroup,
     AppSettings,
     Appointment,
     AppointmentChangeRequest,
@@ -565,6 +567,408 @@ class BookingWarningTests(BaseAPITestCase):
         )
         codes = [warning['code'] for warning in response.data['warnings']]
         self.assertNotIn('temperament_limit', codes)
+
+
+class BlockedTimeTests(BaseAPITestCase):
+    """Time Jess has blocked out.
+
+    Two audiences and two rules. For staff it is a *warning* like every other
+    rule in scheduling.py — she can book over her own lunch. For a client it
+    is the one **refusal** in the booking flow: a request into a block is
+    turned away before it reaches her queue. And the notes are hers alone.
+    """
+
+    def setUp(self):
+        super().setUp()
+        for weekday in range(7):
+            OpeningHours.objects.create(
+                weekday=weekday, open_time=time(9, 0), close_time=time(17, 0),
+            )
+        self.alice_dog.groom_minutes = 60
+        self.alice_dog.save()
+        # Next Monday at noon, an hour long.
+        today = timezone.localdate()
+        monday = today + timedelta(days=((7 - today.weekday()) % 7 or 7))
+        self.monday = monday
+        self.block_start = timezone.make_aware(
+            timezone.datetime.combine(monday, time(12, 0)), timezone.get_current_timezone(),
+        )
+        self.block = BlockedTime.objects.create(
+            start_at=self.block_start,
+            end_at=self.block_start + timedelta(hours=1),
+            notes='Vet with Mojo',
+            created_by=self.staff,
+        )
+
+    def _at(self, hour, minute=0):
+        return timezone.make_aware(
+            timezone.datetime.combine(self.monday, time(hour, minute)),
+            timezone.get_current_timezone(),
+        )
+
+    # ── Who sees what ──
+
+    def test_a_client_sees_the_span_but_never_the_notes(self):
+        response = self.alice_client.get('/api/blocked-times/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        rows = response.data['results'] if 'results' in response.data else response.data
+        self.assertEqual(len(rows), 1)
+        self.assertIn('start_at', rows[0])
+        self.assertNotIn('notes', rows[0])
+        self.assertNotIn('created_by', rows[0])
+
+        detail = self.alice_client.get(f'/api/blocked-times/{self.block.pk}/')
+        self.assertEqual(detail.status_code, status.HTTP_200_OK)
+        self.assertNotIn('notes', detail.data)
+
+    def test_staff_see_the_notes(self):
+        response = self.staff_client.get(f'/api/blocked-times/{self.block.pk}/')
+        self.assertEqual(response.data['notes'], 'Vet with Mojo')
+
+    def test_only_staff_can_create_change_or_delete_a_block(self):
+        body = {
+            'start_at': self._at(15).isoformat(),
+            'end_at': self._at(16).isoformat(),
+            'notes': 'nope',
+        }
+        self.assertEqual(
+            self.alice_client.post('/api/blocked-times/', body, format='json').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        self.assertEqual(
+            self.alice_client.patch(
+                f'/api/blocked-times/{self.block.pk}/', {'notes': 'x'}, format='json',
+            ).status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        self.assertEqual(
+            self.alice_client.delete(f'/api/blocked-times/{self.block.pk}/').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+        created = self.staff_client.post('/api/blocked-times/', body, format='json')
+        self.assertEqual(created.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(created.data['created_by'], self.staff.pk)
+
+    def test_a_block_must_end_after_it_starts(self):
+        response = self.staff_client.post('/api/blocked-times/', {
+            'start_at': self._at(15).isoformat(), 'end_at': self._at(15).isoformat(),
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('end_at', response.data)
+
+    def test_the_date_window_is_by_overlap_not_start(self):
+        # Friday evening to Monday morning is on Saturday's diary.
+        friday = self.monday + timedelta(days=4)
+        weekend = BlockedTime.objects.create(
+            start_at=timezone.make_aware(
+                timezone.datetime.combine(friday, time(15, 0)), timezone.get_current_timezone(),
+            ),
+            end_at=timezone.make_aware(
+                timezone.datetime.combine(friday + timedelta(days=3), time(9, 0)),
+                timezone.get_current_timezone(),
+            ),
+        )
+        saturday = (friday + timedelta(days=1)).isoformat()
+        response = self.staff_client.get(f'/api/blocked-times/?from={saturday}&to={saturday}')
+        ids = [row['id'] for row in (response.data.get('results', response.data))]
+        self.assertEqual(ids, [weekend.pk])
+
+    # ── Staff: a warning ──
+
+    def test_staff_booking_into_a_block_warns_but_succeeds(self):
+        check = self.staff_client.post(
+            '/api/appointments/check/',
+            {'dog': self.alice_dog.pk, 'start_at': self._at(12, 30).isoformat()},
+            format='json',
+        )
+        warning = next(
+            (w for w in check.data['warnings'] if w['code'] == 'blocked_time'), None,
+        )
+        self.assertIsNotNone(warning)
+        self.assertIn('Vet with Mojo', warning['message'])
+        self.assertEqual(warning['detail']['blocked_time_id'], self.block.pk)
+
+        created = self.staff_client.post(
+            '/api/appointments/',
+            {'dog': self.alice_dog.pk, 'start_at': self._at(12, 30).isoformat()},
+            format='json',
+        )
+        self.assertEqual(created.status_code, status.HTTP_201_CREATED)
+
+    def test_a_slot_ending_exactly_when_the_block_starts_does_not_warn(self):
+        check = self.staff_client.post(
+            '/api/appointments/check/',
+            {
+                'dog': self.alice_dog.pk,
+                'start_at': self._at(11).isoformat(),
+                'end_at': self._at(12).isoformat(),
+            },
+            format='json',
+        )
+        codes = [w['code'] for w in check.data['warnings']]
+        self.assertNotIn('blocked_time', codes)
+
+    # ── Clients: a refusal ──
+
+    def test_a_client_request_into_a_block_is_refused(self):
+        response = self.alice_client.post(
+            '/api/appointments/',
+            {'dog': self.alice_dog.pk, 'start_at': self._at(12, 30).isoformat()},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('start_at', response.data)
+        # Nothing about why, nothing about the notes.
+        self.assertNotIn('Vet', str(response.data))
+        self.assertFalse(Appointment.objects.exists())
+
+    def test_a_client_request_whose_length_runs_into_a_block_is_refused(self):
+        # Starts at 11:30 with a 60-minute groom, so it ends inside the block
+        # even though it starts outside it.
+        response = self.alice_client.post(
+            '/api/appointments/',
+            {'dog': self.alice_dog.pk, 'start_at': self._at(11, 30).isoformat()},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_a_client_request_outside_the_block_goes_through(self):
+        response = self.alice_client.post(
+            '/api/appointments/',
+            {'dog': self.alice_dog.pk, 'start_at': self._at(14).isoformat()},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['status'], AppointmentStatus.REQUESTED)
+
+    def test_a_client_move_request_into_a_block_is_refused(self):
+        appointment = Appointment.objects.create(
+            dog=self.alice_dog, start_at=self._at(9), end_at=self._at(10),
+        )
+        response = self.alice_client.post('/api/appointment-change-requests/', {
+            'appointment': appointment.pk,
+            'kind': 'RESCHEDULE',
+            'preferred_start_at': self._at(12, 15).isoformat(),
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('preferred_start_at', response.data)
+
+        fine = self.alice_client.post('/api/appointment-change-requests/', {
+            'appointment': appointment.pk,
+            'kind': 'RESCHEDULE',
+            'preferred_start_at': self._at(14).isoformat(),
+        }, format='json')
+        self.assertEqual(fine.status_code, status.HTTP_201_CREATED)
+
+    # ── Next available ──
+
+    def test_next_available_skips_the_block(self):
+        response = self.staff_client.get(
+            f'/api/appointments/next_available/?dog={self.alice_dog.pk}'
+            f'&from={self.monday.isoformat()}&count=10'
+        )
+        for slot in response.data['slots']:
+            if slot['date'] != self.monday.isoformat():
+                continue
+            start = timezone.localtime(slot['start_at'])
+            end = timezone.localtime(slot['end_at'])
+            overlaps = start < timezone.localtime(self.block.end_at) and \
+                end > timezone.localtime(self.block.start_at)
+            self.assertFalse(overlaps, f'{start:%H:%M}–{end:%H:%M} runs into the block')
+
+    def test_next_available_treats_a_multi_day_block_as_busy_on_every_day(self):
+        BlockedTime.objects.create(
+            start_at=self._at(8),
+            end_at=self._at(8) + timedelta(days=2, hours=10),  # through Wednesday 18:00
+        )
+        response = self.staff_client.get(
+            f'/api/appointments/next_available/?dog={self.alice_dog.pk}'
+            f'&from={self.monday.isoformat()}&count=1'
+        )
+        self.assertEqual(
+            response.data['slots'][0]['date'], (self.monday + timedelta(days=3)).isoformat(),
+        )
+
+
+class BookingGroupTests(BaseAPITestCase):
+    """A household booked in as one visit.
+
+    Jess grooms a family's dogs interleaved, so the time they are in is a
+    figure of its own. Her ask was that lengthening the first dog's booking
+    lengthen the rest; this is that outcome made explicit — one visit, one
+    length, and a change applied to the group on purpose.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.rolo = self.bob_dog
+        self.tank = Dog.objects.create(client=self.bob, name='Tank', breed=self.breed)
+        self.pip = Dog.objects.create(client=self.bob, name='Pip', breed=self.breed)
+        self.start = timezone.now().replace(microsecond=0) + timedelta(days=7)
+        self.end = self.start + timedelta(hours=4)
+
+    def _book_together(self, dogs=None, **extra):
+        body = {
+            'bookings': [{'dog': dog.pk} for dog in (dogs or [self.rolo, self.tank, self.pip])],
+            'start_at': self.start.isoformat(),
+            'end_at': self.end.isoformat(),
+            **extra,
+        }
+        return self.staff_client.post('/api/booking-groups/', body, format='json')
+
+    def test_booking_together_makes_one_visit_with_one_length(self):
+        response = self._book_together(notes='All three, back by four')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        members = response.data['appointments']
+        self.assertEqual(len(members), 3)
+        for member in members:
+            self.assertEqual(member['group'], response.data['id'])
+            self.assertEqual(member['duration_minutes'], 240)
+            self.assertEqual(member['notes'], 'All three, back by four')
+        # Each dog's own price, exactly as a booking made alone.
+        self.assertEqual(Decimal(members[0]['price_quoted']), Decimal('50.00'))
+        # The companions, for the band and the edit form.
+        rolo = next(m for m in members if m['dog'] == self.rolo.pk)
+        self.assertEqual(sorted(rolo['group_dog_names']), ['Pip', 'Tank'])
+
+    def test_a_dog_listed_twice_is_refused_and_nothing_is_made(self):
+        response = self._book_together(dogs=[self.rolo, self.rolo])
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(Appointment.objects.exists())
+        self.assertFalse(BookingGroup.objects.exists())
+
+    def test_existing_bookings_can_be_grouped(self):
+        first = Appointment.objects.create(dog=self.rolo, start_at=self.start, end_at=self.end)
+        second = Appointment.objects.create(dog=self.tank, start_at=self.start, end_at=self.end)
+        response = self.staff_client.post(
+            '/api/booking-groups/', {'appointments': [first.pk, second.pk]}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertEqual(first.group_id, second.group_id)
+        self.assertEqual(first.group_id, response.data['id'])
+
+        # Already in a visit — not silently moved into another.
+        again = self.staff_client.post(
+            '/api/booking-groups/', {'appointments': [first.pk]}, format='json',
+        )
+        self.assertEqual(again.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_changing_the_end_changes_every_dog_in_the_visit(self):
+        group_id = self._book_together().data['id']
+        later = self.end + timedelta(hours=1)
+        response = self.staff_client.patch(
+            f'/api/booking-groups/{group_id}/', {'end_at': later.isoformat()}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        for member in Appointment.objects.filter(group_id=group_id):
+            self.assertEqual(member.end_at, later)
+            self.assertEqual(member.start_at, self.start)
+
+    def test_changing_the_start_moves_the_visit_and_keeps_each_length(self):
+        group_id = self._book_together().data['id']
+        # One dog is a nail trim in the middle — deliberately its own shape.
+        pip = Appointment.objects.get(group_id=group_id, dog=self.pip)
+        pip.end_at = pip.start_at + timedelta(minutes=20)
+        pip.save()
+
+        new_start = self.start + timedelta(hours=2)
+        response = self.staff_client.patch(
+            f'/api/booking-groups/{group_id}/', {'start_at': new_start.isoformat()}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        pip.refresh_from_db()
+        self.assertEqual(pip.start_at, new_start)
+        self.assertEqual(pip.end_at, new_start + timedelta(minutes=20))
+        rolo = Appointment.objects.get(group_id=group_id, dog=self.rolo)
+        self.assertEqual(rolo.end_at, new_start + timedelta(hours=4))
+
+    def test_a_cancelled_dog_is_left_where_it_was(self):
+        group_id = self._book_together().data['id']
+        tank = Appointment.objects.get(group_id=group_id, dog=self.tank)
+        tank.status = AppointmentStatus.CANCELLED
+        tank.save()
+
+        later = self.end + timedelta(hours=1)
+        self.staff_client.patch(
+            f'/api/booking-groups/{group_id}/', {'end_at': later.isoformat()}, format='json',
+        )
+        tank.refresh_from_db()
+        self.assertEqual(tank.end_at, self.end)
+        # And is no longer named as a companion.
+        rolo = self.staff_client.get(
+            f'/api/appointments/{Appointment.objects.get(group_id=group_id, dog=self.rolo).pk}/'
+        )
+        self.assertEqual(rolo.data['group_dog_names'], ['Pip'])
+
+    def test_the_visit_does_not_warn_about_itself(self):
+        group_id = self._book_together().data['id']
+        rolo = Appointment.objects.get(group_id=group_id, dog=self.rolo)
+        # A stranger's dog in the same slot is still a clash worth hearing about.
+        Appointment.objects.create(
+            dog=self.alice_dog, start_at=self.start, end_at=self.start + timedelta(hours=1),
+        )
+        response = self.staff_client.post('/api/appointments/check/', {
+            'dog': self.rolo.pk,
+            'start_at': self.start.isoformat(),
+            'end_at': self.end.isoformat(),
+            'exclude_appointment': rolo.pk,
+            'exclude_group': group_id,
+        }, format='json')
+        overlaps = [w for w in response.data['warnings'] if w['code'] == 'overlap']
+        self.assertEqual(len(overlaps), 1)
+        self.assertEqual(overlaps[0]['detail']['dog_name'], 'Biscuit')
+
+        # And the group reshape says the same, per dog, with nothing about
+        # the family clashing with itself.
+        reshaped = self.staff_client.patch(
+            f'/api/booking-groups/{group_id}/',
+            {'end_at': (self.end + timedelta(minutes=30)).isoformat()}, format='json',
+        )
+        messages = [w['message'] for w in reshaped.data['warnings']]
+        self.assertTrue(all('Biscuit' in m for m in messages if 'overlaps' in m), messages)
+        self.assertFalse(any('overlaps Tank' in m or 'overlaps Pip' in m or 'overlaps Rolo' in m
+                             for m in messages), messages)
+
+    def test_a_reshape_that_ends_before_it_starts_is_refused(self):
+        group_id = self._book_together().data['id']
+        response = self.staff_client.patch(
+            f'/api/booking-groups/{group_id}/',
+            {'end_at': (self.start - timedelta(hours=1)).isoformat()}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        for member in Appointment.objects.filter(group_id=group_id):
+            self.assertEqual(member.end_at, self.end)
+
+    def test_leaving_a_visit_is_an_ordinary_edit(self):
+        group_id = self._book_together().data['id']
+        pip = Appointment.objects.get(group_id=group_id, dog=self.pip)
+        response = self.staff_client.patch(
+            f'/api/appointments/{pip.pk}/', {'group': None}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        pip.refresh_from_db()
+        self.assertIsNone(pip.group_id)
+        self.assertEqual(Appointment.objects.filter(group_id=group_id).count(), 2)
+
+    def test_clients_cannot_touch_visits_and_do_not_see_companions(self):
+        group_id = self._book_together().data['id']
+        self.assertEqual(
+            self.bob_client.get(f'/api/booking-groups/{group_id}/').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        self.assertEqual(
+            self.bob_client.patch(
+                f'/api/booking-groups/{group_id}/', {'end_at': self.end.isoformat()}, format='json',
+            ).status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        rolo = Appointment.objects.get(group_id=group_id, dog=self.rolo)
+        mine = self.bob_client.get(f'/api/appointments/{rolo.pk}/')
+        self.assertEqual(mine.status_code, status.HTTP_200_OK)
+        self.assertNotIn('group_dog_names', mine.data)
 
 
 class AppointmentDefaultsTests(BaseAPITestCase):

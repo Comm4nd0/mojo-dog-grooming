@@ -1334,6 +1334,62 @@ class ClosureDay(models.Model):
         return f'{self.date:%d %b %Y} — {self.reason or "closed"}'
 
 
+class BlockedTime(models.Model):
+    """A stretch of the diary Jess has taken off the table.
+
+    Her lunch, a vet run, an afternoon she does not want booked. It differs
+    from :class:`ClosureDay` in two ways that matter: it is a *span* rather
+    than a whole day, and for a client it is a **refusal**, not a warning.
+    Every rule in ``scheduling.py`` warns and never blocks because Jess is
+    the one deciding — but a client asking for a time she has blocked out is
+    not deciding anything, they are asking for something that is not on
+    offer, and the honest answer is "pick another time" before the request
+    ever lands in her queue. Staff booking into one still only get a
+    warning, so she can override her own block without deleting it.
+
+    ``notes`` are hers. A client can read that a span is unavailable —
+    they need to, or they keep asking for it — but never why. That is
+    gated by ``StaffOnlyFieldsMixin`` in the serializer, same as every other
+    private field, and the queryset is deliberately *not* scoped: the whole
+    point is that every client sees the same blocked span.
+    """
+
+    start_at = models.DateTimeField()
+    end_at = models.DateTimeField()
+    notes = models.TextField(
+        blank=True,
+        help_text="Staff only. Why the time is blocked — never shown to a client.",
+    )
+    created_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name='blocked_times',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['start_at']
+        indexes = [models.Index(fields=['start_at']), models.Index(fields=['end_at'])]
+
+    def __str__(self):
+        local_start = timezone.localtime(self.start_at)
+        local_end = timezone.localtime(self.end_at)
+        return f'Blocked {local_start:%d %b %Y %H:%M}–{local_end:%H:%M}'
+
+    def clean(self):
+        if self.start_at and self.end_at and self.end_at <= self.start_at:
+            raise ValidationError({'end_at': 'The end must be after the start.'})
+
+    @classmethod
+    def overlapping(cls, start_at, end_at):
+        """Blocks that share any instant with ``[start_at, end_at)``.
+
+        Half-open on both sides: a groom ending at 13:00 does not clash with
+        a lunch starting at 13:00. Anything else would refuse back-to-back
+        slots that are exactly what Jess books.
+        """
+        return cls.objects.filter(start_at__lt=end_at, end_at__gt=start_at)
+
+
 class BookingSeries(models.Model):
     """A standing appointment every N weeks, materialised into Appointments."""
 
@@ -1480,6 +1536,69 @@ def resolve_slot(dog, service_type, services=()):
     return minutes, (None if unpriced else total), unpriced
 
 
+class BookingGroup(models.Model):
+    """A household's dogs booked in as one visit.
+
+    Jess grooms a family's dogs interleaved — one in the bath while another
+    dries in the crate — so the time they are in the salon is neither any one
+    dog's groom time nor the sum of them. It is a figure of its own, and
+    before this it had nowhere to live: "book together" created N
+    appointments each sized to its own dog, the diary said the family left
+    at noon when they were there till four, and fixing it meant editing every
+    booking by hand. Her ask was *"if I increase the length of the first
+    dog's booking, increase all the others by the same"*; this is the same
+    outcome made explicit — one visit, one length, and a change applied to
+    the group on purpose rather than by side effect.
+
+    The group itself carries nothing but identity. Start and end live on the
+    members, so a member she has deliberately made different (a nail trim
+    in the middle of the family's groom) keeps its own shape, and the diary
+    draws it as its own block rather than lying about it.
+    """
+
+    created_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name='booking_groups',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        names = ', '.join(a.dog.name for a in self.appointments.select_related('dog'))
+        return f'Visit #{self.pk}: {names or "empty"}'
+
+    def active_members(self):
+        """The bookings a change to the visit applies to.
+
+        A cancelled dog is left where it was: it is off the visit, and
+        stretching it with the rest would put it back in the diary's way.
+        """
+        return self.appointments.filter(status__in=Appointment.ACTIVE_STATUSES)
+
+    def reshape(self, start_at=None, end_at=None):
+        """Move or resize every active member together.
+
+        ``start_at`` alone shifts each member by the same delta, keeping
+        its own length. ``end_at`` alone sets every member's end. Both set
+        both. Returns the members touched.
+        """
+        members = list(self.active_members())
+        if not members or (start_at is None and end_at is None):
+            return []
+        # The delta is measured from the earliest member so a visit whose
+        # members already start together moves as one.
+        anchor = min(m.start_at for m in members)
+        delta = (start_at - anchor) if start_at is not None else timedelta()
+        for member in members:
+            member.start_at = member.start_at + delta
+            member.end_at = end_at if end_at is not None else member.end_at + delta
+            if member.end_at <= member.start_at:
+                raise ValidationError({'end_at': 'The end must be after the start.'})
+            member.save(update_fields=['start_at', 'end_at', 'updated_at'])
+        return members
+
+
 class Appointment(models.Model):
     dog = models.ForeignKey(Dog, on_delete=models.CASCADE, related_name='appointments')
     start_at = models.DateTimeField()
@@ -1497,6 +1616,10 @@ class Appointment(models.Model):
     notes = models.TextField(blank=True)
     series = models.ForeignKey(
         BookingSeries, on_delete=models.SET_NULL, null=True, blank=True, related_name='appointments',
+    )
+    group = models.ForeignKey(
+        BookingGroup, on_delete=models.SET_NULL, null=True, blank=True, related_name='appointments',
+        help_text='The household visit this booking is part of, if any.',
     )
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='appointments')
     created_at = models.DateTimeField(auto_now_add=True)

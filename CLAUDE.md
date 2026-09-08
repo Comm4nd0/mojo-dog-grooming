@@ -55,7 +55,7 @@ mobile/lib/
 Backend:
 ```bash
 python manage.py migrate && python manage.py seed_breeds
-python manage.py test api        # 440 tests
+python manage.py test api        # 463 tests
 python manage.py runserver 0.0.0.0:8000
 python manage.py accounts        # who can sign in — usernames live only in the DB
 python manage.py reset_link jess # a way back in when the superuser is locked out
@@ -64,7 +64,7 @@ python manage.py reset_link jess # a way back in when the superuser is locked ou
 Mobile:
 ```bash
 cd mobile && flutter pub get
-flutter analyze && flutter test  # 236 tests
+flutter analyze && flutter test  # 260 tests
 flutter run --dart-define=MOJO_API_BASE=http://192.168.1.20:8000/api
 ```
 
@@ -300,6 +300,44 @@ show her message — likely to be moved or turned down — inline. It warns and 
 same as every rule in `scheduling.py`; a fetch failure or **no hours configured at all**
 warns about nothing, because a salon with no hours set must not tell every client they are
 out of hours.
+
+## Blocked-out time is a warning for Jess and a refusal for a client
+
+`BlockedTime` (`/api/blocked-times/`, migration `0022`) is a span Jess has taken off the
+table — lunch, a vet run, a week away. It is not a `ClosureDay`: it is a *span* rather than
+a day, and it is the **one rule in the booking flow that refuses**. Every check in
+`scheduling.py` warns because Jess is the one deciding; a client asking for a time she has
+blocked out is asking for something that is not on offer, and telling them at the sheet
+beats a request that sits in her queue only to be turned down.
+
+- **Staff booking into one get a warning** (`blocked_time_warning`, code `blocked_time`,
+  in `booking_warnings`), so she can book over her own lunch without deleting it. The
+  diary draws the band **under** the bookings for the same reason — a booking she has put
+  there anyway is the thing she needs to reach, and the tap must land on it.
+- **A client's request into one is refused** — `blocked_time_refusal()` in both
+  `AppointmentViewSet.perform_create` and `AppointmentChangeRequestViewSet.perform_create`
+  (a move request, sized to the booking's own length exactly as `apply()` will carry it).
+  The refusal names no reason and no duration. The app checks first
+  (`_isBlocked` in `my_bookings_screen.dart`) and disables SEND rather than hiding it,
+  but the server is the check; the sheet only tests the start instant because the slot's
+  length is the server's to resolve.
+- **`notes` are staff-only** through `StaffOnlyFieldsMixin` — a client can read *that* the
+  time is taken (they need to, or the request sheet keeps offering it) and never why. The
+  queryset is deliberately not scoped: every client sees the same span. On the Dart side
+  `BlockedTime.notes` is nullable and **null means withheld**, same as every other gated
+  field; the band labels itself "Blocked" with nothing after it.
+- **Overlap is half-open** (`BlockedTime.overlapping`): a groom ending at 13:00 does not
+  clash with a lunch starting at 13:00, or back-to-back slots would refuse.
+- **The date filter is by overlap, not start** — a block from Friday 15:00 to Monday 09:00
+  is on Saturday's diary. `next_available_slots` clips a block to each day it touches
+  (`_clip_to_days`), and the app groups it under every day it covers (`_groupBlocks`),
+  with `BlockedTime.minutesOn(day)` doing the clipping in wall-clock minutes so a
+  clock-change day draws where the clock says.
+- The form is `blocked_time_form_screen.dart`, reached from the diary's app-bar button —
+  its own button rather than a second thing behind the +, which had only just gone back to
+  meaning one thing. The band is `widgets/calendar/blocked_band.dart`: hatched grey, not
+  a temperament colour, because the left edge of everything else on that axis means a
+  handling grade and this is not a dog. `test/blocked_time_test.dart` holds all of it.
 
 ## The breed record is a reference sheet that also prices
 
@@ -1016,15 +1054,86 @@ gained "See it in the diary" buttons that push `CalendarScreen(initialDate:)`, w
 that screen takes an optional date at all: pushed it shows a back button and lands on the day
 in question; as a shell tab nothing passes one.
 
-**Booking a household together** — *"usually people book all their dogs together for a
-groom"*. The booking form offers the owner's other dogs as chips once a dog is picked; each
-ticked dog gets **its own appointment at the same start time**, sized to its own groom time
-with no services named, so the server resolves each dog's price exactly as a booking made
-alone. The deliberate overlap is the point (one bathing while the other crate-dries) and no
-check can see it anyway — none of the bookings exist when the checks run — but each extra
-dog's *other* warnings (temperament caps, hours) are merged into the one confirm dialog,
-prefixed with the dog's name. Book-together and the repeat switch exclude each other: a
-series materialises one dog.
+**Booking a request in at a different time is its own row on that sheet**, not a trip through
+the edit form. Jess: *"when a request for a booking comes I want to be able to change the date
+and time if needed"*. The sheet, the date-then-time picker and the check-then-book step all
+live in `widgets/booking_request.dart` and are shared by the diary and the Waiting for you
+queue (tapping a request row there opens the same sheet), so the two places she meets a
+request cannot offer different answers. Three things it has to get right:
+
+- **The slot keeps its length.** `Appointment.endIfStartedAt` moves the end with the start
+  by the *booked* length (`endAt - startAt`), never `durationMinutes` and never a
+  re-resolve — the same rule `AppointmentChangeRequest.apply()` follows on the server, and
+  for the same reason: the length may have been adjusted by hand.
+- **The check runs against the new time**, not the asked one, and the snack names both when
+  they differ. Nothing tells the client, so that line is the prompt to ring them.
+- **The edit form still has to be told.** Opening a request there and saving a new time
+  leaves it REQUESTED unless the status dropdown moves too, which is a request with a new
+  time on it and nothing in the diary. The dropdown now says so under itself. It is not
+  auto-promoted: opening a request to fix a note must not book it.
+
+The same gap existed for **move requests**: `approveAppointmentChange` had taken a `start_at`
+since the endpoint was written and no screen ever passed one. Tapping a move row in Waiting
+for you now offers "Move it to a different time" through the same picker.
+
+**Booking a household together is one visit with one length** — *"usually people book
+all their dogs together for a groom"*. Jess grooms a family's dogs interleaved (one in the
+bath while another dries in the crate), so the time they are in is neither any one dog's
+groom time nor the sum of them; it is a figure of its own. Her ask, once she had used the
+first version, was *"if I increase the length of the first dog's booking, increase all the
+others by the same"* — the symptom of each dog being sized to its own groom time and the
+diary saying the family left at noon when they were there till four. That literal feature
+was **not** built: "same owner, same day" is a guess (two separate trips would be stretched
+together), it cuts both ways (shortening one to a nail trim would shrink the rest), and it
+is a silent side effect of an edit. What was built instead:
+
+- **`BookingGroup`** (`0023`) — identity only, no times of its own — with `Appointment.group`.
+  `POST /api/booking-groups/` books every dog from one start to one end **atomically**
+  (`bookings: [{dog, services?}]`), or links existing bookings (`appointments: [ids]`).
+  Each dog still gets its own booking and its own price: the companions carry no services
+  and `apply_service_defaults(force_end=False, force_price=True)` prices them exactly as a
+  booking made alone. `PATCH` on the group is `reshape()`: a new `start_at` **shifts every
+  active member by the same delta, keeping its own length**; a new `end_at` sets every
+  member's end. Cancelled and no-show members are left where they are. Leaving a visit is
+  an ordinary `PATCH` of `group: null` on the appointment, not a group operation.
+- **The form asks once.** With a companion ticked, the duration field becomes "Visit
+  length", starting at the dogs' usual times added up — a starting point, not an answer,
+  and `_durationTouched` stops it being overwritten once she has set one. The services
+  resize (`_resizeFromServices`) stands down for a visit for the same reason.
+- **Propagation is a switch, not a side effect.** Editing one dog of a visit shows "Also
+  change the other N dogs in this visit", on by default, and only what actually moved is
+  sent (`startMoved` / `endMoved`) — a new end alone must not re-anchor every start.
+  Dragging one in the diary asks **MOVE ALL / JUST {dog} / PUT IT BACK** before the check
+  runs, and undo reverses whichever she chose.
+- **The check leaves the visit out of its own overlap warning** — `exclude_group` on
+  `/appointments/check/` and in `booking_warnings`. Dogs booked together overlap on purpose,
+  and "Biscuit clashes with Biscuit's brother" is noise that hides the clash that matters.
+  The group `PATCH` returns per-dog warnings the same way, prefixed with the name.
+- **The diary draws a visit as one band with every name on it** — but only for members with
+  exactly the same start and end (`_mergeVisits` in `timeline_layout.dart`, led by the lowest
+  id so the choice is stable). A member Jess has made a different length keeps its own block:
+  folding a twenty-minute nail trim into a four-hour band would be the diary lying about the
+  trim. The block carries a group icon, and **tapping it asks which dog** (`onOpenVisit`,
+  a sheet in `calendar_screen.dart`) rather than opening the leading one — the visit is a
+  link between bookings and nothing more, each dog keeps its own notes, services, price,
+  status and timer, so "open the visit" has to mean one dog's booking and the diary must
+  not guess which.
+- `group_dog_names` is **staff-only** on the appointment serializer. A household can in
+  principle span two client records, and one owner's dogs are not the other's to read.
+  Dart: `groupDogNames` nullable, null meaning withheld; read `companionNames`.
+
+- **Bookings made before visits existed are put right in place, never by a migration.** A
+  household booked one dog at a time is exactly what "same owner, same day" *looks* like,
+  but it is also what two separate trips look like, so nothing links them unasked. Two
+  offers instead: the day view shows a banner for any owner with two or more loose
+  bookings that day (`householdsBookedSeparately` in `timeline_layout.dart` — `BOOKED`,
+  `CONFIRMED` or `IN_PROGRESS` only, not requests and not finished ones) whose LINK AS ONE
+  VISIT links them and opens the leading booking's form so the length is one edit away;
+  and the edit form of any loose booking lists the owner's other loose bookings that day
+  under "Link into one visit", with a switch, on by default, to give them all this
+  booking's start and end. Linking by itself moves nothing.
+
+`BookingGroupTests` and `test/booking_group_test.dart` hold all of this.
 
 ## Scanned paperwork is not a photo
 

@@ -30,15 +30,45 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
   Map<int, (int, int)>? _hours;
   Set<DateTime>? _closures;
 
+  /// Time Jess has blocked out. Unlike the hours, this one *does* stop a
+  /// request: the server refuses it, and the sheet says so first rather
+  /// than letting it be sent and bounced. Fetched for a year ahead, which
+  /// is as far as the date picker goes. Null until fetched; a failed fetch
+  /// leaves the server as the only check, which is still a check.
+  List<BlockedTime>? _blocks;
+
   Future<void> _loadHoursIfNeeded() async {
-    if (_hours != null && _closures != null) return;
-    try {
-      _hours = await _data.getOpeningHoursByWeekday();
-      _closures = await _data.getClosureDates();
-    } catch (_) {
-      // Advisory only. Nothing here blocks a request.
+    if (_hours == null || _closures == null) {
+      try {
+        _hours = await _data.getOpeningHoursByWeekday();
+        _closures = await _data.getClosureDates();
+      } catch (_) {
+        // Advisory only. Nothing here blocks a request.
+      }
+    }
+    if (_blocks == null) {
+      try {
+        _blocks = await _data.getBlockedTimes(
+          from: DateTime.now(),
+          to: DateTime.now().add(const Duration(days: 366)),
+        );
+      } catch (_) {
+        // The server still refuses; the sheet just cannot warn first.
+      }
     }
   }
+
+  /// Whether [when] is inside time Jess has blocked out.
+  ///
+  /// Checks the start only: the length of the slot is the server's to
+  /// resolve (breed, services), and it checks the whole span. This is the
+  /// early answer, not the last word.
+  bool _isBlocked(DateTime when) =>
+      _blocks?.any((block) => block.covers(when)) ?? false;
+
+  /// The one message in this flow that is not "ask anyway".
+  static const _blockedMessage =
+      'That time is not available. Please choose another.';
 
   /// Whether [when] falls outside normal grooming hours.
   ///
@@ -187,7 +217,21 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
                   ),
                 ],
               ),
-              if (_isOutOfHours(DateTime(
+              if (_isBlocked(DateTime(
+                date.year, date.month, date.day, time.hour, time.minute,
+              )))
+                Padding(
+                  padding: const EdgeInsets.only(top: 10),
+                  child: Container(
+                    padding: const EdgeInsets.all(10),
+                    color: AppColors.error.withValues(alpha: 0.10),
+                    child: const Text(
+                      _blockedMessage,
+                      style: TextStyle(fontSize: 12.5, color: AppColors.error),
+                    ),
+                  ),
+                )
+              else if (_isOutOfHours(DateTime(
                 date.year, date.month, date.day, time.hour, time.minute,
               )))
                 Padding(
@@ -210,7 +254,14 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
               ),
               const SizedBox(height: 20),
               ElevatedButton(
-                onPressed: () => Navigator.pop(context, true),
+                // Disabled, not hidden, for a blocked time: the button still
+                // says what the sheet is for, and the box above says why it
+                // cannot be pressed yet.
+                onPressed: _isBlocked(DateTime(
+                  date.year, date.month, date.day, time.hour, time.minute,
+                ))
+                    ? null
+                    : () => Navigator.pop(context, true),
                 child: const Text('SEND REQUEST'),
               ),
             ],
@@ -364,6 +415,24 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
     if (!mounted) return;
     final preferred =
         DateTime(date.year, date.month, date.day, time.hour, time.minute);
+    if (_isBlocked(preferred)) {
+      // A refusal — the one in this flow. No "ask anyway": the server would
+      // turn it down, and offering the button would be offering nothing.
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Not available'),
+          content: const Text(_blockedMessage),
+          actions: [
+            ElevatedButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('PICK ANOTHER TIME'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
     if (_isOutOfHours(preferred)) {
       // A message, not a refusal — same rule as every warning in the diary.
       final goOn = await showDialog<bool>(

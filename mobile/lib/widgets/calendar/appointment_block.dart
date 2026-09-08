@@ -73,10 +73,12 @@ class AppointmentBlock extends StatelessWidget {
   Widget _content(BuildContext context, double height) {
     final appointment = placed.appointment;
     final time = overrideTimeLabel ?? formatTime(appointment.startAt);
+    // A household visit is one band with every dog on it.
+    final names = placed.all.map((a) => a.dogName).join(', ');
 
     if (compact || height < 34) {
       return Text(
-        compact ? appointment.dogName : '$time  ${appointment.dogName}',
+        compact ? names : '$time  $names',
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
         style: TextStyle(fontSize: compact ? 9.5 : metrics.blockFontSize),
@@ -92,12 +94,17 @@ class AppointmentBlock extends StatelessWidget {
             const SizedBox(width: 6),
             Expanded(
               child: Text(
-                appointment.dogName,
+                names,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(fontWeight: FontWeight.w600),
               ),
             ),
+            if (placed.companions.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(right: 4),
+                child: Icon(Icons.group_outlined, size: 12, color: context.mojo.onTint),
+              ),
             if (appointment.serviceType == ServiceType.nailsFleasTicks)
               Icon(Icons.content_cut, size: 12, color: context.mojo.onTint),
           ],

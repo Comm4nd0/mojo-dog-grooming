@@ -4,6 +4,7 @@ import '../../constants/app_colors.dart';
 import '../../models/models.dart';
 import '../../services/data_service.dart';
 import '../../services/service_locator.dart';
+import '../../widgets/calendar/timeline_layout.dart';
 import '../../widgets/common.dart';
 import '../../widgets/duration_picker.dart';
 import '../../widgets/searchable_picker.dart';
@@ -51,11 +52,33 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
 
   /// Other dogs from the same household to book into the same slot — Jess:
   /// *"as usually people book all their dogs together for a groom, can it be
-  /// made easy to 'share an appointment'?"*. Each extra dog gets its own
-  /// appointment at the same start time, sized to its own groom time, so the
-  /// diary shows them overlapping in one visit the way she works them — one
-  /// bathing while the other dries.
+  /// made easy to 'share an appointment'?"*. They go in as **one visit**
+  /// with one length: she grooms them interleaved — one bathing while the
+  /// other dries — so the time they are in is neither any one dog's groom
+  /// time nor the sum, and it is hers to say. Each dog still gets its own
+  /// booking and its own price.
   Set<int> _extraDogIds = {};
+
+  /// Whether Jess has set the length herself. Until she does, ticking a
+  /// companion re-sizes the visit to the dogs' usual times added up — a
+  /// starting point, not an answer — and once she has, nothing overwrites it.
+  bool _durationTouched = false;
+
+  /// Editing one dog of a visit: whether a new start or end goes to the
+  /// others too. On by default, because that is the whole point of a visit
+  /// — but a switch she can see, never a side effect.
+  bool _applyToVisit = true;
+
+  /// The same owner's other bookings on this day that are not yet in a
+  /// visit — offered for linking when editing a booking that is not in one
+  /// either. Empty unless both are true.
+  List<Appointment> _linkable = const [];
+  final Set<int> _linkIds = {};
+
+  /// Once linked, whether the others take this booking's start and end.
+  /// On by default: the reason to link is almost always that the visit's
+  /// length is wrong, and it is this form's figure that is right.
+  bool _reshapeLinked = true;
 
   // A repeating booking creates a BookingSeries, which materialises
   // appointments ahead at this interval.
@@ -66,6 +89,22 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
   bool _busy = false;
 
   bool get _isEditing => widget.appointment != null;
+
+  /// Editing a booking that is part of a household visit with other dogs.
+  bool get _isVisitEdit => widget.appointment?.isSharedVisit ?? false;
+
+  /// Booking several dogs in together, as one visit.
+  bool get _isVisit => _extraDogIds.isNotEmpty;
+
+  /// The dogs' usual groom times added up — the visit's starting length.
+  int get _usualTimesSummed {
+    final dog = _selectedDog;
+    var total = dog == null ? _durationMinutes : dog.groomMinutes;
+    for (final extra in _extraDogs) {
+      total += extra.groomMinutes;
+    }
+    return total;
+  }
 
   /// How long a nail trim runs. Falls back to 20 only so the picker lands
   /// somewhere sensible when Jess hasn't set a length in Settings — the
@@ -115,11 +154,32 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
       } catch (_) {
         // Only needed to size a nails slot; the slider still works without it.
       }
+      // Bookings this one could be linked with: same owner, same day, in
+      // no visit yet. Only for a booking that is in no visit itself.
+      List<Appointment> linkable = const [];
+      final existing = widget.appointment;
+      if (existing != null && existing.groupId == null) {
+        try {
+          final day = DateTime(existing.startAt.year, existing.startAt.month, existing.startAt.day);
+          final sameDay = await _data.getAppointments(from: day, to: day);
+          linkable = [
+            for (final other in sameDay)
+              if (other.id != existing.id &&
+                  other.clientId == existing.clientId &&
+                  other.groupId == null &&
+                  kLinkableStatuses.contains(other.status))
+                other,
+          ]..sort((a, b) => a.startAt.compareTo(b.startAt));
+        } catch (_) {
+          // The form works without the offer.
+        }
+      }
       if (!mounted) return;
       setState(() {
         _dogs = dogs;
         _services = services;
         _settings = settings;
+        _linkable = linkable;
         _loading = false;
         // Size the slot to a dog we were handed — arriving from a dog's
         // profile, say. The field is otherwise left empty on purpose: it used
@@ -193,17 +253,13 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
       );
       final end = check.suggestedEndAt;
       if (!mounted || end == null) return;
+      // A visit's length is the household's, not this dog's services'.
+      if (_isVisit || _durationTouched) return;
       setState(() => _durationMinutes = end.difference(_startAt).inMinutes);
     } catch (_) {
       // Leave the duration as it is rather than guessing.
     }
   }
-
-  /// How long an extra dog's block runs — its own figure, not the primary
-  /// dog's. A spaniel and a chihuahua booked together are not the same visit
-  /// length.
-  int _minutesFor(DogSummary dog) =>
-      _serviceType == ServiceType.nailsFleasTicks ? _nailVisitMinutes : dog.groomMinutes;
 
   Future<void> _save() async {
     if (_dogId == null) {
@@ -217,6 +273,8 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
         startAt: _startAt,
         endAt: _endAt,
         excludeAppointmentId: widget.appointment?.id,
+        // The rest of the visit overlaps this dog on purpose.
+        excludeGroupId: _applyToVisit || _isVisitEdit ? widget.appointment?.groupId : null,
         serviceType: _serviceType,
         serviceIds: _selectedServices.toList(),
       );
@@ -232,7 +290,7 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
         final extraCheck = await _data.checkBooking(
           dogId: extra.id,
           startAt: _startAt,
-          endAt: _startAt.add(Duration(minutes: _minutesFor(extra))),
+          endAt: _endAt,
           serviceType: _serviceType,
         );
         for (final warning in extraCheck.warnings) {
@@ -259,7 +317,8 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
       }
 
       if (_isEditing) {
-        await _data.updateAppointment(widget.appointment!.id, {
+        final original = widget.appointment!;
+        await _data.updateAppointment(original.id, {
           'dog': _dogId,
           'start_at': _startAt.toUtc().toIso8601String(),
           'end_at': _endAt.toUtc().toIso8601String(),
@@ -269,6 +328,49 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
           'status': _status,
           'notes': _notes.text.trim(),
         });
+        // Linking bookings already in the diary into a visit, and — if she
+        // left the switch on — giving them this booking's start and end.
+        if (_linkIds.isNotEmpty) {
+          final members = await _data.groupAppointments([original.id, ..._linkIds]);
+          final groupId = members.isEmpty ? null : members.first.groupId;
+          final names = [
+            for (final other in _linkable)
+              if (_linkIds.contains(other.id)) other.dogName,
+          ].join(', ');
+          if (_reshapeLinked && groupId != null) {
+            await _data.updateBookingGroup(groupId, startAt: _startAt, endAt: _endAt);
+            if (mounted) {
+              showSnack(
+                context,
+                'Linked with $names as one visit, '
+                '${formatTime(_startAt)} – ${formatTime(_endAt)}.',
+              );
+            }
+          } else if (mounted) {
+            showSnack(context, 'Linked with $names as one visit.');
+          }
+        }
+        // Then the rest of the visit, if she asked. Only what actually
+        // moved is sent: a new end alone must not re-anchor every start.
+        final startMoved = _startAt != original.startAt;
+        final endMoved = _endAt != original.endAt;
+        final groupId = original.groupId;
+        if (_isVisitEdit && _applyToVisit && groupId != null && (startMoved || endMoved)) {
+          final visitWarnings = await _data.updateBookingGroup(
+            groupId,
+            startAt: startMoved ? _startAt : null,
+            endAt: endMoved ? _endAt : null,
+          );
+          if (mounted) {
+            final names = original.companionNames.join(', ');
+            showSnack(
+              context,
+              visitWarnings.isEmpty
+                  ? 'Changed for $names too.'
+                  : 'Changed for $names too — ${visitWarnings.first.message}',
+            );
+          }
+        }
       } else if (_repeat) {
         await _data.createBookingSeries(
           dogId: _dogId!,
@@ -278,6 +380,26 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
               '${_time.hour.toString().padLeft(2, '0')}:${_time.minute.toString().padLeft(2, '0')}',
           notes: _notes.text.trim(),
         );
+      } else if (_isVisit) {
+        // One visit, one length, made together or not at all. The
+        // companions carry no services, so the server prices each dog
+        // exactly as a booking made alone.
+        await _data.bookTogether(
+          dogIds: [_dogId!, for (final extra in _extraDogs) extra.id],
+          startAt: _startAt,
+          endAt: _endAt,
+          bookingType: _bookingType,
+          serviceType: _serviceType,
+          services: _selectedServices.toList(),
+          notes: _notes.text.trim(),
+        );
+        if (mounted) {
+          final names = [
+            _selectedDog?.name ?? '',
+            for (final extra in _extraDogs) extra.name,
+          ].where((name) => name.isNotEmpty).join(', ');
+          showSnack(context, 'Booked in together: $names, ${formatDuration(_durationMinutes)}.');
+        }
       } else {
         await _data.createAppointment(
           dogId: _dogId!,
@@ -288,26 +410,6 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
           serviceIds: _selectedServices.toList(),
           notes: _notes.text.trim(),
         );
-        // The companions: one booking each at the same start, sized to their
-        // own groom times, with no services named — the server resolves each
-        // dog's own price and length exactly as a booking made alone would.
-        for (final extra in _extraDogs) {
-          await _data.createAppointment(
-            dogId: extra.id,
-            startAt: _startAt,
-            endAt: _startAt.add(Duration(minutes: _minutesFor(extra))),
-            bookingType: _bookingType,
-            serviceType: _serviceType,
-            notes: _notes.text.trim(),
-          );
-        }
-        if (_extraDogIds.isNotEmpty && mounted) {
-          final names = [
-            _selectedDog?.name ?? '',
-            for (final extra in _extraDogs) extra.name,
-          ].where((name) => name.isNotEmpty).join(', ');
-          showSnack(context, 'Booked in together: $names.');
-        }
       }
       if (mounted) Navigator.of(context).pop(true);
     } catch (error) {
@@ -504,7 +606,8 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
               child: Text(
                 "${dog!.clientFirstName}'s other dog"
                 '${_householdDogs.length == 1 ? '' : 's'} — tick to book into '
-                'the same visit. Each gets its own diary block.',
+                'the same visit. One length for all of them; each dog keeps '
+                'its own price.',
                 style: TextStyle(fontSize: 12.5, color: context.mojo.muted),
               ),
             ),
@@ -528,10 +631,60 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
                       } else {
                         _extraDogIds.remove(other.id);
                       }
+                      // A starting point for the visit's length, until she
+                      // has set one herself.
+                      if (!_durationTouched && _serviceType == ServiceType.groom) {
+                        _durationMinutes = _usualTimesSummed;
+                      }
                     }),
                   ),
               ],
             ),
+          ],
+
+          // The same owner's other bookings that day, not in a visit yet.
+          // Every household booked before visits existed looks like this,
+          // and this is where it gets put right one booking at a time.
+          if (_linkable.isNotEmpty) ...[
+            const SectionHeader(title: 'Link into one visit'),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                "${dog?.clientFirstName ?? 'This owner'}'s other booking"
+                '${_linkable.length == 1 ? '' : 's'} today. Tick to make them '
+                'one visit with ${dog?.name ?? 'this dog'}.',
+                style: TextStyle(fontSize: 12.5, color: context.mojo.muted),
+              ),
+            ),
+            Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              children: [
+                for (final other in _linkable)
+                  FilterChip(
+                    label: Text('${other.dogName} · ${other.timeRange}'),
+                    selected: _linkIds.contains(other.id),
+                    onSelected: (ticked) => setState(() {
+                      if (ticked) {
+                        _linkIds.add(other.id);
+                      } else {
+                        _linkIds.remove(other.id);
+                      }
+                    }),
+                  ),
+              ],
+            ),
+            if (_linkIds.isNotEmpty)
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                value: _reshapeLinked,
+                onChanged: (value) => setState(() => _reshapeLinked = value),
+                title: const Text('Give them all this start and end'),
+                subtitle: Text(
+                  'Every dog booked ${formatTime(_startAt)} – ${formatTime(_endAt)}. '
+                  'Off, and each keeps the time it has.',
+                ),
+              ),
           ],
 
           const SectionHeader(title: 'When'),
@@ -581,14 +734,25 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
               final picked = await showDurationPicker(
                 context,
                 initialMinutes: _durationMinutes,
-                title: 'How long for ${dog?.name ?? 'this groom'}?',
+                title: _isVisit
+                    ? 'How long will they be in altogether?'
+                    : 'How long for ${dog?.name ?? 'this groom'}?',
               );
-              if (picked != null) setState(() => _durationMinutes = picked);
+              if (picked != null) {
+                setState(() {
+                  _durationMinutes = picked;
+                  _durationTouched = true;
+                });
+              }
             },
             child: InputDecorator(
               decoration: InputDecoration(
-                labelText: 'Duration',
-                helperText: 'Ends at ${formatTime(_endAt)}',
+                labelText: _isVisit ? 'Visit length' : 'Duration',
+                helperText: _isVisit
+                    ? 'Every dog is booked ${formatTime(_startAt)} – ${formatTime(_endAt)}. '
+                        'Grooming them in turn, this is the time they are in, '
+                        'not the sum of their grooms.'
+                    : 'Ends at ${formatTime(_endAt)}',
               ),
               child: Text(formatDuration(_durationMinutes)),
             ),
@@ -599,22 +763,53 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
               spacing: 6,
               runSpacing: 6,
               children: [
-                if (dog != null)
+                if (_isVisit)
+                  DurationPreset(
+                    label: 'Usual times added up (${formatDuration(_usualTimesSummed)})',
+                    minutes: _usualTimesSummed,
+                    selected: _durationMinutes == _usualTimesSummed,
+                    onPick: (value) => setState(() {
+                      _durationMinutes = value;
+                      _durationTouched = true;
+                    }),
+                  )
+                else if (dog != null)
                   DurationPreset(
                     label: 'Usual (${formatDuration(dog.groomMinutes)})',
                     minutes: dog.groomMinutes,
                     selected: _durationMinutes == dog.groomMinutes,
-                    onPick: (value) => setState(() => _durationMinutes = value),
+                    onPick: (value) => setState(() {
+                      _durationMinutes = value;
+                      _durationTouched = true;
+                    }),
                   ),
                 DurationPreset(
                   label: 'Nails (${formatDuration(_nailVisitMinutes)})',
                   minutes: _nailVisitMinutes,
                   selected: _durationMinutes == _nailVisitMinutes,
-                  onPick: (value) => setState(() => _durationMinutes = value),
+                  onPick: (value) => setState(() {
+                    _durationMinutes = value;
+                    _durationTouched = true;
+                  }),
                 ),
               ],
             ),
           ),
+          if (_isVisitEdit)
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _applyToVisit,
+              onChanged: (value) => setState(() => _applyToVisit = value),
+              title: Text(
+                'Also change the other '
+                '${widget.appointment!.companionNames.length == 1 ? 'dog' : '${widget.appointment!.companionNames.length} dogs'} '
+                'in this visit',
+              ),
+              subtitle: Text(
+                '${widget.appointment!.companionNames.join(', ')} — a new start or '
+                'end applies to them too. Off, and only ${dog?.name ?? 'this dog'} changes.',
+              ),
+            ),
 
           const SizedBox(height: 12),
           if (_dogId != null)
@@ -711,7 +906,15 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
             const SectionHeader(title: 'Status'),
             DropdownButtonFormField<String>(
               initialValue: _status,
-              decoration: const InputDecoration(labelText: 'Status'),
+              decoration: InputDecoration(
+                labelText: 'Status',
+                // A request opened here to change the time is still a
+                // request when saved unless this moves — and a request
+                // with a new time on it is not in the diary.
+                helperText: _status == 'REQUESTED'
+                    ? 'Still a request — choose Booked to put it in the diary.'
+                    : null,
+              ),
               items: const [
                 DropdownMenuItem(value: 'REQUESTED', child: Text('Requested')),
                 DropdownMenuItem(value: 'BOOKED', child: Text('Booked')),

@@ -23,6 +23,9 @@ from djoser.serializers import UserCreateSerializer as DjoserUserCreateSerialize
 from rest_framework import serializers
 
 from .models import (
+    BlockedTime,
+    BookingGroup,
+    BookingType,
     AppSettings,
     Appointment,
     AppointmentChangeRequest,
@@ -467,6 +470,30 @@ class ClosureDaySerializer(serializers.ModelSerializer):
     class Meta:
         model = ClosureDay
         fields = ['id', 'date', 'reason']
+
+
+class BlockedTimeSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
+    """A span Jess has blocked out.
+
+    A client sees *that* the time is taken — they need to, or the request
+    sheet keeps offering it — and nothing about why. ``notes`` is gated the
+    same way as every other private field in this file; the queryset is not
+    scoped because the span is the same for everyone.
+    """
+
+    staff_only_fields = ('notes', 'created_by')
+
+    class Meta:
+        model = BlockedTime
+        fields = ['id', 'start_at', 'end_at', 'notes', 'created_by', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_by', 'created_at', 'updated_at']
+
+    def validate(self, data):
+        start = data.get('start_at', getattr(self.instance, 'start_at', None))
+        end = data.get('end_at', getattr(self.instance, 'end_at', None))
+        if start and end and end <= start:
+            raise serializers.ValidationError({'end_at': 'The end time must be after the start time.'})
+        return data
 
 
 class AppSettingsSerializer(serializers.ModelSerializer):
@@ -980,8 +1007,10 @@ class DogSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
 
 class AppointmentSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
     # A client seeing their own booking has no business seeing the handling
-    # notes Jess keeps about their dog.
-    staff_only_fields = ('dog_temperament', 'dog_temperament_display')
+    # notes Jess keeps about their dog. The companions' names are gated too:
+    # a household can in principle span two client records, and one owner's
+    # dogs are not the other's to read.
+    staff_only_fields = ('dog_temperament', 'dog_temperament_display', 'group_dog_names')
 
     dog_name = serializers.CharField(source='dog.name', read_only=True)
     dog_temperament = serializers.CharField(source='dog.temperament', read_only=True)
@@ -993,6 +1022,12 @@ class AppointmentSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
     client_name = serializers.CharField(source='dog.client.full_name', read_only=True)
     client_phone = serializers.CharField(source='dog.client.phone', read_only=True)
     duration_minutes = serializers.IntegerField(read_only=True)
+    group = serializers.PrimaryKeyRelatedField(
+        queryset=BookingGroup.objects.all(), required=False, allow_null=True,
+    )
+    # The other dogs in the same visit, so the diary can draw one band with
+    # every name on it and the edit form can say "and the other three".
+    group_dog_names = serializers.SerializerMethodField()
 
     class Meta:
         model = Appointment
@@ -1001,7 +1036,8 @@ class AppointmentSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
             'client_id', 'client_name', 'client_phone',
             'start_at', 'end_at', 'duration_minutes', 'booking_type', 'service_type', 'status',
             'services', 'services_detail',
-            'price_quoted', 'notes', 'series', 'created_at', 'updated_at',
+            'price_quoted', 'notes', 'series', 'group', 'group_dog_names',
+            'created_at', 'updated_at',
         ]
         # end_at is optional on input — the model fills it from the dog's groom
         # time when omitted.
@@ -1009,6 +1045,17 @@ class AppointmentSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
 
     def get_dog_temperament_display(self, obj):
         return temperament_label(obj.dog.temperament)
+
+    def get_group_dog_names(self, obj):
+        if obj.group_id is None:
+            return []
+        # Off the prefetched relation when the viewset supplied one, so a
+        # diary of grouped bookings is not a query per block.
+        return [
+            member.dog.name
+            for member in obj.group.appointments.all()
+            if member.pk != obj.pk and member.status in Appointment.ACTIVE_STATUSES
+        ]
 
     def create(self, validated_data):
         """Save, attach the services, then re-derive from them.
@@ -1082,6 +1129,91 @@ class AppointmentCheckSerializer(serializers.Serializer):
         queryset=Service.objects.all(), many=True, required=False,
         help_text='What is being done. Drives the suggested length and price.',
     )
+    exclude_group = serializers.PrimaryKeyRelatedField(
+        queryset=BookingGroup.objects.all(), required=False, allow_null=True,
+        help_text='Ignore every booking in this visit — they overlap on purpose.',
+    )
+
+
+class BookingGroupMemberSerializer(serializers.Serializer):
+    """One dog in a book-together request."""
+
+    dog = serializers.PrimaryKeyRelatedField(queryset=Dog.objects.all())
+    services = serializers.PrimaryKeyRelatedField(
+        queryset=Service.objects.all(), many=True, required=False,
+    )
+
+
+class BookingGroupCreateSerializer(serializers.Serializer):
+    """Book a household in as one visit, or group bookings already made.
+
+    Exactly one of ``bookings`` (new appointments, all sharing the start and
+    end) or ``appointments`` (existing ones to link) is given.
+    """
+
+    bookings = BookingGroupMemberSerializer(many=True, required=False)
+    appointments = serializers.PrimaryKeyRelatedField(
+        queryset=Appointment.objects.all(), many=True, required=False,
+    )
+    start_at = serializers.DateTimeField(required=False)
+    end_at = serializers.DateTimeField(required=False)
+    booking_type = serializers.ChoiceField(choices=BookingType.choices, required=False)
+    service_type = serializers.ChoiceField(
+        choices=ServiceType.choices, required=False, default=ServiceType.GROOM,
+    )
+    notes = serializers.CharField(required=False, allow_blank=True, default='')
+
+    def validate(self, data):
+        bookings = data.get('bookings') or []
+        existing = data.get('appointments') or []
+        if bool(bookings) == bool(existing):
+            raise serializers.ValidationError(
+                'Give either bookings to make or appointments to group, not both and not neither.'
+            )
+        if bookings:
+            if 'start_at' not in data or 'end_at' not in data:
+                raise serializers.ValidationError(
+                    {'end_at': 'A visit needs a start and an end.'}
+                )
+            if data['end_at'] <= data['start_at']:
+                raise serializers.ValidationError(
+                    {'end_at': 'The end time must be after the start time.'}
+                )
+            dogs = [entry['dog'].pk for entry in bookings]
+            if len(dogs) != len(set(dogs)):
+                raise serializers.ValidationError({'bookings': 'A dog is listed twice.'})
+        else:
+            for appointment in existing:
+                if appointment.group_id is not None:
+                    raise serializers.ValidationError(
+                        {'appointments': f'{appointment.dog.name} is already in a visit.'}
+                    )
+        return data
+
+
+class BookingGroupReshapeSerializer(serializers.Serializer):
+    """A new start and/or end for every dog in the visit."""
+
+    start_at = serializers.DateTimeField(required=False)
+    end_at = serializers.DateTimeField(required=False)
+
+    def validate(self, data):
+        if 'start_at' not in data and 'end_at' not in data:
+            raise serializers.ValidationError('Give a new start, a new end, or both.')
+        if 'start_at' in data and 'end_at' in data and data['end_at'] <= data['start_at']:
+            raise serializers.ValidationError(
+                {'end_at': 'The end time must be after the start time.'}
+            )
+        return data
+
+
+class BookingGroupSerializer(serializers.ModelSerializer):
+    appointments = AppointmentSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = BookingGroup
+        fields = ['id', 'appointments', 'created_by', 'created_at']
+        read_only_fields = fields
 
 
 # ── Groom timing ───────────────────────────────────────────────────────

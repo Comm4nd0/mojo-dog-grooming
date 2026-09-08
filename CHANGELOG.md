@@ -28,3 +28,8 @@ Getting back into your account no longer means starting again.
   you locked out of an account you just made.
 - Your dog's profile now shows a groom report for every visit: what was done,
   anything that had to wait and why, and how they were on the day.
+- When you ask for an appointment, the request form now tells you straight
+  away if that time isn't available, so you can pick another rather than
+  waiting to hear back.
+- If you book more than one dog in at a time, they now go in as one visit with
+  one length, so the diary shows how long you'll actually be with us.

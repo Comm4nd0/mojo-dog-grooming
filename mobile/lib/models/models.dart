@@ -1247,6 +1247,13 @@ class Appointment {
   /// which case the length and quote come from the dog as they always did.
   final List<int> serviceIds;
 
+  /// The household visit this booking is part of, if any.
+  final int? groupId;
+
+  /// The other dogs in the same visit. Staff-only: **null means withheld**,
+  /// an empty list means booked alone. Read [companionNames] to render.
+  final List<String>? groupDogNames;
+
   const Appointment({
     required this.id,
     required this.dogId,
@@ -1265,6 +1272,8 @@ class Appointment {
     this.dogTemperament,
     this.dogTemperamentDisplay,
     this.serviceIds = const [],
+    this.groupId,
+    this.groupDogNames,
   });
 
   factory Appointment.fromJson(Map<String, dynamic> json) => Appointment(
@@ -1287,9 +1296,32 @@ class Appointment {
         serviceIds: ((json['services'] as List?) ?? const [])
             .map((id) => (id as num).toInt())
             .toList(),
+        groupId: (json['group'] as num?)?.toInt(),
+        groupDogNames: json['group_dog_names'] is List
+            ? [for (final name in json['group_dog_names'] as List) name.toString()]
+            : null,
       );
 
   String get timeRange => '${formatTime(startAt)} – ${formatTime(endAt)}';
+
+  /// The other dogs booked in with this one, or none.
+  List<String> get companionNames => groupDogNames ?? const [];
+
+  /// Part of a household visit with at least one other dog still in it.
+  bool get isSharedVisit => groupId != null && companionNames.isNotEmpty;
+
+  /// How long the slot is, as booked.
+  ///
+  /// Read this rather than `durationMinutes` when moving a booking: the
+  /// length was resolved from the dog and the services when the slot was
+  /// made, and may since have been adjusted by hand, so a moved booking
+  /// carries it across rather than working it out again — the same rule
+  /// `AppointmentChangeRequest.apply()` follows on the server.
+  Duration get length => endAt.difference(startAt);
+
+  /// When this slot would end if it started at [start] instead — the same
+  /// length, somewhere else in the diary.
+  DateTime endIfStartedAt(DateTime start) => start.add(length);
 
   String get bookingTypeLabel => switch (bookingType) {
         'FIRST_GROOM' => 'First groom',
@@ -1308,6 +1340,76 @@ class Appointment {
       };
 
   bool get isCancelled => status == 'CANCELLED' || status == 'NO_SHOW';
+}
+
+/// A stretch of the diary Jess has taken off the table.
+///
+/// For staff it draws as a hatched band and warns; for a client it is the one
+/// thing in the booking flow that *refuses* — their request sheet says the
+/// time is not available before they send, and the server turns it away if
+/// they send anyway.
+class BlockedTime {
+  final int id;
+  final DateTime startAt;
+  final DateTime endAt;
+
+  /// Staff-only. **Null means the server withheld it**, not "no note" — a
+  /// client login never gets the key. Empty means Jess left it blank.
+  final String? notes;
+
+  const BlockedTime({
+    required this.id,
+    required this.startAt,
+    required this.endAt,
+    this.notes,
+  });
+
+  factory BlockedTime.fromJson(Map<String, dynamic> json) => BlockedTime(
+        id: json['id'] as int,
+        startAt: _dateTime(json['start_at']) ?? DateTime.now(),
+        endAt: _dateTime(json['end_at']) ?? DateTime.now(),
+        notes: json.containsKey('notes') ? (json['notes']?.toString() ?? '') : null,
+      );
+
+  Duration get length => endAt.difference(startAt);
+
+  /// First line of the note, for a label that has one line to spend.
+  String get headline {
+    final text = notes?.trim() ?? '';
+    if (text.isEmpty) return '';
+    return text.split('\n').first.trim();
+  }
+
+  /// Whether any of this block falls on the local calendar day of [day].
+  bool coversDay(DateTime day) {
+    final dayStart = DateTime(day.year, day.month, day.day);
+    final dayEnd = dayStart.add(const Duration(days: 1));
+    return startAt.isBefore(dayEnd) && endAt.isAfter(dayStart);
+  }
+
+  /// The part of this block that lands on [day], as minutes past midnight
+  /// `(from, to)`, or null when none of it does.
+  ///
+  /// A block from Friday 15:00 to Monday 09:00 answers `(0, 1440)` for
+  /// Saturday — the whole day — which is what the diary should draw.
+  (int, int)? minutesOn(DateTime day) {
+    if (!coversDay(day)) return null;
+    final dayStart = DateTime(day.year, day.month, day.day);
+    final dayEnd = dayStart.add(const Duration(days: 1));
+    // Wall-clock minutes, not a difference from midnight: on a clock-change
+    // day the two disagree by an hour, and the axis is drawn in wall-clock.
+    final from = startAt.isBefore(dayStart) ? 0 : startAt.hour * 60 + startAt.minute;
+    final to = endAt.isBefore(dayEnd) ? endAt.hour * 60 + endAt.minute : 24 * 60;
+    return to > from ? (from, to) : null;
+  }
+
+  /// Whether [when] falls inside this block. Half-open, so a block ending at
+  /// 13:00 does not cover 13:00 — the same rule the server applies.
+  bool covers(DateTime when) => !when.isBefore(startAt) && when.isBefore(endAt);
+
+  /// Whether a slot from [start] to [end] shares any instant with this block.
+  bool overlaps(DateTime start, DateTime end) =>
+      start.isBefore(endAt) && end.isAfter(startAt);
 }
 
 /// One advisory warning from the pre-booking check. Never blocking.
