@@ -547,7 +547,12 @@ class _CalendarScreenState extends State<CalendarScreen> {
   Widget _dayChip(DateTime day) {
     final selected = _dayKey(day) == _dayKey(_selectedDay);
     final isToday = _dayKey(day) == _dayKey(DateTime.now());
-    final count = _eventsFor(day).length;
+    final marks = dayMarks(_eventsFor(day), _blocksFor(day));
+    // The strip has room for a yes/no, not a count: one green mark if
+    // anything is booked, one red mark if anything is blocked out. The
+    // month grid below is where the marks are counted.
+    final booked = marks.contains(DayMark.visit);
+    final blocked = marks.contains(DayMark.blocked);
     return InkWell(
       onTap: () => _selectDay(day),
       child: Container(
@@ -584,20 +589,31 @@ class _CalendarScreenState extends State<CalendarScreen> {
             ),
             SizedBox(
               height: 6,
-              child: count == 0
-                  ? null
-                  : Container(
-                      width: 4,
-                      height: 4,
-                      margin: const EdgeInsets.only(top: 2),
-                      color: selected ? context.mojo.onTint : context.mojo.accent,
-                    ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  if (booked)
+                    _mark(selected ? context.mojo.onTint : context.mojo.accent),
+                  if (booked && blocked) const SizedBox(width: 2),
+                  if (blocked) _mark(AppColors.error),
+                ],
+              ),
             ),
           ],
         ),
       ),
     );
   }
+
+  /// A 4dp square — square, like everything else on this brand. Red is the
+  /// one colour on the diary that never means a dog: the now-line, today's
+  /// border, and a blocked-out day all share it.
+  static Widget _mark(Color colour) => Container(
+        width: 4,
+        height: 4,
+        margin: const EdgeInsets.only(top: 2),
+        color: colour,
+      );
 
   void _selectDay(DateTime day) {
     setState(() {
@@ -654,14 +670,17 @@ class _CalendarScreenState extends State<CalendarScreen> {
   Widget _monthView() {
     return Column(
       children: [
-        TableCalendar<Appointment>(
+        TableCalendar<DayMark>(
           firstDay: DateTime.utc(2020),
           lastDay: DateTime.utc(2035),
           focusedDay: _focusedDay,
           calendarFormat: CalendarFormat.month,
           startingDayOfWeek: StartingDayOfWeek.monday,
           selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
-          eventLoader: _eventsFor,
+          // Marks, not bookings: a household booked as one visit is one
+          // mark however many dogs are in it, and a blocked-out day gets a
+          // red one. `dayMarks` is the rule; `markerBuilder` below draws it.
+          eventLoader: (day) => dayMarks(_eventsFor(day), _blocksFor(day)),
           availableCalendarFormats: const {CalendarFormat.month: 'Month'},
           onDaySelected: (selected, focused) {
             // Tapping the day you are already on drops into it — one extra
@@ -695,6 +714,38 @@ class _CalendarScreenState extends State<CalendarScreen> {
           // Returning null for every other day falls through to the normal
           // styling, and markers still draw on top either way.
           calendarBuilders: CalendarBuilders(
+            markerBuilder: (context, day, marks) {
+              if (marks.isEmpty) return null;
+              // At most four green marks, the way the package capped it,
+              // but the red one is never the one that gets dropped: a day
+              // with five visits and a block must still say it is blocked.
+              final visits = marks.where((m) => m == DayMark.visit).length;
+              final blocked = marks.contains(DayMark.blocked);
+              return Positioned(
+                bottom: 5,
+                left: 0,
+                right: 0,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    for (var i = 0; i < visits.clamp(0, 4); i++)
+                      Container(
+                        width: 6,
+                        height: 6,
+                        margin: const EdgeInsets.symmetric(horizontal: 0.6),
+                        color: AppColors.primaryBright,
+                      ),
+                    if (blocked)
+                      Container(
+                        width: 6,
+                        height: 6,
+                        margin: const EdgeInsets.symmetric(horizontal: 0.6),
+                        color: AppColors.error,
+                      ),
+                  ],
+                ),
+              );
+            },
             prioritizedBuilder: (context, day, focusedDay) {
               if (!isSameDay(day, DateTime.now())) return null;
               final selected = isSameDay(_selectedDay, day);
@@ -739,6 +790,9 @@ class _CalendarScreenState extends State<CalendarScreen> {
               color: Colors.black,
               fontWeight: FontWeight.w700,
             ),
+            // The markers themselves are drawn by `markerBuilder` above —
+            // these two only apply when it returns null, which it does for
+            // a day with nothing on it.
             markerDecoration: const BoxDecoration(
               color: AppColors.primaryBright,
               shape: BoxShape.rectangle,

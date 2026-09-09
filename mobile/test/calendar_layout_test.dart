@@ -219,4 +219,80 @@ void main() {
       expect(layoutDay([backwards], window).single.height(metrics), greaterThan(0));
     });
   });
+
+  group('dayMarks', () {
+    // Jess: "when it's a 'grouped booking' should it just show as one dot?
+    // So more like clients than dogs" — and "when a Block is on a day can it
+    // have a little red dot?". The month grid and the date strip both draw
+    // from this, so the two cannot disagree about what a day holds.
+    Appointment inVisit(int id, int group, {String start = '10:00', int minutes = 240}) {
+      final a = _at(start, minutes, id: id);
+      return Appointment(
+        id: a.id,
+        dogId: a.dogId,
+        dogName: a.dogName,
+        clientId: a.clientId,
+        clientName: a.clientName,
+        clientPhone: a.clientPhone,
+        startAt: a.startAt,
+        endAt: a.endAt,
+        durationMinutes: a.durationMinutes,
+        bookingType: a.bookingType,
+        serviceType: a.serviceType,
+        status: a.status,
+        notes: a.notes,
+        groupId: group,
+        groupDogNames: const ['Biscuit', 'Bunny', 'Teddy'],
+      );
+    }
+
+    BlockedTime block(int id) => BlockedTime(
+          id: id,
+          startAt: DateTime(2026, 8, 3, 12),
+          endAt: DateTime(2026, 8, 3, 13),
+        );
+
+    test('a household booked as one visit is one mark', () {
+      final marks = dayMarks([inVisit(1, 7), inVisit(2, 7), inVisit(3, 7)], const []);
+      expect(marks, [DayMark.visit]);
+    });
+
+    test('a member with its own length still belongs to the visit', () {
+      // The timeline draws a shortened nail trim as its own block so the axis
+      // does not lie; a dot has no axis, and the door still opened once.
+      final marks = dayMarks(
+        [inVisit(1, 7), inVisit(2, 7), inVisit(3, 7, start: '10:00', minutes: 20)],
+        const [],
+      );
+      expect(marks, [DayMark.visit]);
+    });
+
+    test('loose bookings count one each, beside the visit', () {
+      final marks = dayMarks(
+        [_at('09:00', 60, id: 1), inVisit(2, 7), inVisit(3, 7), _at('15:00', 60, id: 4)],
+        const [],
+      );
+      expect(marks, [DayMark.visit, DayMark.visit, DayMark.visit]);
+    });
+
+    test('two visits are two marks', () {
+      final marks = dayMarks([inVisit(1, 7), inVisit(2, 7), inVisit(3, 8)], const []);
+      expect(marks.length, 2);
+    });
+
+    test('a blocked-out day gets one red mark, last', () {
+      expect(dayMarks([_at('09:00', 60)], [block(1)]), [DayMark.visit, DayMark.blocked]);
+      // However many spans there are — it says "some of the day is off the
+      // table", not how many times.
+      expect(dayMarks([_at('09:00', 60)], [block(1), block(2)]), [DayMark.visit, DayMark.blocked]);
+    });
+
+    test('a day with nothing but a block is still marked', () {
+      expect(dayMarks(const [], [block(1)]), [DayMark.blocked]);
+    });
+
+    test('an empty day has no marks', () {
+      expect(dayMarks(const [], const []), isEmpty);
+    });
+  });
 }

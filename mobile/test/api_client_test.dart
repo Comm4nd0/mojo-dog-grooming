@@ -123,4 +123,63 @@ void main() {
       );
     });
   });
+
+  group('getAll', () {
+    // The breed list asked for 200 a page and got 100 for as long as the app
+    // existed: DRF ignores `page_size` unless told to honour it, and nothing
+    // on the phone noticed the `next` link. A reference list is only useful
+    // whole, so this walks pages until the server says there are no more.
+    test('walks every page and stops when there is no next', () async {
+      final pagesAsked = <String?>[];
+      final api = clientReturning((request) async {
+        pagesAsked.add(request.url.queryParameters['page']);
+        final page = int.parse(request.url.queryParameters['page'] ?? '1');
+        return http.Response(
+          jsonEncode({
+            'count': 5,
+            'next': page < 3 ? 'https://example.test/api/breeds/?page=${page + 1}' : null,
+            'previous': null,
+            'results': page < 3 ? [{'id': page * 2 - 1}, {'id': page * 2}] : [{'id': 5}],
+          }),
+          200,
+        );
+      });
+
+      final rows = await api.getAll('/breeds/', query: {'search': 'poo'}, pageSize: 2);
+
+      expect(rows.map((r) => r['id']), [1, 2, 3, 4, 5]);
+      expect(pagesAsked, ['1', '2', '3']);
+    });
+
+    test('asks by page number, never by following the next URL', () async {
+      // The `next` link is built from whatever host header reached gunicorn;
+      // behind a proxy that is not always one the phone can reach. Here it
+      // points somewhere unreachable and must be ignored.
+      final hosts = <String>{};
+      final api = clientReturning((request) async {
+        hosts.add(request.url.host);
+        final page = request.url.queryParameters['page'];
+        return http.Response(
+          jsonEncode({
+            'count': 2,
+            'next': page == '1' ? 'http://web:8000/api/breeds/?page=2' : null,
+            'results': [{'id': page}],
+          }),
+          200,
+        );
+      });
+
+      final rows = await api.getAll('/breeds/');
+
+      expect(rows.map((r) => r['id']), ['1', '2']);
+      expect(hosts, {'example.test'});
+    });
+
+    test('a bare list is one page', () async {
+      final api = clientReturning(
+        (_) async => http.Response(jsonEncode([{'id': 1}]), 200),
+      );
+      expect((await api.getAll('/things/')).length, 1);
+    });
+  });
 }

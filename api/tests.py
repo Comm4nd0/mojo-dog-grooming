@@ -5900,3 +5900,43 @@ class SeedDemoDataTests(TestCase):
         self.assertEqual(len(response.data['results']), 2)
         for row in response.data['results']:
             self.assertNotIn('sensitive_notes', row)
+
+
+class PaginationTests(BaseAPITestCase):
+    """``?page_size=`` has to mean something.
+
+    The breed list arrived capped at 100 rows for as long as it existed —
+    DRF's default paginator ignores the parameter unless a query param is
+    named for it, and the app's request for 200 was silently answered with a
+    hundred. Jess's "not all the breeds are showing" was every breed past
+    the hundredth in alphabetical order.
+    """
+
+    def _make_breeds(self, count):
+        Breed.objects.bulk_create([
+            Breed(name=f'Breed {i:04d}', coat_type='curly',
+                  avg_groom_minutes=60, avg_price=Decimal('40.00'), avg_schedule_weeks=6)
+            for i in range(count)
+        ])
+
+    def test_page_size_is_honoured(self):
+        self._make_breeds(150)
+        response = self.staff_client.get('/api/breeds/?page_size=200')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['count'], 151)
+        self.assertEqual(len(response.data['results']), 151)
+        self.assertIsNone(response.data['next'])
+
+    def test_default_page_size_still_applies(self):
+        self._make_breeds(150)
+        response = self.staff_client.get('/api/breeds/')
+        self.assertEqual(len(response.data['results']), 100)
+        self.assertIsNotNone(response.data['next'])
+
+    def test_page_size_is_capped(self):
+        # A ceiling, not a quota — but a ceiling. Asking for a million rows
+        # gets the maximum, not an unbounded query.
+        self._make_breeds(5)
+        response = self.staff_client.get('/api/breeds/?page_size=1000000')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data['results']), 6)

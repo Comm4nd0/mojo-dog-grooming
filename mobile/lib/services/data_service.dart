@@ -97,12 +97,14 @@ class DataService {
 
   // ── Breeds ─────────────────────────────────────────────────────────
 
+  /// The whole breed table. Walks every page — a reference list arriving
+  /// short looks like a reference list, which is how "not all the breeds
+  /// are showing" went unnoticed until Jess added some past the cut.
   Future<List<Breed>> getBreeds({String? search}) async {
-    final payload = await _api.get('/breeds/', query: {
+    final rows = await _api.getAll('/breeds/', query: {
       if (search != null && search.isNotEmpty) 'search': search,
-      'page_size': '200',
     });
-    return ApiClient.resultsOf(payload).map(Breed.fromJson).toList();
+    return rows.map(Breed.fromJson).toList();
   }
 
   Future<Breed> getBreed(int id) async =>
@@ -118,13 +120,12 @@ class DataService {
   // is seeded or written by the app: it is veterinary information.
 
   Future<List<MedicalNote>> getMedicalNotes({String? search, String? kind, int? breedId}) async {
-    final payload = await _api.get('/medical-notes/', query: {
+    final rows = await _api.getAll('/medical-notes/', query: {
       'search': ?search,
       'kind': ?kind,
       if (breedId != null) 'breed': '$breedId',
-      'page_size': '200',
     });
-    return ApiClient.resultsOf(payload).map(MedicalNote.fromJson).toList();
+    return rows.map(MedicalNote.fromJson).toList();
   }
 
   Future<MedicalNote> saveMedicalNote(Map<String, dynamic> body, {int? id}) async {

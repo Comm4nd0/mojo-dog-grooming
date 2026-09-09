@@ -55,7 +55,7 @@ mobile/lib/
 Backend:
 ```bash
 python manage.py migrate && python manage.py seed_breeds
-python manage.py test api        # 463 tests
+python manage.py test api        # 466 tests
 python manage.py runserver 0.0.0.0:8000
 python manage.py accounts        # who can sign in — usernames live only in the DB
 python manage.py reset_link jess # a way back in when the superuser is locked out
@@ -64,7 +64,7 @@ python manage.py reset_link jess # a way back in when the superuser is locked ou
 Mobile:
 ```bash
 cd mobile && flutter pub get
-flutter analyze && flutter test  # 260 tests
+flutter analyze && flutter test  # 270 tests
 flutter run --dart-define=MOJO_API_BASE=http://192.168.1.20:8000/api
 ```
 
@@ -301,6 +301,19 @@ same as every rule in `scheduling.py`; a fetch failure or **no hours configured 
 warns about nothing, because a salon with no hours set must not tell every client they are
 out of hours.
 
+## A list arrives whole, or it lies
+
+`MojoPagination` (`api/pagination.py`) is the paginator, and the reason it exists is that
+DRF's own ignores `?page_size=` unless `page_size_query_param` names it. The app had asked
+for 200 breeds a page since the breed list existed and got 100 back — no error, no `next`
+followed, just the first hundred names alphabetically and nothing after. Jess: *"Not all the
+breeds are showing on the breed list… I've updated it on the database but not showing on the
+app"*. `PaginationTests` pins the parameter. On the Dart side `ApiClient.getAll` walks
+`page=` until the server says there is no next, and the reference lists (breeds, medical
+notes) go through it, so the server's count is the only figure that decides how much comes
+back. It asks by page number rather than following `next`: that URL is built from whatever
+host header reached gunicorn, and behind the proxy it is not always one the phone can reach.
+
 ## Blocked-out time is a warning for Jess and a refusal for a client
 
 `BlockedTime` (`/api/blocked-times/`, migration `0022`) is a span Jess has taken off the
@@ -333,6 +346,14 @@ beats a request that sits in her queue only to be turned down.
   (`_clip_to_days`), and the app groups it under every day it covers (`_groupBlocks`),
   with `BlockedTime.minutesOn(day)` doing the clipping in wall-clock minutes so a
   clock-change day draws where the clock says.
+- **A blocked-out day gets a red mark on the month grid and the date strip**, and a
+  household booked as one visit gets **one** mark, not one per dog — Jess: *"when a Block
+  is on a day can it have a little red dot? Also when it's a 'grouped booking' should it
+  just show as one dot? So more like clients than dogs"*. `dayMarks()` in
+  `timeline_layout.dart` is the rule and both views draw from it, so they cannot disagree.
+  A member Jess has given its own length still counts into its visit here: the timeline
+  draws it separately so the axis does not lie, but a dot has no axis and the door still
+  opened once. Red is the one colour on the diary that never means a dog.
 - The form is `blocked_time_form_screen.dart`, reached from the diary's app-bar button —
   its own button rather than a second thing behind the +, which had only just gone back to
   meaning one thing. The band is `widgets/calendar/blocked_band.dart`: hatched grey, not

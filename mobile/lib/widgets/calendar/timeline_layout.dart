@@ -248,6 +248,45 @@ List<PlacedAppointment> layoutDay(
   return placed;
 }
 
+/// One mark under a day on the month grid or the date strip.
+enum DayMark {
+  /// A visit — one dog booked alone, or a whole household booked together.
+  visit,
+
+  /// Some of the day is blocked out.
+  blocked,
+}
+
+/// What to draw under a day, in the order it is drawn.
+///
+/// Jess: *"when it's a 'grouped booking' should it just show as one dot? So
+/// more like clients than dogs"*. A household booked as one visit is one
+/// mark, however many dogs are in it — the marks say how many times the door
+/// opens, not how many leads come through it. A member Jess has given its
+/// own length still belongs to the visit here: this counts arrivals, and the
+/// timeline's rule about drawing a different shape separately is about not
+/// lying on a time axis, which a dot does not have.
+///
+/// *"When a Block is on a day can it have a little red dot?"* — one red mark
+/// if anything is blocked out, however many spans there are. The visits come
+/// first so the red one always sits at the end, where the eye lands last.
+List<DayMark> dayMarks(List<Appointment> appointments, List<BlockedTime> blocks) {
+  final groups = <int>{};
+  var visits = 0;
+  for (final appointment in appointments) {
+    final group = appointment.groupId;
+    if (group == null) {
+      visits++;
+    } else if (groups.add(group)) {
+      visits++;
+    }
+  }
+  return [
+    for (var i = 0; i < visits; i++) DayMark.visit,
+    if (blocks.isNotEmpty) DayMark.blocked,
+  ];
+}
+
 /// One block on the axis: a booking, plus the visit-mates it stands for.
 class _Item {
   _Item(this.appointment, this.companions);

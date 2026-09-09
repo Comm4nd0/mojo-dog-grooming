@@ -142,15 +142,10 @@ class _MyDogsScreenState extends State<_MyDogsScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('My dogs'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.logout),
-            onPressed: () => confirmSignOut(context),
-          ),
-        ],
-      ),
+      // No sign-out up here. Jess: one place is enough, and that place is
+      // the Me tab — a red icon on the first screen a client lands on is an
+      // invitation to tap it.
+      appBar: AppBar(title: const Text('My dogs')),
       body: PageBody(child: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null

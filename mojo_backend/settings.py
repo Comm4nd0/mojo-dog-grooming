@@ -212,7 +212,9 @@ REST_FRAMEWORK = {
         # security one.
         'password_reset_request': '5/hour',
     },
-    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    # Honours ``?page_size=`` — DRF's own class does not, and the breed list
+    # was capped at 100 rows because of it. See api/pagination.py.
+    'DEFAULT_PAGINATION_CLASS': 'api.pagination.MojoPagination',
     'PAGE_SIZE': 100,
     # One reverse proxy (Caddy) in front of gunicorn — throttle the real client
     # IP from X-Forwarded-For, not the proxy's.

@@ -84,6 +84,36 @@ class ApiClient {
   Future<dynamic> get(String path, {Map<String, dynamic>? query}) =>
       _send(() => _http.get(_uri(path, query), headers: _headers()));
 
+  /// Every row of a paginated list, however many pages it takes.
+  ///
+  /// A reference list — breeds, medical notes — is only useful whole, and a
+  /// page size guessed on the phone is a number that goes stale: the breed
+  /// list asked for 200 a page, the server capped it at 100 for as long as
+  /// the app existed, and Jess then took the table past 200 anyway. This
+  /// walks `page=` until the server says there is no next, so the count on
+  /// the server is the only figure that decides how much comes back.
+  ///
+  /// It asks by page number rather than following the `next` URL: that link
+  /// is built from whatever host header reached gunicorn, and behind a proxy
+  /// it is not always one this client can reach.
+  Future<List<Map<String, dynamic>>> getAll(
+    String path, {
+    Map<String, dynamic>? query,
+    int pageSize = 500,
+  }) async {
+    final rows = <Map<String, dynamic>>[];
+    for (var page = 1;; page++) {
+      final payload = await get(path, query: {
+        ...?query,
+        'page_size': '$pageSize',
+        'page': '$page',
+      });
+      rows.addAll(resultsOf(payload));
+      final more = payload is Map<String, dynamic> && payload['next'] != null;
+      if (!more) return rows;
+    }
+  }
+
   /// Fetch raw bytes with the auth header attached.
   ///
   /// Needed for document downloads: the file sits behind a token-checked view
