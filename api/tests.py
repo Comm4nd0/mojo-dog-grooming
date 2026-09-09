@@ -970,6 +970,164 @@ class BookingGroupTests(BaseAPITestCase):
         self.assertEqual(mine.status_code, status.HTTP_200_OK)
         self.assertNotIn('group_dog_names', mine.data)
 
+    def test_a_visit_with_no_end_is_sized_to_the_dogs_added_up(self):
+        # The staff form's starting point, now the server's too: three
+        # 105-minute dogs make a 315-minute visit until Jess says otherwise.
+        response = self.staff_client.post('/api/booking-groups/', {
+            'bookings': [{'dog': dog.pk} for dog in (self.rolo, self.tank, self.pip)],
+            'start_at': self.start.isoformat(),
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        for member in response.data['appointments']:
+            self.assertEqual(member['duration_minutes'], 315)
+
+    def test_a_status_answers_every_dog_in_the_visit_at_once(self):
+        group_id = self._book_together().data['id']
+        Appointment.objects.filter(group_id=group_id).update(status=AppointmentStatus.REQUESTED)
+        new_start = self.start + timedelta(hours=1)
+        response = self.staff_client.patch(
+            f'/api/booking-groups/{group_id}/',
+            {'status': AppointmentStatus.BOOKED, 'start_at': new_start.isoformat()},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('warnings', response.data)
+        for member in Appointment.objects.filter(group_id=group_id):
+            self.assertEqual(member.status, AppointmentStatus.BOOKED)
+            self.assertEqual(member.start_at, new_start)
+            self.assertEqual(member.end_at, new_start + timedelta(hours=4))
+
+        # Turning it down takes every dog out, and the same call again
+        # touches nothing — there is nothing active left to answer.
+        declined = self.staff_client.patch(
+            f'/api/booking-groups/{group_id}/', {'status': AppointmentStatus.CANCELLED},
+            format='json',
+        )
+        self.assertEqual(declined.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            set(Appointment.objects.filter(group_id=group_id).values_list('status', flat=True)),
+            {AppointmentStatus.CANCELLED},
+        )
+
+    def test_an_empty_reshape_is_refused(self):
+        group_id = self._book_together().data['id']
+        response = self.staff_client.patch(f'/api/booking-groups/{group_id}/', {}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class ClientVisitRequestTests(BaseAPITestCase):
+    """An owner asking for all their dogs at once.
+
+    Jess: *"usually people book all their dogs together for a groom"*. The
+    request sheet offered one dog, so an owner with three sent three
+    requests that landed as three loose rows. Now they land as one visit —
+    REQUESTED like any single request, refused into blocked time like any
+    single request, and answered as one thing.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.rolo = self.bob_dog
+        self.tank = Dog.objects.create(client=self.bob, name='Tank', breed=self.breed)
+        self.start = timezone.now().replace(microsecond=0) + timedelta(days=7)
+
+    def _ask(self, dogs, **extra):
+        return self.bob_client.post('/api/booking-groups/', {
+            'bookings': [{'dog': pk} for pk in dogs],
+            'start_at': self.start.isoformat(),
+            **extra,
+        }, format='json')
+
+    def test_a_client_can_ask_for_their_dogs_together(self):
+        response = self._ask([self.rolo.pk, self.tank.pk], notes='Both please')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        members = response.data['appointments']
+        self.assertEqual(len(members), 2)
+        group_id = response.data['id']
+        for member in members:
+            self.assertEqual(member['status'], AppointmentStatus.REQUESTED)
+            self.assertEqual(member['group'], group_id)
+            self.assertEqual(member['notes'], 'Both please')
+            # Sized to the two dogs added up; the length is Jess's to set.
+            self.assertEqual(member['duration_minutes'], 210)
+            # The companions' names are staff-only, nested or not.
+            self.assertNotIn('group_dog_names', member)
+            self.assertNotIn('dog_temperament', member)
+        self.assertEqual(BookingGroup.objects.get(pk=group_id).created_by, self.bob_user)
+
+    def test_a_request_is_a_request_whatever_the_body_says(self):
+        response = self._ask([self.rolo.pk], booking_type='FIRST_GROOM')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['appointments'][0]['status'], AppointmentStatus.REQUESTED)
+
+    def test_another_clients_dog_in_the_list_is_one_403_and_nothing_is_made(self):
+        for dogs in (
+            [self.rolo.pk, self.alice_dog.pk],  # somebody else's
+            [self.rolo.pk, 999999],  # nobody's
+            [],  # nothing at all
+            ['rolo'],  # not an id
+        ):
+            response = self._ask(dogs)
+            self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN, dogs)
+        self.assertFalse(Appointment.objects.exists())
+        self.assertFalse(BookingGroup.objects.exists())
+
+    def test_a_client_cannot_link_existing_bookings(self):
+        first = Appointment.objects.create(
+            dog=self.rolo, start_at=self.start, end_at=self.start + timedelta(hours=1),
+        )
+        response = self.bob_client.post(
+            '/api/booking-groups/', {'appointments': [first.pk]}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        # And smuggling both in with the dogs is still not linking.
+        both = self.bob_client.post('/api/booking-groups/', {
+            'bookings': [{'dog': self.rolo.pk}],
+            'appointments': [first.pk],
+            'start_at': self.start.isoformat(),
+        }, format='json')
+        self.assertEqual(both.status_code, status.HTTP_403_FORBIDDEN)
+        first.refresh_from_db()
+        self.assertIsNone(first.group_id)
+
+    def test_a_request_into_blocked_time_is_refused_whole(self):
+        # The block sits inside the visit's span but after the first dog's
+        # own length would end — the whole visit is what is asked for.
+        BlockedTime.objects.create(
+            start_at=self.start + timedelta(hours=3),
+            end_at=self.start + timedelta(hours=4),
+            notes='Vet with Mojo',
+            created_by=self.staff,
+        )
+        response = self._ask([self.rolo.pk, self.tank.pk])
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('start_at', response.data)
+        self.assertNotIn('Vet', str(response.data))
+        self.assertFalse(Appointment.objects.exists())
+        self.assertFalse(BookingGroup.objects.exists())
+
+    def test_the_visit_waits_as_one_thing(self):
+        self._ask([self.rolo.pk, self.tank.pk])
+        Appointment.objects.create(
+            dog=self.alice_dog, start_at=self.start, end_at=self.start + timedelta(hours=1),
+            status=AppointmentStatus.REQUESTED,
+        )
+        pending = self.staff_client.get('/api/pending/')
+        self.assertEqual(pending.data['appointment_requests'], 2)
+
+        # And Jess books the pair in with one call.
+        group_id = BookingGroup.objects.get().pk
+        booked = self.staff_client.patch(
+            f'/api/booking-groups/{group_id}/', {'status': AppointmentStatus.BOOKED},
+            format='json',
+        )
+        self.assertEqual(booked.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            Appointment.objects.filter(group_id=group_id, status=AppointmentStatus.BOOKED).count(),
+            2,
+        )
+        self.assertEqual(self.staff_client.get('/api/pending/').data['appointment_requests'], 1)
+
 
 class AppointmentDefaultsTests(BaseAPITestCase):
     def test_end_time_defaults_to_the_dogs_groom_time(self):

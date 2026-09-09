@@ -216,6 +216,14 @@ class _CalendarScreenState extends State<CalendarScreen> {
   /// visit" has to mean opening one dog's booking, and the diary should not
   /// guess which.
   Future<void> _chooseFromVisit(List<Appointment> dogs) async {
+    // A household still waiting to be answered is answered as one thing —
+    // the decision sheet names every dog and books or turns down all of
+    // them — so asking which dog first would be a question with no bearing
+    // on the answer.
+    if (dogs.every((dog) => dog.status == 'REQUESTED')) {
+      await _openAppointment(dogs.first);
+      return;
+    }
     final chosen = await showModalBottomSheet<Appointment>(
       context: context,
       builder: (sheetContext) => SafeArea(
@@ -286,37 +294,11 @@ class _CalendarScreenState extends State<CalendarScreen> {
     unawaited(_data.getPending());
   }
 
+  /// Turn it down. The ask-then-cancel shape lives in [turnRequestDown],
+  /// shared with the Waiting for you queue.
   Future<void> _declineRequest(Appointment request) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text('Turn down ${request.dogName}?'),
-        content: const Text(
-          'The booking is cancelled. Ring them if you want to offer another '
-          'time — there are no notifications, so nothing tells them by itself.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('KEEP IT'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('TURN IT DOWN', style: TextStyle(color: AppColors.error)),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true || !mounted) return;
-
-    try {
-      await _data.updateAppointment(request.id, {'status': 'CANCELLED'});
-    } catch (error) {
-      if (mounted) showSnack(context, error.toString(), isError: true);
-      return;
-    }
+    if (!await turnRequestDown(context, _data, request)) return;
     if (!mounted) return;
-    showSnack(context, 'Turned down.');
     _load();
     unawaited(_data.getPending());
   }

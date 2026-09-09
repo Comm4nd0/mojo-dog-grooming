@@ -1310,6 +1310,10 @@ class Appointment {
   /// Part of a household visit with at least one other dog still in it.
   bool get isSharedVisit => groupId != null && companionNames.isNotEmpty;
 
+  /// Every dog in the visit, this one first — "Rolo, Tank and Pip" — or
+  /// just this dog's name when it is booked alone or the names are withheld.
+  String get visitDogNames => joinNames([dogName, ...companionNames]);
+
   /// How long the slot is, as booked.
   ///
   /// Read this rather than `durationMinutes` when moving a booking: the
@@ -1340,6 +1344,45 @@ class Appointment {
       };
 
   bool get isCancelled => status == 'CANCELLED' || status == 'NO_SHOW';
+}
+
+/// "Rolo", "Rolo and Tank", "Rolo, Tank and Pip".
+String joinNames(List<String> names) {
+  if (names.isEmpty) return '';
+  if (names.length == 1) return names.single;
+  return '${names.sublist(0, names.length - 1).join(', ')} and ${names.last}';
+}
+
+/// One row per household visit: the lead dog of each visit, with the rest
+/// folded into its [Appointment.companionNames].
+///
+/// For a list Jess answers rather than a diary she reads — the queue shows a
+/// family's request once and books it in once. Only members that genuinely
+/// share the visit's start and end fold, the same rule the diary draws by:
+/// a dog she has since given its own length is its own row. Led by the
+/// lowest id so the row is the same one across reloads. Bookings with no
+/// group, and any whose companions are withheld, come back untouched.
+List<Appointment> foldVisits(List<Appointment> appointments) {
+  final seen = <(int, DateTime, DateTime)>{};
+  final leads = <(int, DateTime, DateTime), Appointment>{};
+  for (final appointment in appointments) {
+    final group = appointment.groupId;
+    if (group == null || appointment.groupDogNames == null) continue;
+    final shape = (group, appointment.startAt, appointment.endAt);
+    final lead = leads[shape];
+    if (lead == null || appointment.id < lead.id) leads[shape] = appointment;
+  }
+  final folded = <Appointment>[];
+  for (final appointment in appointments) {
+    final group = appointment.groupId;
+    if (group == null || appointment.groupDogNames == null) {
+      folded.add(appointment);
+      continue;
+    }
+    final shape = (group, appointment.startAt, appointment.endAt);
+    if (seen.add(shape)) folded.add(leads[shape]!);
+  }
+  return folded;
 }
 
 /// A stretch of the diary Jess has taken off the table.

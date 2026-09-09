@@ -1149,6 +1149,11 @@ class BookingGroupCreateSerializer(serializers.Serializer):
 
     Exactly one of ``bookings`` (new appointments, all sharing the start and
     end) or ``appointments`` (existing ones to link) is given.
+
+    ``end_at`` may be left out with ``bookings``: the view then sizes the
+    visit to the dogs' own lengths added up — the same starting point the
+    staff form pre-fills, and the only figure a client asking for a visit
+    can be expected not to know.
     """
 
     bookings = BookingGroupMemberSerializer(many=True, required=False)
@@ -1171,11 +1176,11 @@ class BookingGroupCreateSerializer(serializers.Serializer):
                 'Give either bookings to make or appointments to group, not both and not neither.'
             )
         if bookings:
-            if 'start_at' not in data or 'end_at' not in data:
+            if 'start_at' not in data:
                 raise serializers.ValidationError(
-                    {'end_at': 'A visit needs a start and an end.'}
+                    {'start_at': 'A visit needs a start.'}
                 )
-            if data['end_at'] <= data['start_at']:
+            if 'end_at' in data and data['end_at'] <= data['start_at']:
                 raise serializers.ValidationError(
                     {'end_at': 'The end time must be after the start time.'}
                 )
@@ -1192,14 +1197,22 @@ class BookingGroupCreateSerializer(serializers.Serializer):
 
 
 class BookingGroupReshapeSerializer(serializers.Serializer):
-    """A new start and/or end for every dog in the visit."""
+    """A new start, end and/or status for every dog in the visit.
+
+    ``status`` is how a household's *request* is answered as one thing:
+    booked in (with a new start, when Jess puts them in a different gap) or
+    turned down. Answering the dogs one at a time would leave a family
+    half-booked if a save failed in the middle, and a visit is by definition
+    all in or all out.
+    """
 
     start_at = serializers.DateTimeField(required=False)
     end_at = serializers.DateTimeField(required=False)
+    status = serializers.ChoiceField(choices=AppointmentStatus.choices, required=False)
 
     def validate(self, data):
-        if 'start_at' not in data and 'end_at' not in data:
-            raise serializers.ValidationError('Give a new start, a new end, or both.')
+        if not data:
+            raise serializers.ValidationError('Give a new start, a new end, a status, or some of each.')
         if 'start_at' in data and 'end_at' in data and data['end_at'] <= data['start_at']:
             raise serializers.ValidationError(
                 {'end_at': 'The end time must be after the start time.'}

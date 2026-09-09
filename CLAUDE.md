@@ -55,7 +55,7 @@ mobile/lib/
 Backend:
 ```bash
 python manage.py migrate && python manage.py seed_breeds
-python manage.py test api        # 463 tests
+python manage.py test api        # 472 tests
 python manage.py runserver 0.0.0.0:8000
 python manage.py accounts        # who can sign in — usernames live only in the DB
 python manage.py reset_link jess # a way back in when the superuser is locked out
@@ -64,7 +64,7 @@ python manage.py reset_link jess # a way back in when the superuser is locked ou
 Mobile:
 ```bash
 cd mobile && flutter pub get
-flutter analyze && flutter test  # 260 tests
+flutter analyze && flutter test  # 269 tests
 flutter run --dart-define=MOJO_API_BASE=http://192.168.1.20:8000/api
 ```
 
@@ -1133,7 +1133,33 @@ is a silent side effect of an edit. What was built instead:
   under "Link into one visit", with a switch, on by default, to give them all this
   booking's start and end. Linking by itself moves nothing.
 
-`BookingGroupTests` and `test/booking_group_test.dart` hold all of this.
+- **A client can ask for a visit too.** The request sheet offered one dog from a dropdown,
+  so an owner with three sent three loose requests — or one, and rang about the rest.
+  With more than one dog on the account it now offers them all as chips (the first ticked,
+  as the dropdown was; ALL OF THEM for the common case), and two or more ticked go to
+  `POST /api/booking-groups/` as `bookings`, the one verb on that endpoint open to a
+  client. Everything else about it is the single request's rules restated: every dog
+  lands `REQUESTED`; ownership is checked on the **raw ids before validation** with one
+  403 whether a dog is somebody else's, does not exist, or the body asks to link existing
+  appointments, so it cannot probe ids; and `blocked_time_refusal` runs over the whole
+  visit's span, since one dog's slot into Jess's lunch is the family's request turned
+  down. **`end_at` is optional** and the server sizes a visit without one to the dogs'
+  lengths added up — the figure the staff form starts from and, as there, a starting
+  point rather than an answer.
+- **Jess answers the visit as one thing.** The group `PATCH` takes a `status` alongside
+  `start_at`/`end_at`, applied to every active member in one transaction, so a family is
+  never left half-booked by a save failing between dogs. `bookRequestIn` and
+  `turnRequestDown` in `widgets/booking_request.dart` use it for a shared visit (checking
+  every member first, with `exclude_group`, so a handling cap on the second dog is not
+  missed), the decision sheet names every dog, the diary skips "which dog?" for a band
+  that is all requests, and Waiting for you shows a visit once — `foldVisits` in
+  `models.dart`, which folds by the diary's rule (same group, same start and end) and
+  leaves a client's rows alone because their companions are withheld. `PendingView`
+  counts a visit once for the same reason: a badge saying 3 against one row is the
+  mismatch that endpoint exists to avoid.
+
+`BookingGroupTests`, `ClientVisitRequestTests`, `test/booking_group_test.dart`,
+`test/booking_request_test.dart` and `test/my_bookings_screen_test.dart` hold all of this.
 
 ## Scanned paperwork is not a photo
 

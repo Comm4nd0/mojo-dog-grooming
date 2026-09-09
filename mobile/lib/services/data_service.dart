@@ -288,10 +288,15 @@ class DataService {
   /// [services] are the first dog's; the companions are booked with none,
   /// so the server resolves each dog's own price exactly as a booking made
   /// alone. Returns the appointments made.
+  ///
+  /// For a **client** this is a request, not a booking — the server lands
+  /// every dog as REQUESTED, exactly as [createAppointment] does for one.
+  /// [endAt] is left out then: the length of a visit is Jess's to set, and
+  /// the server sizes it to the dogs added up until she does.
   Future<List<Appointment>> bookTogether({
     required List<int> dogIds,
     required DateTime startAt,
-    required DateTime endAt,
+    DateTime? endAt,
     String bookingType = 'ADHOC',
     String serviceType = ServiceType.groom,
     List<int> services = const [],
@@ -303,11 +308,18 @@ class DataService {
           {'dog': dogIds[i], if (i == 0) 'services': services},
       ],
       'start_at': startAt.toUtc().toIso8601String(),
-      'end_at': endAt.toUtc().toIso8601String(),
+      'end_at': ?endAt?.toUtc().toIso8601String(),
       'booking_type': bookingType,
       'service_type': serviceType,
       'notes': notes,
     });
+    final rows = (payload as Map<String, dynamic>)['appointments'] as List? ?? const [];
+    return rows.map((row) => Appointment.fromJson(row as Map<String, dynamic>)).toList();
+  }
+
+  /// Every booking in a visit. Staff only.
+  Future<List<Appointment>> getBookingGroup(int id) async {
+    final payload = await _api.get('/booking-groups/$id/');
     final rows = (payload as Map<String, dynamic>)['appointments'] as List? ?? const [];
     return rows.map((row) => Appointment.fromJson(row as Map<String, dynamic>)).toList();
   }
@@ -323,19 +335,23 @@ class DataService {
     return rows.map((row) => Appointment.fromJson(row as Map<String, dynamic>)).toList();
   }
 
-  /// Move or resize every dog in a visit at once.
+  /// Move, resize or answer every dog in a visit at once.
   ///
   /// A new start shifts each by the same amount, keeping its own length; a
-  /// new end sets every dog's end. Returns the server's warnings, prefixed
-  /// with the dog — advisory, as always.
+  /// new end sets every dog's end; a [status] is applied to every dog still
+  /// active — how a household's request is booked in or turned down as one
+  /// thing. Returns the server's warnings, prefixed with the dog —
+  /// advisory, as always.
   Future<List<BookingWarning>> updateBookingGroup(
     int id, {
     DateTime? startAt,
     DateTime? endAt,
+    String? status,
   }) async {
     final payload = await _api.patch('/booking-groups/$id/', {
       'start_at': ?startAt?.toUtc().toIso8601String(),
       'end_at': ?endAt?.toUtc().toIso8601String(),
+      'status': ?status,
     });
     final rows = (payload as Map<String, dynamic>)['warnings'] as List? ?? const [];
     return rows.map((row) => BookingWarning.fromJson(row as Map<String, dynamic>)).toList();

@@ -1369,21 +1369,65 @@ class AppointmentViewSet(ClientScopedMixin, viewsets.ModelViewSet):
 class BookingGroupViewSet(viewsets.GenericViewSet):
     """A household booked in as one visit — see :class:`BookingGroup`.
 
-    Staff only. Three things it does: ``POST`` books several dogs into one
-    slot atomically (or links bookings already made), ``PATCH`` moves or
-    resizes every dog in the visit at once, and ``GET`` reads it back.
+    Three things it does: ``POST`` books several dogs into one slot
+    atomically (or links bookings already made), ``PATCH`` moves, resizes
+    or answers every dog in the visit at once, and ``GET`` reads it back.
     Removing one dog from a visit is a ``PATCH`` on that appointment with
     ``group: null`` — the ordinary edit, not a group operation.
+
+    ``POST`` is the one verb open to a client, and only in its ``bookings``
+    form, for their own dogs: *"usually people book all their dogs together
+    for a groom"*, and an owner with three dogs was sending three separate
+    requests that landed as three loose rows and had to be booked in three
+    times. Their visit lands as ``REQUESTED`` exactly as a single request
+    does — same status, same blocked-time refusal, same queue — so bookings
+    stay read-only to them and nothing here goes round that.
     """
 
     queryset = BookingGroup.objects.prefetch_related('appointments__dog__client')
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsAuthenticated]
     serializer_class = BookingGroupSerializer
+
+    def get_permissions(self):
+        # Reading a visit back and reshaping it are Jess's — the members
+        # carry the companions' names, and a household can span two client
+        # records. Asking for one is gated in `create` itself.
+        if self.action == 'create':
+            return [IsAuthenticated()]
+        return [IsAdminUser()]
+
+    def _refuse_unless_own_dogs(self, request):
+        """The client-side gate on ``create``: their own dogs, or a 403.
+
+        Checked on the raw ids *before* validation, and answered with one
+        403 whether a dog is somebody else's, does not exist, or the body
+        asks to link existing appointments (which a client cannot do). A
+        different answer for each would make this endpoint a way to probe
+        which ids are real — the rule `AppointmentChangeRequestViewSet`
+        follows.
+        """
+        client = getattr(request.user, 'client', None)
+        bookings = request.data.get('bookings')
+        if client is None or 'appointments' in request.data or not isinstance(bookings, list):
+            raise PermissionDenied('You can only request appointments for your own dogs.')
+        asked = set()
+        for entry in bookings:
+            dog_id = entry.get('dog') if isinstance(entry, dict) else None
+            if isinstance(dog_id, bool) or not str(dog_id).isdigit():
+                raise PermissionDenied('You can only request appointments for your own dogs.')
+            asked.add(int(dog_id))
+        own = set(client.dogs.values_list('pk', flat=True))
+        if not asked or not asked <= own:
+            raise PermissionDenied('You can only request appointments for your own dogs.')
 
     def retrieve(self, request, pk=None):
         return Response(self.get_serializer(self.get_object()).data)
 
     def create(self, request):
+        requesting = not request.user.is_staff
+        if requesting:
+            self._refuse_unless_own_dogs(request)
+
         serializer = BookingGroupCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
@@ -1395,13 +1439,39 @@ class BookingGroupViewSet(viewsets.GenericViewSet):
                     pk__in=[a.pk for a in data['appointments']],
                 ).update(group=group)
             else:
+                service_type = data.get('service_type') or ServiceType.GROOM
+                end_at = data.get('end_at')
+                if end_at is None:
+                    # The dogs' own lengths added up — the figure the staff
+                    # form starts from, and a starting point rather than an
+                    # answer: Jess grooms a family interleaved, so the real
+                    # length is hers to set when she books it in.
+                    minutes = sum(
+                        resolve_slot(entry['dog'], service_type, entry.get('services') or [])[0]
+                        for entry in data['bookings']
+                    )
+                    end_at = data['start_at'] + timedelta(minutes=minutes)
+                if requesting:
+                    # The one refusal in the booking flow, applied to the
+                    # whole visit: one dog's slot into Jess's lunch is the
+                    # family's request turned down, same as it would be for
+                    # the dog asked for alone.
+                    from rest_framework.exceptions import ValidationError
+
+                    refusal = blocked_time_refusal(data['start_at'], end_at)
+                    if refusal is not None:
+                        raise ValidationError({'start_at': refusal})
                 for entry in data['bookings']:
                     appointment = Appointment.objects.create(
                         dog=entry['dog'],
                         start_at=data['start_at'],
-                        end_at=data['end_at'],
+                        end_at=end_at,
                         booking_type=data.get('booking_type') or BookingType.ADHOC,
-                        service_type=data.get('service_type') or ServiceType.GROOM,
+                        service_type=service_type,
+                        status=(
+                            AppointmentStatus.REQUESTED if requesting
+                            else AppointmentStatus.BOOKED
+                        ),
                         notes=data.get('notes', ''),
                         group=group,
                         created_by=request.user,
@@ -1424,9 +1494,19 @@ class BookingGroupViewSet(viewsets.GenericViewSet):
 
         try:
             with transaction.atomic():
-                members = group.reshape(
-                    start_at=data.get('start_at'), end_at=data.get('end_at'),
-                )
+                # The members to answer are read before anything changes:
+                # turning a visit down takes every dog out of
+                # `active_members()`, and the warnings below are still owed
+                # for the dogs that were just dealt with.
+                members = list(group.active_members())
+                if 'start_at' in data or 'end_at' in data:
+                    members = group.reshape(
+                        start_at=data.get('start_at'), end_at=data.get('end_at'),
+                    )
+                if 'status' in data:
+                    for member in members:
+                        member.status = data['status']
+                        member.save(update_fields=['status', 'updated_at'])
         except DjangoValidationError as error:
             return Response(
                 {'detail': '; '.join(error.messages)}, status=status.HTTP_400_BAD_REQUEST,
@@ -2353,10 +2433,16 @@ class PendingView(APIView):
     permission_classes = [IsAdminUser]
 
     def get(self, request):
+        requested = Appointment.objects.filter(status=AppointmentStatus.REQUESTED)
         counts = {
-            'appointment_requests': Appointment.objects.filter(
-                status=AppointmentStatus.REQUESTED,
-            ).count(),
+            # A household asked for together is one thing waiting, not one
+            # per dog: the queue shows it as one row and answers it as one,
+            # and a badge saying "3" against a screen with one row on it is
+            # the mismatch this endpoint exists to avoid.
+            'appointment_requests': (
+                requested.filter(group__isnull=True).count()
+                + requested.filter(group__isnull=False).values('group').distinct().count()
+            ),
             'intake_submissions': IntakeSubmission.objects.filter(
                 status=ReviewStatus.PENDING,
             ).count(),

@@ -143,7 +143,12 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
       return;
     }
 
-    int dogId = dogs.first.id;
+    // Which dogs are coming. Jess: "usually people book all their dogs
+    // together for a groom" — so with more than one dog on the account the
+    // sheet offers them all, and the ones ticked go in as one visit. The
+    // first is ticked to start with, as it was when this was a dropdown;
+    // the rest are a tap each, and none ticked means nothing to send.
+    final chosen = <int>{dogs.first.id};
     DateTime date = DateTime.now().add(const Duration(days: 7));
     TimeOfDay time = const TimeOfDay(hour: 10, minute: 0);
     final notes = TextEditingController();
@@ -169,15 +174,47 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
                 style: TextStyle(fontSize: 12.5, color: context.mojo.muted),
               ),
               const SizedBox(height: 16),
-              DropdownButtonFormField<int>(
-                initialValue: dogId,
-                decoration: const InputDecoration(labelText: 'Dog'),
-                items: [
-                  for (final dog in dogs)
-                    DropdownMenuItem(value: dog.id, child: Text(dog.name)),
-                ],
-                onChanged: (value) => setSheetState(() => dogId = value ?? dogId),
-              ),
+              if (dogs.length == 1)
+                InputDecorator(
+                  decoration: const InputDecoration(labelText: 'Dog'),
+                  child: Text(dogs.single.name),
+                )
+              else ...[
+                InputDecorator(
+                  decoration: const InputDecoration(
+                    labelText: 'Which dogs?',
+                    helperText: 'Tick everyone coming in — they will be booked in together.',
+                  ),
+                  child: Wrap(
+                    spacing: 8,
+                    runSpacing: 4,
+                    children: [
+                      for (final dog in dogs)
+                        FilterChip(
+                          label: Text(dog.name),
+                          selected: chosen.contains(dog.id),
+                          onSelected: (selected) => setSheetState(() {
+                            if (selected) {
+                              chosen.add(dog.id);
+                            } else {
+                              chosen.remove(dog.id);
+                            }
+                          }),
+                        ),
+                    ],
+                  ),
+                ),
+                if (chosen.length < dogs.length)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton(
+                      onPressed: () => setSheetState(
+                        () => chosen.addAll(dogs.map((dog) => dog.id)),
+                      ),
+                      child: const Text('ALL OF THEM'),
+                    ),
+                  ),
+              ],
               const SizedBox(height: 14),
               Row(
                 children: [
@@ -256,13 +293,18 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
               ElevatedButton(
                 // Disabled, not hidden, for a blocked time: the button still
                 // says what the sheet is for, and the box above says why it
-                // cannot be pressed yet.
-                onPressed: _isBlocked(DateTime(
-                  date.year, date.month, date.day, time.hour, time.minute,
-                ))
+                // cannot be pressed yet. Likewise with no dog ticked.
+                onPressed: chosen.isEmpty ||
+                        _isBlocked(DateTime(
+                          date.year, date.month, date.day, time.hour, time.minute,
+                        ))
                     ? null
                     : () => Navigator.pop(context, true),
-                child: const Text('SEND REQUEST'),
+                child: Text(
+                  chosen.length > 1
+                      ? 'SEND REQUEST FOR ${chosen.length} DOGS'
+                      : 'SEND REQUEST',
+                ),
               ),
             ],
           ),
@@ -271,14 +313,31 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
     );
 
     if (confirmed == true) {
+      // In the order they are listed, not the order they were tapped, so
+      // the visit reads the same way the sheet did.
+      final dogIds = [for (final dog in dogs) if (chosen.contains(dog.id)) dog.id];
+      final startAt = DateTime(date.year, date.month, date.day, time.hour, time.minute);
       try {
-        await _data.createAppointment(
-          dogId: dogId,
-          startAt: DateTime(date.year, date.month, date.day, time.hour, time.minute),
-          notes: notes.text.trim(),
-        );
+        if (dogIds.length == 1) {
+          await _data.createAppointment(
+            dogId: dogIds.single,
+            startAt: startAt,
+            notes: notes.text.trim(),
+          );
+        } else {
+          // One visit, requested together — the server sizes it and lands
+          // every dog as REQUESTED, exactly as a single request does.
+          await _data.bookTogether(
+            dogIds: dogIds,
+            startAt: startAt,
+            notes: notes.text.trim(),
+          );
+        }
         if (!mounted) return;
-        showSnack(context, 'Request sent. Mojo and Co will be in touch.');
+        final names = joinNames([
+          for (final dog in dogs) if (chosen.contains(dog.id)) dog.name,
+        ]);
+        showSnack(context, 'Request sent for $names. Mojo and Co will be in touch.');
         _load();
       } catch (error) {
         if (mounted) showSnack(context, error.toString(), isError: true);

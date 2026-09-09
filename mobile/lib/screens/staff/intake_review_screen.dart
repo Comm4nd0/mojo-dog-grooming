@@ -59,7 +59,9 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
       // was no tab for them, so a request showed as "2 waiting" against a
       // screen with nothing on it. They only ever surfaced as blocks in the
       // diary, which is exactly where a new one is easiest to miss.
-      final requests = await _data.getAppointmentRequests();
+      // A household asked for together is one row here, named for every
+      // dog, and answered as one — the same count the More badge shows.
+      final requests = foldVisits(await _data.getAppointmentRequests());
       if (!mounted) return;
       setState(() {
         _submissions = submissions;
@@ -303,11 +305,14 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
           return ListTile(
             isThreeLine: true,
             leading: Icon(Icons.hourglass_empty, color: AppColors.warning),
-            title: Text('${request.dogName} — ${request.clientName}'),
+            title: Text('${request.visitDogNames} — ${request.clientName}'),
             subtitle: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('${formatDate(request.startAt)} · ${request.timeRange}'),
+                Text(
+                  '${formatDate(request.startAt)} · ${request.timeRange}'
+                  '${request.isSharedVisit ? ' · together' : ''}',
+                ),
                 if (past)
                   Text(
                     'This time has already passed',
@@ -400,38 +405,11 @@ class _IntakeReviewScreenState extends State<IntakeReviewScreen> {
     unawaited(_data.getPending());
   }
 
+  /// Turn it down. The ask-then-cancel shape lives in [turnRequestDown],
+  /// shared with the diary.
   Future<void> _declineRequest(Appointment request) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text('Turn down ${request.dogName}?'),
-        content: const Text(
-          'The booking is cancelled. Ring them if you want to offer another '
-          'time — there are no notifications, so nothing tells them by itself.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('KEEP IT'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('TURN IT DOWN',
-                style: TextStyle(color: AppColors.error)),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true || !mounted) return;
-
-    try {
-      await _data.updateAppointment(request.id, {'status': 'CANCELLED'});
-    } catch (error) {
-      if (mounted) showSnack(context, error.toString(), isError: true);
-      return;
-    }
+    if (!await turnRequestDown(context, _data, request)) return;
     if (!mounted) return;
-    showSnack(context, 'Turned down.');
     _load();
     unawaited(_data.getPending());
   }
