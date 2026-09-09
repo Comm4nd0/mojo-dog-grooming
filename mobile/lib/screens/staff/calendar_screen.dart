@@ -66,6 +66,18 @@ class _CalendarScreenState extends State<CalendarScreen> {
   bool _loading = true;
   Object? _error;
 
+  /// The day view is a pager, one page per calendar day, so a swipe carries
+  /// the diary to the next day the way a paper one turns. It is created
+  /// when the day view is shown and thrown away when it is left: a
+  /// `PageController` that is re-attached goes back to its `initialPage`
+  /// rather than where it was, so the honest thing is a fresh one that
+  /// starts on the day actually selected.
+  PageController? _pager;
+
+  /// Fingers on the day view right now. Two of them are a pinch, which
+  /// changes the axis scale — and must not also be read as a swipe.
+  int _pointers = 0;
+
   @override
   void initState() {
     super.initState();
@@ -76,6 +88,40 @@ class _CalendarScreenState extends State<CalendarScreen> {
       _loadedMonth = DateTime(initial.year, initial.month);
     }
     _load();
+  }
+
+  @override
+  void dispose() {
+    _pager?.dispose();
+    super.dispose();
+  }
+
+  // ── Pages are days ─────────────────────────────────────────────────
+  //
+  // Page 0 is the first day the month grid can reach; every later day is
+  // its distance from there. Nothing is ever "loaded" into the pager — it
+  // is arithmetic, and `_eventsFor` answers for any date, empty or not.
+
+  // Counted in UTC, deliberately. A local-time difference from January to
+  // August is a whole number of days *minus an hour* for the clocks going
+  // forward, and `inDays` truncates — every page in summer came out one day
+  // early. A calendar day has no length to get wrong in UTC.
+  static final DateTime _firstPage = DateTime.utc(2020, 1, 1);
+
+  static int _pageOf(DateTime day) =>
+      DateTime.utc(day.year, day.month, day.day).difference(_firstPage).inDays;
+
+  static DateTime _dayOfPage(int page) {
+    final utc = DateTime.utc(2020, 1, 1 + page);
+    return DateTime(utc.year, utc.month, utc.day);
+  }
+
+  void _setView(CalendarView view) {
+    if (view != CalendarView.day) {
+      _pager?.dispose();
+      _pager = null;
+    }
+    setState(() => _view = view);
   }
 
   /// Load a wide window around the focused month so scrolling between months
@@ -281,7 +327,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
     if (at == null || !mounted) return;
     if (!await bookRequestIn(context, _data, request, at: at)) return;
     if (!mounted) return;
-    setState(() => _selectedDay = at);
+    _selectDay(at);
     _load();
     unawaited(_data.getPending());
   }
@@ -349,10 +395,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
           IconButton(
             icon: const Icon(Icons.today_outlined),
             tooltip: 'Today',
-            onPressed: () => setState(() {
-              _focusedDay = DateTime.now();
-              _selectedDay = DateTime.now();
-            }),
+            onPressed: () => _selectDay(DateTime.now()),
           ),
         ],
         bottom: PreferredSize(
@@ -367,7 +410,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
               ],
               selected: {_view},
               showSelectedIcon: false,
-              onSelectionChanged: (value) => setState(() => _view = value.first),
+              onSelectionChanged: (value) => _setView(value.first),
             ),
           ),
         ),
@@ -405,13 +448,43 @@ class _CalendarScreenState extends State<CalendarScreen> {
   // ── Day ────────────────────────────────────────────────────────────
 
   Widget _dayView() {
-    final closed = _closures.contains(_dayKey(_selectedDay));
-    final hours = _hoursByWeekday[_selectedDay.weekday];
-
+    final pager = _pager ??= PageController(initialPage: _pageOf(_selectedDay));
     return Column(
       children: [
         _dayStrip(),
         const Divider(height: 1),
+        Expanded(
+          // Jess: can swiping left and right go through the days? One page
+          // per day; the strip above follows, and a tap on the strip or a
+          // date on the month grid slides the pager to match.
+          child: Listener(
+            onPointerDown: (_) => setState(() => _pointers++),
+            onPointerUp: (_) => setState(() => _pointers = (_pointers - 1).clamp(0, 99)),
+            onPointerCancel: (_) => setState(() => _pointers = (_pointers - 1).clamp(0, 99)),
+            child: PageView.builder(
+              key: const ValueKey('day-pager'),
+              controller: pager,
+              // A pinch is a scale, never a swipe. With two fingers down the
+              // pager stands still and the scale detector inside gets both.
+              physics: _pointers >= 2
+                  ? const NeverScrollableScrollPhysics()
+                  : const PageScrollPhysics(),
+              onPageChanged: (page) => _selectDay(_dayOfPage(page), fromPager: true),
+              itemBuilder: (context, page) => _dayPage(_dayOfPage(page)),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// One day of the diary: its banners and its timeline.
+  Widget _dayPage(DateTime day) {
+    final closed = _closures.contains(_dayKey(day));
+    final hours = _hoursByWeekday[day.weekday];
+
+    return Column(
+      children: [
         if (closed)
           Container(
             width: double.infinity,
@@ -424,7 +497,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
           ),
         // A household booked one dog at a time — every booking made before
         // visits existed looks like this. Offered, never done unasked.
-        for (final household in householdsBookedSeparately(_eventsFor(_selectedDay)))
+        for (final household in householdsBookedSeparately(_eventsFor(day)))
           _linkBanner(household),
         Expanded(
           child: GestureDetector(
@@ -438,10 +511,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
               );
             },
             child: DayTimeline(
-              key: ValueKey(_dayKey(_selectedDay)),
-              day: _selectedDay,
-              appointments: _eventsFor(_selectedDay),
-              blocks: _blocksFor(_selectedDay),
+              key: ValueKey(_dayKey(day)),
+              day: day,
+              appointments: _eventsFor(day),
+              blocks: _blocksFor(day),
               onOpenBlock: (block) => _openBlock(existing: block),
               metrics: _metrics,
               openMinutes: hours?.$1,
@@ -615,12 +688,31 @@ class _CalendarScreenState extends State<CalendarScreen> {
         color: colour,
       );
 
-  void _selectDay(DateTime day) {
+  /// Lands on a day. From anywhere but the pager itself — the strip, the
+  /// chevrons, Today, the month grid — the pager slides to match; from the
+  /// pager it is already there, and animating it again would fight the
+  /// finger that just put it there.
+  void _selectDay(DateTime day, {bool fromPager = false}) {
     setState(() {
       _selectedDay = day;
       _focusedDay = day;
     });
     _loadIfOutsideWindow(day);
+    final pager = _pager;
+    if (fromPager || pager == null || !pager.hasClients) return;
+    final target = _pageOf(day);
+    if ((pager.page ?? pager.initialPage).round() == target) return;
+    // A week away in one hop rather than a seven-day flick-book.
+    final far = ((pager.page ?? target) - target).abs() > 3;
+    if (far) {
+      pager.jumpToPage(target);
+    } else {
+      pager.animateToPage(
+        target,
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeOutCubic,
+      );
+    }
   }
 
   // ── Week ───────────────────────────────────────────────────────────
@@ -655,10 +747,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
             metrics: const TimelineMetrics(scale: 0.55),
             onOpen: _openAppointment,
             onOpenVisit: _chooseFromVisit,
-            onOpenDay: (day) => setState(() {
-              _selectedDay = day;
-              _view = CalendarView.day;
-            }),
+            onOpenDay: (day) {
+              _selectDay(day);
+              _setView(CalendarView.day);
+            },
           ),
         ),
       ],
@@ -686,7 +778,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
             // Tapping the day you are already on drops into it — one extra
             // tap, no extra chrome.
             if (_dayKey(selected) == _dayKey(_selectedDay)) {
-              setState(() => _view = CalendarView.day);
+              _setView(CalendarView.day);
               return;
             }
             setState(() {

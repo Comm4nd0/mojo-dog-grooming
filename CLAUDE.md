@@ -64,7 +64,7 @@ python manage.py reset_link jess # a way back in when the superuser is locked ou
 Mobile:
 ```bash
 cd mobile && flutter pub get
-flutter analyze && flutter test  # 270 tests
+flutter analyze && flutter test  # 274 tests
 flutter run --dart-define=MOJO_API_BASE=http://192.168.1.20:8000/api
 ```
 
@@ -1057,6 +1057,16 @@ accept-or-revert, which cannot express *show the server's warnings and move it a
 - Dragging is **not** `LongPressDraggable` — its feedback follows the finger in two dimensions
   and cannot snap, so the block floats free then teleports. `Positioned.top` is driven from
   state instead.
+- **The day view is a pager, one page per calendar day** — Jess: *"can swiping left and
+  right allow swiping smoothly through the days?"*. The strip, the chevrons, Today and the
+  month grid all go through `_selectDay`, which slides the pager to match (a jump when it
+  is more than three days away, so a week is one hop rather than a flick-book). The
+  `PageController` is created when the day view is shown and disposed when it is left: a
+  re-attached controller goes back to its `initialPage`, not to where it was. **Page
+  arithmetic is in UTC** — a local-time day difference from January into summer is an
+  hour short and `inDays` truncates it, which put every summer page one day early. Two
+  fingers down switches the pager to `NeverScrollableScrollPhysics` so a pinch scales the
+  axis instead of half-turning a page. `test/calendar_swipe_test.dart` holds it.
 - **Week view is read-only.** At ~49dp columns a two-axis drag is a coin flip between "move to
   Tuesday" and "move 30 minutes", and Jess's own framing splits them: week to see, day to
   slide.
