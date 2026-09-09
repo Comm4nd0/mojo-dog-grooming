@@ -74,6 +74,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
   /// starts on the day actually selected.
   PageController? _pager;
 
+  /// The week view's own pager, one page per Monday-to-Sunday. Same
+  /// lifecycle as `_pager`, for the same reason.
+  PageController? _weekPager;
+
   /// Fingers on the day view right now. Two of them are a pinch, which
   /// changes the axis scale — and must not also be read as a swipe.
   int _pointers = 0;
@@ -93,6 +97,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
   @override
   void dispose() {
     _pager?.dispose();
+    _weekPager?.dispose();
     super.dispose();
   }
 
@@ -116,10 +121,30 @@ class _CalendarScreenState extends State<CalendarScreen> {
     return DateTime(utc.year, utc.month, utc.day);
   }
 
+  /// Week pages count Mondays from the first one the grid can reach.
+  static final DateTime _firstWeekPage = DateTime.utc(2020, 1, 6);
+
+  static int _weekPageOf(DateTime day) {
+    final monday = _mondayOf(day);
+    return DateTime.utc(monday.year, monday.month, monday.day)
+            .difference(_firstWeekPage)
+            .inDays ~/
+        7;
+  }
+
+  static DateTime _mondayOfWeekPage(int page) {
+    final utc = DateTime.utc(2020, 1, 6 + page * 7);
+    return DateTime(utc.year, utc.month, utc.day);
+  }
+
   void _setView(CalendarView view) {
     if (view != CalendarView.day) {
       _pager?.dispose();
       _pager = null;
+    }
+    if (view != CalendarView.week) {
+      _weekPager?.dispose();
+      _weekPager = null;
     }
     setState(() => _view = view);
   }
@@ -698,13 +723,20 @@ class _CalendarScreenState extends State<CalendarScreen> {
       _focusedDay = day;
     });
     _loadIfOutsideWindow(day);
-    final pager = _pager;
-    if (fromPager || pager == null || !pager.hasClients) return;
-    final target = _pageOf(day);
-    if ((pager.page ?? pager.initialPage).round() == target) return;
-    // A week away in one hop rather than a seven-day flick-book.
-    final far = ((pager.page ?? target) - target).abs() > 3;
-    if (far) {
+    if (fromPager) return;
+    // Whichever pager is on screen follows; the other is null.
+    _slide(_pager, _pageOf(day), farBeyond: 3);
+    _slide(_weekPager, _weekPageOf(day), farBeyond: 1);
+  }
+
+  /// Carries a pager to `target` — animated when it is close, in one jump
+  /// when it is not, so a week away is one hop rather than a seven-day
+  /// flick-book.
+  static void _slide(PageController? pager, int target, {required int farBeyond}) {
+    if (pager == null || !pager.hasClients) return;
+    final current = pager.page ?? pager.initialPage.toDouble();
+    if (current.round() == target) return;
+    if ((current - target).abs() > farBeyond) {
       pager.jumpToPage(target);
     } else {
       pager.animateToPage(
@@ -737,20 +769,32 @@ class _CalendarScreenState extends State<CalendarScreen> {
           ],
         ),
         Expanded(
-          child: WeekTimeline(
-            weekStart: _mondayOf(_selectedDay),
-            appointmentsByDay: _byDay,
-            blocksByDay: _blocksByDay,
-            onOpenBlock: (block) => _openBlock(existing: block),
-            // Zoomed out by default so the whole week fits without scrolling
-            // — scanning is the point of this view.
-            metrics: const TimelineMetrics(scale: 0.55),
-            onOpen: _openAppointment,
-            onOpenVisit: _chooseFromVisit,
-            onOpenDay: (day) {
-              _selectDay(day);
-              _setView(CalendarView.day);
-            },
+          // Jess: "should be able to swipe on the week view too". One page
+          // per week; the selected weekday is kept across the turn, so
+          // swiping from a Wednesday lands on the next Wednesday.
+          child: PageView.builder(
+            key: const ValueKey('week-pager'),
+            controller: _weekPager ??= PageController(initialPage: _weekPageOf(_selectedDay)),
+            onPageChanged: (page) => _selectDay(
+              _mondayOfWeekPage(page).add(Duration(days: _selectedDay.weekday - 1)),
+              fromPager: true,
+            ),
+            itemBuilder: (context, page) => WeekTimeline(
+              key: ValueKey(_mondayOfWeekPage(page)),
+              weekStart: _mondayOfWeekPage(page),
+              appointmentsByDay: _byDay,
+              blocksByDay: _blocksByDay,
+              onOpenBlock: (block) => _openBlock(existing: block),
+              // Zoomed out by default so the whole week fits without
+              // scrolling — scanning is the point of this view.
+              metrics: const TimelineMetrics(scale: 0.55),
+              onOpen: _openAppointment,
+              onOpenVisit: _chooseFromVisit,
+              onOpenDay: (day) {
+                _selectDay(day);
+                _setView(CalendarView.day);
+              },
+            ),
           ),
         ),
       ],

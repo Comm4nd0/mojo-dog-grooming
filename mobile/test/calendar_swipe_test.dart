@@ -38,14 +38,14 @@ void main() {
 
   final monday = DateTime(2026, 8, 3);
 
-  Future<void> pumpCalendar(WidgetTester tester) async {
+  Future<void> pumpCalendar(WidgetTester tester, {DateTime? at}) async {
     tester.view.physicalSize = const Size(390, 844);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
     installServices();
     await tester.pumpWidget(MaterialApp(
       theme: AppColors.lightTheme(),
-      home: CalendarScreen(initialDate: monday),
+      home: CalendarScreen(initialDate: at ?? monday),
     ));
     await tester.pumpAndSettle();
   }
@@ -100,6 +100,52 @@ void main() {
 
     final now = DateTime.now();
     expect(shownDay(tester), DateTime(now.year, now.month, now.day));
+  });
+
+  group('week view', () {
+    // Jess: "should be able to swipe on the week view too".
+    String weekTitle(DateTime monday) =>
+        '${formatDate(monday)} – ${formatDate(monday.add(const Duration(days: 6)))}';
+
+    Future<void> openWeek(WidgetTester tester) async {
+      await tester.tap(find.text('Week'));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('a swipe left turns to the next week', (tester) async {
+      await pumpCalendar(tester);
+      await openWeek(tester);
+      expect(find.text(weekTitle(monday)), findsOneWidget);
+
+      await tester.fling(find.byKey(const ValueKey('week-pager')), const Offset(-300, 0), 1000);
+      await tester.pumpAndSettle();
+
+      expect(find.text(weekTitle(monday.add(const Duration(days: 7)))), findsOneWidget);
+    });
+
+    testWidgets('the chevron slides the pager a week', (tester) async {
+      await pumpCalendar(tester);
+      await openWeek(tester);
+
+      await tester.tap(find.byTooltip('Previous week'));
+      await tester.pumpAndSettle();
+
+      expect(find.text(weekTitle(monday.subtract(const Duration(days: 7)))), findsOneWidget);
+    });
+
+    testWidgets('the weekday is kept across the turn', (tester) async {
+      // Start on a Wednesday, swipe a week on, drop back into the day view:
+      // it should be the next Wednesday, not the next Monday.
+      await pumpCalendar(tester, at: DateTime(2026, 8, 5));
+      await openWeek(tester);
+
+      await tester.fling(find.byKey(const ValueKey('week-pager')), const Offset(-300, 0), 1000);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Day'));
+      await tester.pumpAndSettle();
+
+      expect(shownDay(tester), DateTime(2026, 8, 12));
+    });
   });
 }
 

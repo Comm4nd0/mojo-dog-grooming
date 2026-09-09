@@ -64,7 +64,7 @@ python manage.py reset_link jess # a way back in when the superuser is locked ou
 Mobile:
 ```bash
 cd mobile && flutter pub get
-flutter analyze && flutter test  # 274 tests
+flutter analyze && flutter test  # 277 tests
 flutter run --dart-define=MOJO_API_BASE=http://192.168.1.20:8000/api
 ```
 
@@ -1057,8 +1057,10 @@ accept-or-revert, which cannot express *show the server's warnings and move it a
 - Dragging is **not** `LongPressDraggable` — its feedback follows the finger in two dimensions
   and cannot snap, so the block floats free then teleports. `Positioned.top` is driven from
   state instead.
-- **The day view is a pager, one page per calendar day** — Jess: *"can swiping left and
-  right allow swiping smoothly through the days?"*. The strip, the chevrons, Today and the
+- **The day view is a pager, one page per calendar day, and the week view one per
+  Monday** — Jess: *"can swiping left and right allow swiping smoothly through the days?"*
+  and *"should be able to swipe on the week view too"*. A week turn keeps the selected
+  weekday, so swiping on from a Wednesday lands on the next Wednesday. The strip, the chevrons, Today and the
   month grid all go through `_selectDay`, which slides the pager to match (a jump when it
   is more than three days away, so a week is one hop rather than a flick-book). The
   `PageController` is created when the day view is shown and disposed when it is left: a
