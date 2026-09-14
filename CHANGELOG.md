@@ -33,3 +33,6 @@ Getting back into your account no longer means starting again.
   waiting to hear back.
 - If you book more than one dog in at a time, they now go in as one visit with
   one length, so the diary shows how long you'll actually be with us.
+- Behind the counter, the groom card can now be filled in while the groom is
+  still being timed, so anything found in the health check goes on the record
+  the moment it's found rather than at the end.

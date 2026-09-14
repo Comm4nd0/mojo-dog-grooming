@@ -30,7 +30,22 @@ class GroomTimerSession {
   String? runningPhase;
   DateTime? runningSince;
 
+  /// The groom card as it stands, filled in while the clock is still going.
+  ///
+  /// Jess: *"is there a way that I can 'fill out the groom card' whilst doing
+  /// the groom, so bits found in health check I remember to put on"*. The
+  /// card used to open only once the timer was settled, so a lump found in
+  /// the health check had to be carried in her head through the wash, the
+  /// dry and the clip. This is the card's own record map, exactly as the
+  /// card would send it, kept with the timing so that it survives the same
+  /// things the timing survives — leaving the screen, and the app being
+  /// killed. It is spent with the session: written up or discarded, together.
+  Map<String, dynamic> draft = {};
+
   bool get isRunning => runningPhase != null;
+
+  /// Whether anything has been put on the card yet.
+  bool get hasDraft => draft.isNotEmpty;
 
   int secondsFor(String phase) {
     final banked = elapsed[phase] ?? 0;
@@ -78,6 +93,7 @@ class GroomTimerSession {
         'manual': manual.toList(),
         'runningPhase': runningPhase,
         'runningSince': runningSince?.toIso8601String(),
+        if (draft.isNotEmpty) 'draft': draft,
       };
 
   /// Null when the blob has no usable dog in it.
@@ -98,6 +114,9 @@ class GroomTimerSession {
         .addAll(((data['manual'] as List?) ?? const []).map((e) => e.toString()));
     session.runningPhase = data['runningPhase']?.toString();
     session.runningSince = DateTime.tryParse(data['runningSince']?.toString() ?? '');
+    if (data['draft'] is Map) {
+      session.draft = Map<String, dynamic>.from(data['draft'] as Map);
+    }
     if (session.runningPhase == null || session.runningSince == null) {
       // Half a record is no record — a phase without its start stamp would
       // count from zero and read as though it had only just begun.
@@ -273,20 +292,44 @@ class GroomTimerService extends ChangeNotifier {
     _syncTicker();
     _persist();
     notifyListeners();
-    return [
-      for (final phase in models.PhaseTiming.phaseOrder)
-        if ((session.elapsed[phase] ?? 0) > 0)
-          models.PhaseTiming(
-            phase: phase,
-            durationSeconds: session.elapsed[phase]!,
-            enteredManually: session.manual.contains(phase),
-          ),
-    ];
+    return _timingsOf(session);
+  }
+
+  /// The same phases as they stand this second, **without stopping
+  /// anything**. For a card being filled in mid-groom, which shows the time
+  /// so far and must not pause the phase Jess is in the middle of.
+  List<models.PhaseTiming> timingsSnapshot(int dogId) {
+    final session = sessionFor(dogId);
+    if (session == null) return const [];
+    return _timingsOf(session);
+  }
+
+  List<models.PhaseTiming> _timingsOf(GroomTimerSession session) => [
+        for (final phase in models.PhaseTiming.phaseOrder)
+          if (session.secondsFor(phase) > 0)
+            models.PhaseTiming(
+              phase: phase,
+              durationSeconds: session.secondsFor(phase),
+              enteredManually: session.manual.contains(phase),
+            ),
+      ];
+
+  /// Keep the groom card as it stands for [dogId] — see
+  /// [GroomTimerSession.draft]. Called on every change to the card, so the
+  /// write to disk is coalesced rather than made per keystroke.
+  void setDraft(int dogId, Map<String, dynamic> draft) {
+    final session = sessionFor(dogId);
+    if (session == null) return;
+    session.draft = Map<String, dynamic>.from(draft);
+    _persistSoon();
+    notifyListeners();
   }
 
   /// Throw one dog's session away — after saving it, or when Jess says so.
   /// Every other dog's clock is untouched.
   Future<void> clearSession(int dogId) async {
+    _pendingPersist?.cancel();
+    _pendingPersist = null;
     _sessions.removeWhere((session) => session.dogId == dogId);
     _syncTicker();
     if (_sessions.isEmpty) {
@@ -304,6 +347,7 @@ class GroomTimerService extends ChangeNotifier {
   @override
   void dispose() {
     _ticker?.cancel();
+    _pendingPersist?.cancel();
     super.dispose();
   }
 
@@ -320,6 +364,20 @@ class GroomTimerService extends ChangeNotifier {
   }
 
   // ── Disk ─────────────────────────────────────────────────────────────
+
+  Timer? _pendingPersist;
+
+  /// A write shortly, folding a burst of changes into one. Typing on the
+  /// groom card changes the draft on every keystroke, and a keystore write
+  /// per letter is more than the keystore deserves. Anything that persists
+  /// directly in the meantime carries the draft with it anyway.
+  void _persistSoon() {
+    _pendingPersist?.cancel();
+    _pendingPersist = Timer(const Duration(milliseconds: 300), () {
+      _pendingPersist = null;
+      _persist();
+    });
+  }
 
   Future<void> _persist() async {
     if (_sessions.isEmpty) return;

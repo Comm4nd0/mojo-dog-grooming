@@ -322,4 +322,71 @@ void main() {
       expect(timer.sessionFor(4)!.appointmentId, 88);
     });
   });
+
+  group('The groom card filled in as you go', () {
+    // Jess: "is there a way that I can 'fill out the groom card' whilst doing
+    // the groom, so bits found in health check I remember to put on". The
+    // card's draft lives on the dog's session, so it survives everything the
+    // timing survives and is spent with it.
+
+    test('reading the phases for the card stops nothing', () async {
+      final timer = await service();
+      timer.openFor(dogId: 1, dogName: 'Teddy');
+      timer.setMinutes(1, 'PREP', 10);
+      timer.toggle(1, 'CLIP');
+
+      final phases = timer.timingsSnapshot(1);
+      // Clip is still running — opening the card mid-clip must not pause it.
+      expect(timer.sessionFor(1)!.runningPhase, 'CLIP');
+      expect(phases.map((p) => p.phase), ['PREP']);
+
+      // Settling for the save is what banks it.
+      final settled = timer.timingsNow(1);
+      expect(timer.sessionFor(1)!.isRunning, isFalse);
+      expect(settled.map((p) => p.phase), contains('PREP'));
+    });
+
+    test('the draft is kept per dog and survives a restart', () async {
+      final first = await service();
+      first.openFor(dogId: 1, dogName: 'Teddy');
+      first.openFor(dogId: 2, dogName: 'Bunny');
+      first.setMinutes(1, 'PREP', 10);
+      first.setDraft(1, {
+        'health_check_done': true,
+        'health_check_notes': 'Small lump on the left hip',
+        'equipment_used': [3, 4],
+      });
+      expect(first.sessionFor(1)!.hasDraft, isTrue);
+      expect(first.sessionFor(2)!.hasDraft, isFalse);
+
+      // Writes from typing are coalesced; give the pending one time to land.
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+
+      final second = await service();
+      final draft = second.sessionFor(1)!.draft;
+      expect(draft['health_check_done'], isTrue);
+      expect(draft['health_check_notes'], 'Small lump on the left hip');
+      expect(draft['equipment_used'], [3, 4]);
+      expect(second.sessionFor(2)!.hasDraft, isFalse);
+    });
+
+    test('a draft is spent with its session and only its session', () async {
+      final timer = await service();
+      timer.openFor(dogId: 1, dogName: 'Teddy');
+      timer.openFor(dogId: 2, dogName: 'Bunny');
+      timer.setDraft(1, {'notes': 'Teddy'});
+      timer.setDraft(2, {'notes': 'Bunny'});
+
+      await timer.clearSession(1);
+      expect(timer.sessionFor(1), isNull);
+      expect(timer.sessionFor(2)!.draft['notes'], 'Bunny');
+    });
+
+    test('a draft for a dog not on the timer goes nowhere', () async {
+      final timer = await service();
+      timer.setDraft(9, {'notes': 'nobody'});
+      expect(timer.sessionFor(9), isNull);
+      expect(stored.containsKey('mojo_groom_timer'), isFalse);
+    });
+  });
 }

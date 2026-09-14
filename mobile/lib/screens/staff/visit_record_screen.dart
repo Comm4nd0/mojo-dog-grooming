@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 
 import '../../constants/app_colors.dart';
@@ -22,6 +24,14 @@ import '../../widgets/temperament_picker.dart';
 /// **owner-visible** through the groom report — Jess: *"The owner should be
 /// able to see this"*. The card says so beside each of them, because she is
 /// writing with a reader now and the boundary should never be a surprise.
+///
+/// **It can be filled in while the groom is still on the clock.** Jess:
+/// *"is there a way that I can 'fill out the groom card' whilst doing the
+/// groom, so bits found in health check I remember to put on"*. Opened off
+/// the timer with a [LiveGroom], every change goes straight back to the
+/// timer's draft, so backing out keeps it and the app being killed keeps it;
+/// the phases shown are the time so far and nothing on the clock is paused
+/// by opening this. Saving from here is what finishes the groom.
 class VisitRecordScreen extends StatefulWidget {
   const VisitRecordScreen({
     super.key,
@@ -30,7 +40,7 @@ class VisitRecordScreen extends StatefulWidget {
     this.visitType = VisitType.groom,
     this.session,
     this.appointmentId,
-    this.timings = const [],
+    this.liveGroom,
   });
 
   final int dogId;
@@ -45,13 +55,39 @@ class VisitRecordScreen extends StatefulWidget {
   /// An existing record to edit. Null means this is a new one.
   final GroomSession? session;
 
-  /// Only used when creating: the appointment and phase timings the record
-  /// belongs to, handed over by the timer screen.
+  /// Only used when creating: the booking the record belongs to, handed
+  /// over by the timer screen.
   final int? appointmentId;
-  final List<PhaseTiming> timings;
+
+  /// The groom this card is for, when it is still being timed. Null for a
+  /// card added by hand or one being looked at again.
+  final LiveGroom? liveGroom;
 
   @override
   State<VisitRecordScreen> createState() => _VisitRecordScreenState();
+}
+
+/// A groom on the clock, as the record card sees it.
+///
+/// The card knows nothing about the timer service; this is the seam. The
+/// phases come as two readings because they differ in what they do: [phases]
+/// is the time so far and stops nothing, [settle] banks whatever is running
+/// and is what the saved record carries. [record] is the card as Jess left
+/// it last time, and [onRecordChanged] is where every change goes.
+class LiveGroom {
+  const LiveGroom({
+    required this.phases,
+    required this.settle,
+    required this.isRunning,
+    required this.record,
+    required this.onRecordChanged,
+  });
+
+  final List<PhaseTiming> Function() phases;
+  final List<PhaseTiming> Function() settle;
+  final bool Function() isRunning;
+  final Map<String, dynamic> record;
+  final ValueChanged<Map<String, dynamic>> onRecordChanged;
 }
 
 class _VisitRecordScreenState extends State<VisitRecordScreen> {
@@ -100,13 +136,15 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
   bool _busy = false;
 
   bool get _isEditing => widget.session != null;
+  bool get _onTheClock => widget.liveGroom != null;
 
-  /// The phases behind this record — handed over by the timer when the card is
-  /// being written up, read off the saved session when it is being looked at
+  /// The phases behind this record — the time so far when the groom is still
+  /// being timed, read off the saved session when it is being looked at
   /// again. Either way they were saved and never shown, which is the whole of
   /// Jess's *"it doesn't come up with the individual times for the groom"*.
-  List<PhaseTiming> get _timings =>
-      _isEditing ? widget.session!.timingsInOrder : widget.timings;
+  List<PhaseTiming> get _timings => _isEditing
+      ? widget.session!.timingsInOrder
+      : widget.liveGroom?.phases() ?? const [];
 
   int get _timedSeconds =>
       _timings.fold(0, (sum, timing) => sum + timing.durationSeconds);
@@ -171,16 +209,101 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
     _temperament = session?.temperamentObserved ?? '';
     _equipmentIds = {for (final item in session?.equipmentUsed ?? const []) item.id};
 
+    final live = widget.liveGroom;
+    if (live != null) {
+      _applyRecord(live.record);
+      // After the prefill, so reading the draft back does not count as
+      // changing it. Chips and checkboxes go through [setState] below; the
+      // text fields do not, so they report themselves.
+      _lastSent = jsonEncode(_record);
+      for (final controller in _controllers) {
+        controller.addListener(_recordChanged);
+      }
+    }
+
     _loadReferenceData();
+  }
+
+  List<TextEditingController> get _controllers => [
+        _recordedMinutes, _healthCheck, _mattingNotes, _bathing, _drying,
+        _finalBody, _finalFeet, _finalTail, _finalFace, _notes, _sensitive,
+        _checklistNotes,
+      ];
+
+  /// Every change on a card that is still on the clock goes back to the
+  /// timer's draft. Overridden rather than wired into each of the forty-odd
+  /// `setState` calls below, which would leave the next one to be forgotten.
+  @override
+  void setState(VoidCallback fn) {
+    super.setState(fn);
+    _recordChanged();
+  }
+
+  /// The record as last handed to the timer, so a rebuild that changed
+  /// nothing on the card — the reference lists arriving, a busy flag — is
+  /// not reported as a change to it.
+  String? _lastSent;
+
+  void _recordChanged() {
+    final live = widget.liveGroom;
+    if (live == null) return;
+    final record = _record;
+    final encoded = jsonEncode(record);
+    if (encoded == _lastSent) return;
+    _lastSent = encoded;
+    live.onRecordChanged(record);
+  }
+
+  /// Read a draft back into the form — the inverse of [_record], and as
+  /// forgiving as the persisted blob needs it to be: a value that is not the
+  /// type it should be reads as not answered, never as an answer.
+  void _applyRecord(Map<String, dynamic> record) {
+    String text(String key) => record[key]?.toString() ?? '';
+    bool? tri(String key) => record[key] is bool ? record[key] as bool : null;
+    bool flag(String key) => record[key] == true;
+    void put(TextEditingController controller, String key) {
+      if (record.containsKey(key)) controller.text = text(key);
+    }
+
+    if (record['visit_type'] is String) _visitType = record['visit_type'] as String;
+    put(_recordedMinutes, 'recorded_minutes');
+    put(_notes, 'notes');
+    put(_sensitive, 'sensitive_notes');
+    put(_checklistNotes, 'checklist_notes');
+    put(_healthCheck, 'health_check_notes');
+    put(_mattingNotes, 'matting_notes');
+    put(_bathing, 'bathing_notes');
+    put(_drying, 'drying_notes');
+    put(_finalBody, 'final_body');
+    put(_finalFeet, 'final_feet');
+    put(_finalTail, 'final_tail');
+    put(_finalFace, 'final_face');
+    _temperament = text('temperament_observed');
+    _healthCheckDone = tri('health_check_done');
+    _nails = tri('nails_done');
+    _earsCleaned = tri('ears_cleaned');
+    _hygiene = tri('hygiene_area_done');
+    _feetClippedOut = tri('feet_clipped_out');
+    _bathed = tri('bathed');
+    _blowDried = tri('blow_dried');
+    _usualGroom = tri('usual_groom_done');
+    _bathedWellBehaved = tri('bathed_well_behaved');
+    _hvDryer = tri('high_velocity_dryer');
+    _fleas = flag('fleas_treated');
+    _ticks = flag('ticks_removed');
+    _mattingPaws = flag('matting_paws');
+    _mattingArmpits = flag('matting_armpits');
+    _mattingEars = flag('matting_ears');
+    _mattingElsewhere = flag('matting_elsewhere');
+    _equipmentIds = {
+      for (final id in (record['equipment_used'] as List?) ?? const [])
+        if (id is num) id.toInt(),
+    };
   }
 
   @override
   void dispose() {
-    for (final controller in [
-      _recordedMinutes, _healthCheck, _mattingNotes, _bathing, _drying,
-      _finalBody, _finalFeet, _finalTail, _finalFace, _notes, _sensitive,
-      _checklistNotes,
-    ]) {
+    for (final controller in _controllers) {
       controller.dispose();
     }
     super.dispose();
@@ -256,6 +379,11 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
       showSnack(context, 'Say whether this was nails, fleas or ticks.', isError: true);
       return;
     }
+    final live = widget.liveGroom;
+    if (live != null && live.isRunning() && !await _confirmStoppingTheClock()) {
+      return;
+    }
+    if (!mounted) return;
     setState(() => _busy = true);
     try {
       if (_isEditing) {
@@ -264,7 +392,9 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
         final session = await _data.createGroomSession(
           dogId: widget.dogId,
           appointmentId: widget.appointmentId,
-          timings: widget.timings,
+          // Banked now, not when the card was opened: the clock has been
+          // going the whole time this was being filled in.
+          timings: live?.settle() ?? const [],
           notes: _notes.text.trim(),
           record: _record,
         );
@@ -279,6 +409,34 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
       setState(() => _busy = false);
       showSnack(context, error.toString(), isError: true);
     }
+  }
+
+  /// Saving a card off a groom that is still being timed stops the clock,
+  /// and the button says so — but a phase that is actually running is worth
+  /// one more question, because the tap that meant "keep this" and the tap
+  /// that means "finish" are an inch apart.
+  Future<bool> _confirmStoppingTheClock() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Stop the clock?'),
+        content: Text(
+          '${widget.dogName} is still being timed. Saving files the visit '
+          'with the time so far and ends the timer.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('KEEP TIMING'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('FINISH & SAVE'),
+          ),
+        ],
+      ),
+    );
+    return confirmed == true;
   }
 
   /// One line of Jess's finishing checklist.
@@ -497,12 +655,38 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
                 Text(widget.dogName, style: AppColors.display(22)),
                 const SizedBox(height: 16),
 
+                // The one thing that is different about a card opened
+                // mid-groom, said once at the top: nothing here is lost by
+                // leaving, and nothing is filed until she says finish.
+                if (_onTheClock) ...[
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    color: context.mojo.tintWash,
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(Icons.timer, size: 18, color: context.mojo.accent),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            'Still on the clock. Fill this in as you go — it '
+                            'is kept with the timer if you leave, and nothing '
+                            'is filed until you finish the groom.',
+                            style: TextStyle(fontSize: 12.5, color: context.mojo.accent),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                ],
+
                 // Asked only when nothing has answered it: a timed visit is a
                 // groom by construction, so a card opened off the timer never
                 // shows this. It matters because the server keeps nails visits
                 // out of the groom-time average — a nail trim filed as a groom
                 // would quietly shrink the dog's booking length.
-                if (_timings.isEmpty) ...[
+                if (_timings.isEmpty && !_onTheClock) ...[
                   DropdownButtonFormField<String>(
                     initialValue: _visitType,
                     decoration: const InputDecoration(labelText: 'What kind of visit'),
@@ -793,8 +977,27 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
                 const SizedBox(height: 28),
                 ElevatedButton(
                   onPressed: _busy ? null : _save,
-                  child: Text(_busy ? 'SAVING…' : 'SAVE RECORD'),
+                  child: Text(
+                    _busy
+                        ? 'SAVING…'
+                        : _onTheClock
+                            ? 'FINISH & SAVE RECORD'
+                            : 'SAVE RECORD',
+                  ),
                 ),
+                if (_onTheClock) ...[
+                  const SizedBox(height: 10),
+                  OutlinedButton(
+                    onPressed: _busy ? null : () => Navigator.of(context).pop(false),
+                    child: const Text('KEEP — BACK TO THE TIMER'),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Finishing stops the clock and files the visit with the '
+                    'time so far. Keeping leaves both exactly as they are.',
+                    style: TextStyle(fontSize: 12, color: context.mojo.muted),
+                  ),
+                ],
               ],
             )),
     );

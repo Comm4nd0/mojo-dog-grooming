@@ -1013,6 +1013,17 @@ changed under phones that may have a groom on the clock, and there is a test for
   moved things on threw an hour of timing away, so the honest answer was to back out — and then
   the timer said Teddy for good. The dialog now offers **WRITE UP TEDDY**, which hands that
   session to its own record card, and only clears the timer if the card was actually saved.
+- **The groom card opens at any point in the groom, and what is on it stays with the timer.**
+  Jess: *"is there a way that I can 'fill out the groom card' whilst doing the groom, so bits
+  found in health check I remember to put on"*. It used to open only once there was time on
+  the clock, and opening it settled the clock. `GroomTimerSession.draft` is the card's own
+  record map, persisted with the timing; `VisitRecordScreen` takes a `LiveGroom` — two
+  readings of the phases (`phases` stops nothing, `settle` banks) and a callback every change
+  goes through — and knows nothing about the service. Saving from the card finishes the
+  groom; the two SAVE buttons on the timer that skip the card carry the draft with them, so
+  skipping it never loses it. A card pushed identical content is not a change
+  (`_lastSent`), and drafts persist coalesced (`_persistSoon`) rather than per keystroke.
+  `test/groom_card_on_the_clock_test.dart` holds it.
 - Two places show a running timer, because a timer you can walk away from is one that gets
   left on: a bar above the tabs in `StaffShell`, and the dog profile's FAB, which reads
   `TIMING · 12:34`. The profile matters most — it is the screen she leaves the timer *for*,
@@ -1086,6 +1097,13 @@ diary is where the clash is visible, so the answer is one tap away there. Waitin
 gained "See it in the diary" buttons that push `CalendarScreen(initialDate:)`, which is why
 that screen takes an optional date at all: pushed it shows a back button and lands on the day
 in question; as a shell tab nothing passes one.
+
+**The booking form carries a paw to the dog's profile** — Jess: *"I thought there was a dog
+paw that I could click on individual bookings that took me to the dogs profile?"*. There was,
+as the trailing icon on the month view's list rows only; the day and week timelines open the
+form, which had no way through. A block on the time axis is too small for a second target
+(26dp at a nail trim, and long-press is the drag), so the paw sits in the form's app bar when
+editing, one tap on from any block rather than on it.
 
 **Booking a request in at a different time is its own row on that sheet**, not a trip through
 the edit form. Jess: *"when a request for a booking comes I want to be able to change the date

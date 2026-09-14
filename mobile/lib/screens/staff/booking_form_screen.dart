@@ -9,6 +9,7 @@ import '../../widgets/common.dart';
 import '../../widgets/duration_picker.dart';
 import '../../widgets/searchable_picker.dart';
 import '../../widgets/service_picker.dart';
+import 'dog_profile_screen.dart';
 
 /// Create or edit a booking.
 ///
@@ -545,6 +546,22 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
       appBar: AppBar(
         title: Text(_isEditing ? 'Edit booking' : 'New booking'),
         actions: [
+          // The paw Jess remembered — *"I thought there was a dog paw that I
+          // could click on individual bookings that took me to the dogs
+          // profile?"*. There was, on the month view's list, and the day and
+          // week views open here instead, where there was none. A block on
+          // the time axis is too small to carry a second target, so the
+          // profile is one tap on from it rather than on it.
+          if (_isEditing)
+            IconButton(
+              icon: const Icon(Icons.pets_outlined),
+              tooltip: 'Dog profile',
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => DogProfileScreen(dogId: widget.appointment!.dogId),
+                ),
+              ),
+            ),
           if (_isEditing)
             IconButton(icon: const Icon(Icons.delete_outline), onPressed: _delete),
         ],

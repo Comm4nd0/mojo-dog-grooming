@@ -129,22 +129,35 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
     _timer.setMinutes(widget.dogId, phase, int.tryParse(entered) ?? 0);
   }
 
-  /// Hand the timings to the record card rather than saving here, so the
-  /// session is created once with the whole groom written up — matting,
-  /// checklist, equipment and all.
-  Future<void> _writeUp() async {
-    final timings = _timer.timingsNow(widget.dogId);
-    if (timings.isEmpty) {
-      showSnack(context, 'No time recorded yet.', isError: true);
-      return;
-    }
+  /// The groom card, open at any point in the groom.
+  ///
+  /// Jess: *"is there a way that I can 'fill out the groom card' whilst doing
+  /// the groom, so bits found in health check I remember to put on"*. It used
+  /// to open only once the timer had something on it, and opening it settled
+  /// the clock — so a lump found in the health check had to be carried in her
+  /// head through the wash and the dry. Now the card reads the time so far
+  /// without pausing anything, every change goes back to this dog's session
+  /// as a draft (kept on disk with the timing), and saving from the card is
+  /// what finishes the groom: the session is created once with the whole
+  /// card on it — matting, checklist, equipment and all.
+  Future<void> _openCard() async {
+    // The session is opened once the restore has landed; a tap before then
+    // has nothing to draft against and the next one will.
+    final session = _session;
+    if (session == null) return;
     final saved = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
         builder: (_) => VisitRecordScreen(
           dogId: widget.dogId,
           dogName: widget.dogName,
-          appointmentId: _session?.appointmentId,
-          timings: timings,
+          appointmentId: session.appointmentId,
+          liveGroom: LiveGroom(
+            phases: () => _timer.timingsSnapshot(widget.dogId),
+            settle: () => _timer.timingsNow(widget.dogId),
+            isRunning: () => _timer.sessionFor(widget.dogId)?.isRunning ?? false,
+            record: Map<String, dynamic>.from(session.draft),
+            onRecordChanged: (record) => _timer.setDraft(widget.dogId, record),
+          ),
         ),
       ),
     );
@@ -169,6 +182,9 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
         dogId: widget.dogId,
         appointmentId: _session?.appointmentId,
         timings: timings,
+        // Whatever she has put on the card so far goes with it. These two
+        // buttons skip the card, and skipping it must not mean losing it.
+        record: _session?.draft ?? const {},
       );
       if (applyToDog) {
         await _data.applySessionToDog(session.id);
@@ -196,13 +212,15 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
   }
 
   Future<void> _discard() async {
+    final hasDraft = _session?.hasDraft ?? false;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Discard this timing?'),
         content: Text(
-          '${models.formatClock(_totalSeconds)} recorded for ${widget.dogName}, '
-          'and not saved to a visit record.',
+          '${models.formatClock(_totalSeconds)} recorded for ${widget.dogName}'
+          '${hasDraft ? ' and the groom card so far' : ''}'
+          ', and not saved to a visit record.',
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('KEEP')),
@@ -313,7 +331,27 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
                 ),
               ),
               for (final phase in models.PhaseTiming.phaseOrder) _phaseTile(phase),
-              const SizedBox(height: 28),
+              const SizedBox(height: 20),
+              // Above the save buttons, because it is used all the way
+              // through the groom and they are used once at the end.
+              OutlinedButton.icon(
+                onPressed: _busy || _session == null ? null : _openCard,
+                icon: const Icon(Icons.assignment_outlined, size: 18),
+                label: Text(
+                  (_session?.hasDraft ?? false)
+                      ? 'CARRY ON WITH THE GROOM CARD'
+                      : 'FILL IN THE GROOM CARD',
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(0, 6, 0, 22),
+                child: Text(
+                  'Fill it in as you go — anything found in the health check '
+                  'goes on it now, and it stays with the timer until the groom '
+                  'is written up. Saving from the card finishes the groom.',
+                  style: TextStyle(fontSize: 12, color: context.mojo.muted),
+                ),
+              ),
               ElevatedButton(
                 onPressed: _busy || totalMinutes == 0 ? null : () => _save(applyToDog: true),
                 child: Text(
@@ -332,12 +370,7 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
                 onPressed: _busy || totalMinutes == 0 ? null : () => _save(applyToDog: false),
                 child: const Text('SAVE WITHOUT CHANGING DEFAULT'),
               ),
-              const SizedBox(height: 10),
-              OutlinedButton(
-                onPressed: _busy || totalMinutes == 0 ? null : _writeUp,
-                child: const Text('WRITE UP THE GROOM CARD'),
-              ),
-              if (totalMinutes > 0) ...[
+              if (totalMinutes > 0 || (_session?.hasDraft ?? false)) ...[
                 const SizedBox(height: 10),
                 TextButton(
                   onPressed: _busy ? null : _discard,
