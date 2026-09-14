@@ -38,3 +38,5 @@ Getting back into your account no longer means starting again.
   the moment it's found rather than at the end.
 - Behind the counter, a dog can now be taken off the main list from its
   profile, or deleted outright.
+- Behind the counter, the dog form has a Save button at the top as well as the
+  bottom, so a one-line change doesn't mean scrolling the whole card.

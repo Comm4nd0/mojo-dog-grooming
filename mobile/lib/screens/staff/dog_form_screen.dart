@@ -330,7 +330,21 @@ class _DogFormScreenState extends State<DogFormScreen> {
 
     final breed = _selectedBreed;
     return Scaffold(
-      appBar: AppBar(title: Text(_isEditing ? 'Edit ${widget.dog!.name}' : 'Add dog')),
+      appBar: AppBar(
+        title: Text(_isEditing ? 'Edit ${widget.dog!.name}' : 'Add dog'),
+        // Jess: "can you add a save button to the top right of the screen
+        // too? it saves scrolling all the way to the bottom". The form is
+        // long by design — it is the whole paper card — so a one-field edit
+        // should not cost a scroll past the rest of it. Same action as the
+        // button at the foot; that one stays for whoever has just filled in
+        // the last field.
+        actions: [
+          TextButton(
+            onPressed: _busy ? null : _save,
+            child: Text(_busy ? 'SAVING…' : 'SAVE'),
+          ),
+        ],
+      ),
       body: PageBody(child: Form(
         key: _formKey,
         child: ListView(
