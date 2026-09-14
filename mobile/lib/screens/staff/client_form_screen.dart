@@ -109,7 +109,17 @@ class _ClientFormScreenState extends State<ClientFormScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(_isEditing ? 'Edit client' : 'Add client')),
+      appBar: AppBar(
+        title: Text(_isEditing ? 'Edit client' : 'Add client'),
+        // Same as the dog form: a one-field edit should not cost a scroll
+        // past the whole card. The button at the foot stays.
+        actions: [
+          TextButton(
+            onPressed: _busy ? null : _save,
+            child: Text(_busy ? 'SAVING…' : 'SAVE'),
+          ),
+        ],
+      ),
       body: PageBody(child: Form(
         key: _formKey,
         child: ListView(
