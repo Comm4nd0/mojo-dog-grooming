@@ -1107,7 +1107,11 @@ that nothing in the app called. The profile's overflow menu now offers **Remove 
 Doguments** (`is_active` off, one tap to undo, found again under "Show retired dogs") and
 **Delete for good**, which cascades bookings, visit records, photos, paperwork and problem
 areas — so the dialog names all of that and offers retiring instead. Retiring is the default
-answer for a dog that stopped coming; deleting is for one entered by mistake.
+answer for a dog that stopped coming; deleting is for one entered by mistake. **The
+`is_active` filter in `DogViewSet.get_queryset` applies to the list action only**: the
+profile, the photos action and the PATCH that puts a dog back all look it up through the same
+queryset, and filtering those too made every retired dog open to "Something went wrong" with no
+way back on.
 
 **The booking form carries a paw to the dog's profile** — Jess: *"I thought there was a dog
 paw that I could click on individual bookings that took me to the dogs profile?"*. There was,

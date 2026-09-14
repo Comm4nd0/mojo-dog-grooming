@@ -4338,6 +4338,23 @@ class DogumentsSearchTests(BaseAPITestCase):
         self.assertEqual(self.staff_client.get('/api/dogs/').data['count'], 1)
         self.assertEqual(self.staff_client.get('/api/dogs/?include_inactive=1').data['count'], 2)
 
+    def test_a_retired_dog_still_opens_and_can_be_put_back(self):
+        # Jess, off the TestFlight build: tapping a retired dog under "Show
+        # retired dogs" gave "Something went wrong". The list filter was
+        # applied to the detail lookup too, so the profile 404'd — and so did
+        # the PATCH that would have put the dog back, leaving no way out.
+        self.bob_dog.is_active = False
+        self.bob_dog.save()
+        url = f'/api/dogs/{self.bob_dog.id}/'
+        self.assertEqual(self.staff_client.get(url).status_code, 200)
+        self.assertEqual(self.staff_client.get(f'{url}photos/').status_code, 200)
+        response = self.staff_client.patch(url, {'is_active': True}, format='json')
+        self.assertEqual(response.status_code, 200)
+        self.bob_dog.refresh_from_db()
+        self.assertTrue(self.bob_dog.is_active)
+        # And a client's own retired dog is still theirs to read.
+        self.assertEqual(self.bob_client.get(url).status_code, 200)
+
 
 class ProblemAreaValidationTests(BaseAPITestCase):
     def test_valid_cells_are_normalised(self):

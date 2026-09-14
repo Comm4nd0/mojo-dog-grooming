@@ -1003,7 +1003,15 @@ class DogViewSet(StaffWriteOnlyMixin, ClientScopedMixin, viewsets.ModelViewSet):
         if client_id:
             queryset = queryset.filter(client_id=client_id)
 
-        if self.request.query_params.get('include_inactive') not in ('1', 'true', 'True'):
+        # The list only. Retiring a dog takes it off Doguments, not out of
+        # reach: its profile, its photos and the PATCH that puts it back all
+        # look the dog up by id through this same queryset, and filtering
+        # them too is what made "Show retired dogs" open every retired dog to
+        # "Something went wrong" — a 404 on a row the list had just shown.
+        if (
+            self.action == 'list'
+            and self.request.query_params.get('include_inactive') not in ('1', 'true', 'True')
+        ):
             queryset = queryset.filter(is_active=True)
         return queryset
 
