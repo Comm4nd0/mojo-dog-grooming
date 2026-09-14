@@ -88,6 +88,7 @@ Future<void> _pumpProfile(WidgetTester tester) async {
 
 void main() {
   tearDown(getIt.reset);
+  _removeTests();
 
   group('a dog profile', () {
     testWidgets('gives the body a real height', (tester) async {
@@ -129,6 +130,90 @@ void main() {
       // gets null here because the serializer strips it.
       expect(find.text('Temperament'), findsOneWidget);
       expect(find.text('Visit records'), findsOneWidget);
+    });
+  });
+}
+
+/// Jess: *"there is no way to delete a dog"*. The Active switch was inside
+/// the edit form and the server's DELETE had no caller in the app.
+void _removeTests() {
+  group('taking a dog off the list', () {
+    tearDown(getIt.reset);
+
+    Future<List<http.Request>> pumpWithRequestLog(WidgetTester tester) async {
+      final log = <http.Request>[];
+      final mock = MockClient((request) async {
+        const asJson = {'content-type': 'application/json'};
+        log.add(request);
+        if (request.method == 'DELETE') {
+          return http.Response('', 204);
+        }
+        if (request.url.path.endsWith('/dogs/1/')) {
+          return http.Response(_dogJson, 200, headers: asJson);
+        }
+        return http.Response(_emptyPage, 200, headers: asJson);
+      });
+      tester.view.physicalSize = const Size(1000, 3000);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      final api = ApiClient(baseUrl: 'http://test/api', httpClient: mock);
+      getIt.registerSingleton<ApiClient>(api);
+      getIt.registerSingleton<AuthService>(_StaffAuth(api));
+      getIt.registerSingleton<DataService>(DataService(api));
+      getIt.registerSingleton<GroomTimerService>(GroomTimerService());
+      await tester.pumpWidget(MaterialApp(
+        theme: AppColors.lightTheme(),
+        home: const DogProfileScreen(dogId: 1),
+      ));
+      await tester.pumpAndSettle();
+      return log;
+    }
+
+    testWidgets('offers both ways off the list, and says what each keeps',
+        (tester) async {
+      await pumpWithRequestLog(tester);
+      await tester.tap(find.byTooltip('More'));
+      await tester.pumpAndSettle();
+      expect(find.text('Remove from Doguments'), findsOneWidget);
+      expect(find.text('Delete for good'), findsOneWidget);
+      expect(find.textContaining('go with it'), findsOneWidget);
+    });
+
+    testWidgets('retiring is a PATCH of is_active and nothing else', (tester) async {
+      final log = await pumpWithRequestLog(tester);
+      await tester.tap(find.byTooltip('More'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Remove from Doguments'));
+      await tester.pumpAndSettle();
+
+      final patch = log.singleWhere((r) => r.method == 'PATCH');
+      expect(patch.url.path, endsWith('/dogs/1/'));
+      expect(jsonDecode(patch.body), {'is_active': false});
+      expect(log.where((r) => r.method == 'DELETE'), isEmpty);
+    });
+
+    testWidgets('deleting asks first, names the dog, and offers retiring instead',
+        (tester) async {
+      final log = await pumpWithRequestLog(tester);
+      await tester.tap(find.byTooltip('More'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Delete for good'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Delete Biscuit for good?'), findsOneWidget);
+      expect(find.textContaining('keeps the history'), findsOneWidget);
+      await tester.tap(find.text('KEEP'));
+      await tester.pumpAndSettle();
+      expect(log.where((r) => r.method == 'DELETE'), isEmpty);
+
+      await tester.tap(find.byTooltip('More'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Delete for good'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('DELETE FOR GOOD'));
+      await tester.pumpAndSettle();
+      final delete = log.singleWhere((r) => r.method == 'DELETE');
+      expect(delete.url.path, endsWith('/dogs/1/'));
     });
   });
 }

@@ -1098,6 +1098,14 @@ gained "See it in the diary" buttons that push `CalendarScreen(initialDate:)`, w
 that screen takes an optional date at all: pushed it shows a back button and lands on the day
 in question; as a shell tab nothing passes one.
 
+**A dog leaves the list from its profile, two ways.** Jess: *"there is no way to delete a
+dog"*. There was an Active switch inside the edit form and a `DELETE` the server accepted
+that nothing in the app called. The profile's overflow menu now offers **Remove from
+Doguments** (`is_active` off, one tap to undo, found again under "Show retired dogs") and
+**Delete for good**, which cascades bookings, visit records, photos, paperwork and problem
+areas — so the dialog names all of that and offers retiring instead. Retiring is the default
+answer for a dog that stopped coming; deleting is for one entered by mistake.
+
 **The booking form carries a paw to the dog's profile** — Jess: *"I thought there was a dog
 paw that I could click on individual bookings that took me to the dogs profile?"*. There was,
 as the trailing icon on the month view's list rows only; the day and week timelines open the

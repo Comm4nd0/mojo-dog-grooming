@@ -169,7 +169,7 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
       appBar: AppBar(
         title: Text(dog?.name ?? 'Dog'),
         actions: [
-          if (_isStaff && dog != null)
+          if (_isStaff && dog != null) ...[
             IconButton(
               icon: const Icon(Icons.edit_outlined),
               tooltip: 'Edit',
@@ -180,6 +180,51 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
                 if (saved == true) _load();
               },
             ),
+            // Jess: "there is no way to delete a dog". There was an Active
+            // switch inside the edit form and a DELETE the server accepted
+            // that nothing in the app called. Two ways off the list, both
+            // here where the dog is: retiring keeps everything and is one
+            // tap to undo; deleting is for a dog entered by mistake, and
+            // takes its whole history with it, so the dialog says what.
+            PopupMenuButton<_DogAction>(
+              tooltip: 'More',
+              onSelected: (action) => switch (action) {
+                _DogAction.retire => _setActive(dog, false),
+                _DogAction.restore => _setActive(dog, true),
+                _DogAction.delete => _deleteDog(dog),
+              },
+              itemBuilder: (context) => [
+                PopupMenuItem(
+                  value: dog.isActive ? _DogAction.retire : _DogAction.restore,
+                  child: ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(
+                      dog.isActive ? Icons.visibility_off_outlined : Icons.visibility_outlined,
+                    ),
+                    title: Text(dog.isActive ? 'Remove from Doguments' : 'Put back on Doguments'),
+                    subtitle: Text(
+                      dog.isActive
+                          ? 'Keeps everything. Found again under "Show retired dogs".'
+                          : 'Back on the main list.',
+                      style: const TextStyle(fontSize: 11.5),
+                    ),
+                  ),
+                ),
+                PopupMenuItem(
+                  value: _DogAction.delete,
+                  child: ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.delete_outline, color: AppColors.error),
+                    title: const Text('Delete for good', style: TextStyle(color: AppColors.error)),
+                    subtitle: const Text(
+                      'Bookings, visit records, photos and paperwork go with it.',
+                      style: TextStyle(fontSize: 11.5),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
         ],
       ),
       // The notes are on this screen, and the timer is what Jess leaves to
@@ -859,6 +904,66 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
     return _DocumentDetails(title: text, kind: kind, visibleToClient: visible);
   }
 
+  /// Retire a dog from the list, or put one back. Nothing is lost either
+  /// way: the profile stays reachable through Doguments' "Show retired dogs".
+  Future<void> _setActive(Dog dog, bool active) async {
+    try {
+      await _data.updateDog(dog.id, {'is_active': active});
+    } catch (error) {
+      if (mounted) showSnack(context, error.toString(), isError: true);
+      return;
+    }
+    if (!mounted) return;
+    showSnack(
+      context,
+      active
+          ? '${dog.name} is back on Doguments.'
+          : '${dog.name} removed from Doguments. Still here under "Show retired dogs".',
+    );
+    _load();
+  }
+
+  /// The permanent one. The server cascades — every booking, visit record,
+  /// photo, document and problem area on this dog goes with it — so the
+  /// dialog names all of that, and the dog, and offers retiring instead.
+  Future<void> _deleteDog(Dog dog) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Delete ${dog.name} for good?'),
+        content: Text(
+          "Every booking, visit record, photo and piece of paperwork for "
+          "${dog.name} goes with it. This cannot be undone.\n\n"
+          'If ${dog.name} has just stopped coming, "Remove from Doguments" '
+          'keeps the history.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('KEEP'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            style: TextButton.styleFrom(foregroundColor: AppColors.error),
+            child: const Text('DELETE FOR GOOD'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    // Held before the pop: the snack belongs to the screen underneath.
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await _data.deleteDog(dog.id);
+    } catch (error) {
+      if (mounted) showSnack(context, error.toString(), isError: true);
+      return;
+    }
+    if (!mounted) return;
+    messenger.showSnackBar(SnackBar(content: Text('${dog.name} deleted.')));
+    Navigator.of(context).pop(true);
+  }
+
   Future<void> _deleteDocument(DogDocument document) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -1195,3 +1300,6 @@ class _DocumentDetails {
     required this.visibleToClient,
   });
 }
+
+/// What the profile's overflow menu can do to the dog.
+enum _DogAction { retire, restore, delete }

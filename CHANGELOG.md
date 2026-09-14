@@ -36,3 +36,5 @@ Getting back into your account no longer means starting again.
 - Behind the counter, the groom card can now be filled in while the groom is
   still being timed, so anything found in the health check goes on the record
   the moment it's found rather than at the end.
+- Behind the counter, a dog can now be taken off the main list from its
+  profile, or deleted outright.
