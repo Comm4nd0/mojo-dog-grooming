@@ -1025,9 +1025,12 @@ changed under phones that may have a groom on the clock, and there is a test for
   (`_lastSent`), and drafts persist coalesced (`_persistSoon`) rather than per keystroke.
   `test/groom_card_on_the_clock_test.dart` holds it.
 - Two places show a running timer, because a timer you can walk away from is one that gets
-  left on: a bar above the tabs in `StaffShell`, and the dog profile's FAB, which reads
-  `TIMING · 12:34`. The profile matters most — it is the screen she leaves the timer *for*,
-  and a pushed route sits over the shell.
+  left on: a bar above the tabs in `StaffShell`, and the timer button in the dog profile's
+  book bar, which fills bright green and reads `TIMING · 12:34`. It was a floating button
+  until Jess asked for it *"at the bottom next to book a groom"*; the bar's two labels sit in
+  a `FittedBox` so a running clock fits an iPhone SE beside BOOK A GROOM rather than
+  clipping. The profile matters most — it is the screen she leaves the timer *for*, and a
+  pushed route sits over the shell.
 
 ## The diary is a time axis, not a list
 

@@ -47,7 +47,7 @@ const _dogJson = r'''
 
 const _emptyPage = '{"count":0,"next":null,"previous":null,"results":[]}';
 
-Future<void> _pumpProfile(WidgetTester tester) async {
+Future<void> _pumpProfile(WidgetTester tester, {Size size = const Size(1000, 3000)}) async {
   final mock = MockClient((request) async {
     const asJson = {'content-type': 'application/json'};
     if (request.url.path.endsWith('/dogs/1/')) {
@@ -66,7 +66,7 @@ Future<void> _pumpProfile(WidgetTester tester) async {
   // Tall enough for the whole profile to lay out. A ListView only builds what
   // is near the viewport, so on a stock 600pt surface the lower sections are
   // legitimately absent and asserting on them would be testing the fold.
-  tester.view.physicalSize = const Size(1000, 3000);
+  tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.reset);
 
@@ -112,6 +112,30 @@ void main() {
       );
       expect(bar.size.height, lessThan(200),
           reason: 'the book bar should be a bar, not the whole screen');
+    });
+
+    testWidgets('books and times from the same bar, even on a narrow phone',
+        (tester) async {
+      // Jess: "can you move Time a groom to the bottom next to book a groom?"
+      // Two labelled buttons across an iPhone SE, one of them carrying a
+      // running clock — the width where a fixed label would overflow.
+      await _pumpProfile(tester, size: const Size(375, 3000));
+      final timer = getIt<GroomTimerService>();
+      timer.openFor(dogId: 1, dogName: 'Biscuit');
+      timer.setMinutes(1, 'CLIP', 83);
+      await tester.pump();
+
+      expect(find.text('BOOK A GROOM'), findsOneWidget);
+      expect(find.text('TIMING · 1:23:00'), findsOneWidget);
+      expect(find.byType(FloatingActionButton), findsNothing);
+      expect(tester.takeException(), isNull, reason: 'the bar overflowed');
+
+      final bar = find.ancestor(of: find.text('BOOK A GROOM'), matching: find.byType(SafeArea));
+      expect(
+        find.descendant(of: bar, matching: find.text('TIMING · 1:23:00')),
+        findsOneWidget,
+        reason: 'the timer button should be in the book bar',
+      );
     });
 
     testWidgets('shows the dog, not just the book button', (tester) async {

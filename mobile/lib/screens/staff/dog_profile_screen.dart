@@ -227,39 +227,13 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
           ],
         ],
       ),
-      // The notes are on this screen, and the timer is what Jess leaves to
-      // read them — so the button says what the clock is on, not just "time a
-      // groom". Without it the only sign a timer is still going is the tab bar
-      // she can't see from a pushed route.
-      floatingActionButton: (_isStaff && dog != null)
-          ? ListenableBuilder(
-              listenable: _timer,
-              builder: (context, _) {
-                // This dog's own clock, not whichever dog happens to be
-                // running — the service holds one session per dog now.
-                final session = _timer.sessionFor(dog.id);
-                final timing = session != null && session.hasTime;
-                return FloatingActionButton.extended(
-                  onPressed: () async {
-                    await Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => GroomTimerScreen.forDog(dog)),
-                    );
-                    if (mounted) _load();
-                  },
-                  icon: Icon(timing ? Icons.timer : Icons.timer_outlined),
-                  label: Text(
-                    timing
-                        ? 'TIMING · ${formatClock(session.totalSeconds)}'
-                        : 'TIME A GROOM',
-                  ),
-                );
-              },
-            )
-          : null,
-      // Bottom-left, so it doesn't fight the timer FAB on the right. Booking
-      // the next groom is the thing Jess reaches for straight off a dog's
-      // profile, and it used to mean backing out to the diary and searching
-      // for the dog again.
+      // Booking the next groom and timing this one sit together along the
+      // foot of the page — Jess: *"can you move Time a groom to the bottom
+      // next to book a groom?"*. The timer was a floating button over the
+      // bottom-right, which is where it fought the bar and covered the last
+      // line of whatever section was open. Booking is the thing she reaches
+      // for straight off a dog's profile, and it used to mean backing out to
+      // the diary and searching for the dog again.
       //
       // A client gets the suggestion bar in the same spot instead — their
       // side of "can the owner have an option to suggest changes / update
@@ -311,7 +285,7 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
           border: Border(top: BorderSide(color: context.mojo.hairline)),
           color: Theme.of(context).colorScheme.surface,
         ),
-        padding: const EdgeInsets.fromLTRB(16, 8, 180, 8),
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
         // A Row, not an Align. `Align` without a heightFactor expands to its
         // incoming constraints, and Scaffold measures bottomNavigationBar with
         // the whole screen height available — so the bar grew to fill the
@@ -319,29 +293,82 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
         // details vanished, silently: no exception, no overflow stripe, just
         // this button and an empty page. A Row takes its height from its child.
         //
-        // PageBody so the button sits under the profile's own column on a
-        // tablet rather than in the far corner of the screen.
+        // PageBody so the buttons sit under the profile's own column on a
+        // tablet rather than in the far corners of the screen.
         child: PageBody(child: Row(
           children: [
-            OutlinedButton.icon(
-              icon: const Icon(Icons.event_available_outlined, size: 18),
-              label: const Text('BOOK A GROOM'),
-              onPressed: () async {
-                final saved = await Navigator.of(context).push<bool>(
-                  MaterialPageRoute(
-                    builder: (_) => BookingFormScreen(
-                      initialDate: DateTime.now(),
-                      initialDogId: dog.id,
+            Expanded(
+              child: OutlinedButton(
+                onPressed: () async {
+                  final saved = await Navigator.of(context).push<bool>(
+                    MaterialPageRoute(
+                      builder: (_) => BookingFormScreen(
+                        initialDate: DateTime.now(),
+                        initialDogId: dog.id,
+                      ),
                     ),
-                  ),
-                );
-                if (saved == true && mounted) {
-                  showSnack(context, 'Booked in.');
-                }
-              },
+                  );
+                  if (saved == true && mounted) {
+                    showSnack(context, 'Booked in.');
+                  }
+                },
+                child: _barLabel(Icons.event_available_outlined, 'BOOK A GROOM'),
+              ),
             ),
+            const SizedBox(width: 8),
+            Expanded(child: _timerButton(dog)),
           ],
         )),
+      ),
+    );
+  }
+
+  /// The timer's half of the bar. It says what the clock is on rather than
+  /// just "time a groom" — the notes are on this screen and the timer is what
+  /// Jess leaves to read them, so a running clock has to be visible from
+  /// here, and it fills in bright green when it is.
+  Widget _timerButton(Dog dog) {
+    return ListenableBuilder(
+      listenable: _timer,
+      builder: (context, _) {
+        // This dog's own clock, not whichever dog happens to be running —
+        // the service holds one session per dog.
+        final session = _timer.sessionFor(dog.id);
+        final timing = session != null && session.hasTime;
+        Future<void> open() async {
+          await Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => GroomTimerScreen.forDog(dog)),
+          );
+          if (mounted) _load();
+        }
+
+        if (timing) {
+          return ElevatedButton(
+            onPressed: open,
+            child: _barLabel(Icons.timer, 'TIMING · ${formatClock(session.totalSeconds)}'),
+          );
+        }
+        return OutlinedButton(
+          onPressed: open,
+          child: _barLabel(Icons.timer_outlined, 'TIME A GROOM'),
+        );
+      },
+    );
+  }
+
+  /// Icon and label, shrunk together rather than wrapped or clipped when two
+  /// of them share a phone's width — a clock reading "TIMING · 1:23" cut to
+  /// "TIMING · 1…" is worse than a slightly smaller one.
+  Widget _barLabel(IconData icon, String text) {
+    return FittedBox(
+      fit: BoxFit.scaleDown,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 18),
+          const SizedBox(width: 8),
+          Text(text),
+        ],
       ),
     );
   }

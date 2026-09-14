@@ -40,3 +40,5 @@ Getting back into your account no longer means starting again.
   profile, or deleted outright.
 - Behind the counter, the dog form has a Save button at the top as well as the
   bottom, so a one-line change doesn't mean scrolling the whole card.
+- Behind the counter, Time a groom sits at the foot of the dog's profile next
+  to Book a groom, instead of floating over the page.
