@@ -5,6 +5,7 @@ import '../services/api_client.dart';
 import '../services/auth_service.dart';
 import '../services/service_locator.dart';
 import '../widgets/biometric_toggle.dart';
+import '../widgets/google_connect_tile.dart';
 import 'login_screen.dart';
 
 /// The accounts remembered on this device, with a tap to switch between them.
@@ -94,6 +95,9 @@ class _AccountSwitcherSheetState extends State<_AccountSwitcherSheet> {
           // Both shells open this sheet, which makes it the one place a client
           // and Jess can both reach — clients have no settings screen.
           const BiometricToggle(),
+          // Where an existing client connects Google — the login screen will
+          // not link a Google account to a login on an email match.
+          const GoogleConnectTile(),
           ListTile(
             leading: Icon(Icons.add, color: context.mojo.accent),
             title: const Text('Add another account'),

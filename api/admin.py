@@ -1,6 +1,7 @@
 from django.contrib import admin
 
 from .models import (
+    GoogleIdentity,
     AppSettings,
     Appointment,
     BlockedTime,
@@ -49,6 +50,22 @@ class ConsentInline(admin.TabularInline):
     can_delete = False
 
     def has_add_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(GoogleIdentity)
+class GoogleIdentityAdmin(admin.ModelAdmin):
+    """Which logins can sign in with Google. Delete a row to cut that way in.
+
+    Read-only otherwise: the subject is Google's ID for the person and typing
+    one in by hand would link an account to whoever it happened to belong to.
+    """
+
+    list_display = ('email', 'user', 'created_at', 'last_used_at')
+    search_fields = ('email', 'user__username')
+    readonly_fields = ('user', 'subject', 'email', 'created_at', 'last_used_at')
+
+    def has_add_permission(self, request):
         return False
 
 

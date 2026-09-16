@@ -36,7 +36,9 @@ void main() {
     final api = ApiClient(
       baseUrl: 'https://example.test/api',
       httpClient: MockClient((request) async {
-        postedPaths.add(request.url.path);
+        // Sends only. Opening the login screen reads whether Google sign-in
+        // is switched on, and that read is not a submission.
+        if (request.method != 'GET') postedPaths.add(request.url.path);
         if (request.body.isNotEmpty) {
           lastBody = jsonDecode(request.body) as Map<String, dynamic>;
         }

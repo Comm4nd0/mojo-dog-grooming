@@ -4,6 +4,7 @@ import '../constants/app_colors.dart';
 import '../services/api_client.dart';
 import '../services/auth_service.dart';
 import '../services/biometric_service.dart';
+import '../services/google_sign_in_service.dart';
 import '../services/service_locator.dart';
 import '../widgets/common.dart';
 
@@ -38,10 +39,20 @@ class _LoginScreenState extends State<LoginScreen> {
 
   BiometricCapability _capability = const BiometricCapability.none();
 
+  /// Google's client ID when the server has Google switched on and this
+  /// platform may offer it; null hides the button entirely.
+  String? _googleClientId;
+
   @override
   void initState() {
     super.initState();
     _loadCapability();
+    _loadGoogle();
+  }
+
+  Future<void> _loadGoogle() async {
+    final id = await getIt<AuthService>().googleServerClientId();
+    if (mounted) setState(() => _googleClientId = id);
   }
 
   Future<void> _loadCapability() async {
@@ -97,6 +108,36 @@ class _LoginScreenState extends State<LoginScreen> {
       _formKey.currentState!.validate();
     } on NoConnectionException catch (error) {
       setState(() => _error = error.toString());
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// Sign in with Google — a new client gets a login made there and then.
+  ///
+  /// Backing out of Google's picker shows nothing: that is a change of mind,
+  /// not a failure. What the server refuses (an address that already has a
+  /// login, a staff login) comes back with its own wording about what to do,
+  /// and is shown as it is.
+  Future<void> _signInWithGoogle() async {
+    final clientId = _googleClientId;
+    if (clientId == null) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+      _fieldErrors = const {};
+    });
+    try {
+      final signedIn = await getIt<AuthService>().signInWithGoogle(clientId);
+      if (!signedIn || !mounted) return;
+      await _offerBiometrics();
+      if (widget.isAddingAccount && mounted) Navigator.of(context).pop();
+    } on ApiException catch (error) {
+      if (mounted) setState(() => _error = error.message);
+    } on NoConnectionException catch (error) {
+      if (mounted) setState(() => _error = error.toString());
+    } on GoogleSignInFailure catch (error) {
+      if (mounted) setState(() => _error = error.message);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -276,6 +317,18 @@ class _LoginScreenState extends State<LoginScreen> {
                             )
                           : Text(_registering ? 'CREATE ACCOUNT' : 'SIGN IN'),
                     ),
+                    if (_googleClientId != null) ...[
+                      const SizedBox(height: 12),
+                      // Offered on both halves of the form: for somebody new,
+                      // Google *is* creating an account, and hiding it until
+                      // they switch to "sign in" would hide it from exactly
+                      // the people it saves the most typing.
+                      OutlinedButton.icon(
+                        onPressed: _busy ? null : _signInWithGoogle,
+                        icon: const Icon(Icons.account_circle_outlined, size: 20),
+                        label: const Text('CONTINUE WITH GOOGLE'),
+                      ),
+                    ],
                     const SizedBox(height: 8),
                     TextButton(
                       onPressed: _busy

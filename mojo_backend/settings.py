@@ -211,6 +211,10 @@ REST_FRAMEWORK = {
         # row in front of Jess, so this is a nuisance vector as much as a
         # security one.
         'password_reset_request': '5/hour',
+        # Sign in with Google. Its own bucket rather than 'login': each attempt
+        # is a round trip to Google, and a household on one IP signing in with
+        # Google should not spend the password budget or be spent by it.
+        'google_login': '20/min',
     },
     # Honours ``?page_size=`` — DRF's own class does not, and the breed list
     # was capped at 100 rows because of it. See api/pagination.py.
@@ -233,6 +237,14 @@ DJOSER = {
         'user_create': 'api.serializers.MojoUserCreateSerializer',
     },
 }
+
+# ── Sign in with Google ────────────────────────────────────────────────
+# Off until the web client ID is set — the app asks the server whether to show
+# the button, so setting this is what turns it on, with no app rebuild. The web
+# client is the one the Android app requests tokens for; iOS tokens carry the
+# iOS client's own ID, which goes in the extras. See api/google_auth.py.
+GOOGLE_OAUTH_WEB_CLIENT_ID = os.getenv('GOOGLE_OAUTH_WEB_CLIENT_ID', '').strip()
+GOOGLE_OAUTH_EXTRA_CLIENT_IDS = env_list('GOOGLE_OAUTH_EXTRA_CLIENT_IDS')
 
 # ── CORS / CSRF ────────────────────────────────────────────────────────
 CORS_ALLOW_ALL_ORIGINS = env_bool('CORS_ALLOW_ALL_ORIGINS', DEBUG)

@@ -5957,3 +5957,193 @@ class PaginationTests(BaseAPITestCase):
         response = self.staff_client.get('/api/breeds/?page_size=1000000')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.data['results']), 6)
+
+
+# ── Sign in with Google ────────────────────────────────────────────────
+
+from unittest import mock  # noqa: E402
+
+from django.test import override_settings  # noqa: E402
+from rest_framework.authtoken.models import Token  # noqa: E402
+
+from . import google_auth  # noqa: E402
+from .models import GoogleIdentity  # noqa: E402
+
+WEB_CLIENT = 'web-123.apps.googleusercontent.com'
+IOS_CLIENT = 'ios-456.apps.googleusercontent.com'
+
+
+def _claims(**overrides):
+    """What Google's tokeninfo endpoint says about a good token."""
+    claims = {
+        'iss': 'https://accounts.google.com',
+        'aud': WEB_CLIENT,
+        'sub': '1122334455',
+        'email': 'carol@gmail.com',
+        'email_verified': 'true',
+        'given_name': 'Carol',
+        'family_name': 'Clark',
+        'exp': str(int(timezone.now().timestamp()) + 3600),
+    }
+    claims.update(overrides)
+    return claims
+
+
+@override_settings(GOOGLE_OAUTH_WEB_CLIENT_ID=WEB_CLIENT, GOOGLE_OAUTH_EXTRA_CLIENT_IDS=[IOS_CLIENT])
+class GoogleSignInTests(BaseAPITestCase):
+    """Sign in with Google.
+
+    The two rules everything else here serves: a Google account is never handed
+    an existing login because the email matches (registration does not verify
+    addresses, so the match proves nothing about who holds the password), and a
+    staff login never opens through Google.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.anon = APIClient()
+
+    def sign_in(self, claims=None, client=None):
+        with mock.patch.object(google_auth, 'fetch_tokeninfo', return_value=claims):
+            return (client or self.anon).post('/api/auth/google/', {'id_token': 'tok'}, format='json')
+
+    def connect(self, client, claims):
+        with mock.patch.object(google_auth, 'fetch_tokeninfo', return_value=claims):
+            return client.post('/api/auth/google/connect/', {'id_token': 'tok'}, format='json')
+
+    # The switch
+
+    def test_the_login_screen_can_ask_whether_it_is_on(self):
+        response = self.anon.get('/api/auth/google/')
+        self.assertEqual(response.data, {'enabled': True, 'server_client_id': WEB_CLIENT})
+
+    @override_settings(GOOGLE_OAUTH_WEB_CLIENT_ID='')
+    def test_off_until_the_client_id_is_set(self):
+        self.assertEqual(self.anon.get('/api/auth/google/').data['enabled'], False)
+        self.assertEqual(self.sign_in(_claims()).status_code, 503)
+
+    # A new person
+
+    def test_a_new_google_account_gets_a_client_login_with_no_password(self):
+        response = self.sign_in(_claims())
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(response.data['created'])
+
+        user = User.objects.get(email='carol@gmail.com')
+        self.assertEqual(response.data['auth_token'], Token.objects.get(user=user).key)
+        self.assertEqual((user.username, user.first_name, user.last_name), ('carol', 'Carol', 'Clark'))
+        self.assertFalse(user.has_usable_password())
+        self.assertFalse(user.is_staff)
+        self.assertEqual(user.google_identity.subject, '1122334455')
+
+        me = APIClient()
+        me.credentials(HTTP_AUTHORIZATION=f"Token {response.data['auth_token']}")
+        body = me.get('/api/auth/users/me/').data
+        self.assertEqual(body['google_email'], 'carol@gmail.com')
+        self.assertFalse(body['has_password'])
+
+    def test_the_same_google_account_signs_back_into_the_same_login(self):
+        first = self.sign_in(_claims())
+        # Even after they change the address on their Google account: sub is
+        # the identity, the email is not.
+        again = self.sign_in(_claims(email='carol.clark@gmail.com'))
+        self.assertEqual(again.status_code, 200)
+        self.assertFalse(again.data['created'])
+        self.assertEqual(again.data['auth_token'], first.data['auth_token'])
+        self.assertEqual(User.objects.filter(google_identity__subject='1122334455').count(), 1)
+
+    def test_a_username_already_taken_gets_a_number(self):
+        User.objects.create_user('Carol', email='someone-else@example.com', password='pw')
+        self.sign_in(_claims())
+        self.assertTrue(User.objects.filter(username='carol2', email='carol@gmail.com').exists())
+
+    def test_an_ios_token_is_accepted_too(self):
+        self.assertEqual(self.sign_in(_claims(aud=IOS_CLIENT)).status_code, 201)
+
+    # The two rules
+
+    def test_never_linked_to_an_existing_login_by_email(self):
+        # Anyone can register as alice@example.com — addresses are not verified
+        # — so a Google sign-in for that address must not be handed the login.
+        self.alice_user.email = 'alice@example.com'
+        self.alice_user.save()
+        response = self.sign_in(_claims(email='ALICE@example.com'))
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data['code'], 'account_exists')
+        self.assertNotIn('auth_token', response.data)
+        self.assertFalse(GoogleIdentity.objects.exists())
+
+    def test_the_owner_connects_google_from_inside_the_account(self):
+        self.alice_user.email = 'alice@example.com'
+        self.alice_user.save()
+        response = self.connect(self.alice_client, _claims(email='alice@example.com', sub='alice-sub'))
+        self.assertEqual(response.status_code, 201)
+        signed_in = self.sign_in(_claims(email='alice@example.com', sub='alice-sub'))
+        self.assertEqual(signed_in.status_code, 200)
+        self.assertEqual(signed_in.data['auth_token'], Token.objects.get(user=self.alice_user).key)
+
+    def test_a_staff_login_cannot_connect_google(self):
+        response = self.connect(self.staff_client, _claims())
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(GoogleIdentity.objects.exists())
+
+    def test_a_login_made_staff_after_connecting_does_not_open_through_google(self):
+        self.connect(self.alice_client, _claims(sub='alice-sub'))
+        self.alice_user.is_staff = True
+        self.alice_user.save()
+        response = self.sign_in(_claims(sub='alice-sub'))
+        self.assertEqual(response.status_code, 403)
+        self.assertNotIn('auth_token', response.data)
+
+    def test_a_switched_off_login_does_not_open(self):
+        self.connect(self.alice_client, _claims(sub='alice-sub'))
+        self.alice_user.is_active = False
+        self.alice_user.save()
+        self.assertEqual(self.sign_in(_claims(sub='alice-sub')).status_code, 403)
+
+    def test_one_google_account_cannot_be_connected_to_two_logins(self):
+        self.connect(self.alice_client, _claims(sub='shared'))
+        self.assertEqual(self.connect(self.bob_client, _claims(sub='shared')).status_code, 409)
+
+    # Tokens that must not sign anybody in
+
+    def test_a_token_issued_to_another_app_is_refused(self):
+        response = self.sign_in(_claims(aud='somebody-elses-app.apps.googleusercontent.com'))
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(User.objects.filter(email='carol@gmail.com').exists())
+
+    def test_an_unverified_email_is_refused(self):
+        self.assertEqual(self.sign_in(_claims(email_verified='false')).status_code, 400)
+
+    def test_an_expired_token_is_refused(self):
+        expired = str(int(timezone.now().timestamp()) - 10)
+        self.assertEqual(self.sign_in(_claims(exp=expired)).status_code, 400)
+
+    def test_a_token_from_somewhere_other_than_google_is_refused(self):
+        self.assertEqual(self.sign_in(_claims(iss='https://evil.example')).status_code, 400)
+
+    def test_a_token_google_rejects_is_refused(self):
+        self.assertEqual(self.sign_in(None).status_code, 400)
+
+    def test_google_being_unreachable_is_a_503_not_a_refusal(self):
+        with mock.patch.object(google_auth, 'fetch_tokeninfo', side_effect=google_auth.GoogleUnavailable()):
+            response = self.anon.post('/api/auth/google/', {'id_token': 'tok'}, format='json')
+        self.assertEqual(response.status_code, 503)
+
+    # Disconnecting
+
+    def test_disconnecting_needs_another_way_in(self):
+        token = self.sign_in(_claims()).data['auth_token']
+        carol = APIClient()
+        carol.credentials(HTTP_AUTHORIZATION=f'Token {token}')
+        self.assertEqual(carol.delete('/api/auth/google/connect/').status_code, 409)
+        self.assertTrue(GoogleIdentity.objects.exists())
+
+        self.connect(self.alice_client, _claims(sub='alice-sub', email='alice@example.com'))
+        self.assertEqual(self.alice_client.delete('/api/auth/google/connect/').status_code, 204)
+        self.assertFalse(GoogleIdentity.objects.filter(user=self.alice_user).exists())
+
+    def test_the_sign_in_budget_is_not_spent_by_the_login_screen_asking(self):
+        for _ in range(40):
+            self.assertEqual(self.anon.get('/api/auth/google/').status_code, 200)
+        self.assertEqual(self.sign_in(_claims()).status_code, 201)
