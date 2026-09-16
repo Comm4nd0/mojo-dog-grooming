@@ -182,9 +182,62 @@ Once the review submission is in, cancel it in App Store Connect instead.
 **Apple rejected it** — fix the code, then release a new patch version. Versions
 are never reused; App Store Connect will not take a second binary under one.
 
-## Android
+## Android — Google Play
 
-Not automated, and not currently shippable: `mobile/android/app/build.gradle.kts`
-signs release builds with the **debug** key. Getting Play working needs a release
-keystore, Gradle signing wired to environment variables, and a Play Console
-service account. None of that is in place.
+Package name **`uk.co.mojoandco.app`**, permanent from the first upload. It is
+not the iOS bundle ID (`uk.co.mojoandco.mojoApp`), and does not need to be.
+
+### Building a bundle
+
+Actions → **Android release bundle** → Run workflow. It tests, builds a signed
+`.aab`, refuses to hand over one signed with the debug key, and uploads it as an
+artifact named `mojo-and-co-android-<build number>`. Download it from the run.
+
+Build numbers (Play's version code) are minutes since 2026-01-01, as on iOS, so
+each build is higher than the last. The version name comes from `pubspec.yaml`.
+
+### Uploading
+
+Google only accepts a new app's **first** bundle through the Play Console:
+Testing → Internal testing → Create new release → upload the `.aab`. Add testers
+under the Testers tab — a list of Google account emails — and send them the
+opt-in link it shows. Leave **Play App Signing** on when asked: Google then
+holds the key that signs what users install, and a lost upload key can be reset
+through Play support instead of ending the app's updates for good.
+
+Later releases can be uploaded by fastlane once a service account exists
+(`PLAY_STORE_SERVICE_ACCOUNT_JSON`); not wired into this workflow yet.
+
+### The upload key
+
+A PKCS12 keystore, alias `upload`, key password the same as the store password,
+valid to 2056. The original and its passwords are on Marco's machine in
+`~/Projects/mojo-and-co/android-upload-key/` (`key.properties` there holds the
+passwords) — **not** in this repo, which gitignores `key.properties` and every
+keystore extension. Move the passwords into a password manager and keep a copy
+of the file somewhere that is not that laptop.
+
+Upload key fingerprints, for anything that asks (Google Cloud OAuth clients,
+Firebase, the Play Console's own check):
+
+```
+SHA-1   08:51:19:B2:78:05:63:F5:7F:DB:E1:70:22:5F:80:DD:39:34:27:56
+SHA-256 FA:A0:97:91:BF:B1:2F:1E:FE:40:E6:EE:B7:C8:77:3F:7A:8F:8A:0F:79:EC:A7:86:D8:06:8F:E8:8E:5F:46:D4
+```
+
+With Play App Signing on, installs from Play are signed by Google's app signing
+key instead, whose fingerprints are in Play Console → Setup → App signing.
+
+The workflow reads two repository secrets, set once:
+
+```bash
+base64 -w0 ~/Projects/mojo-and-co/android-upload-key/upload-keystore.p12 \
+  | gh secret set ANDROID_UPLOAD_KEYSTORE_BASE64
+sed -n 's/^storePassword=//p' ~/Projects/mojo-and-co/android-upload-key/key.properties \
+  | tr -d '\n' | gh secret set ANDROID_UPLOAD_KEYSTORE_PASSWORD
+```
+
+To build a signed bundle locally instead (needs the Android SDK), copy the
+keystore to `mobile/android/upload-keystore.p12` and that `key.properties` to
+`mobile/android/key.properties`. Without them a release build signs with the
+debug key, so `flutter run --release` keeps working anywhere.

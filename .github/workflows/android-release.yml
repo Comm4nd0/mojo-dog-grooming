@@ -1,0 +1,97 @@
+name: Android release bundle
+
+# Builds a signed app bundle (.aab) for Google Play and hands it over as a
+# workflow artifact. Manually triggered: Actions → Android release bundle → Run.
+#
+# It does not upload. Google only accepts a new app's first bundle through the
+# Play Console, so the first one is downloaded from this run and uploaded by
+# hand (Testing → Internal testing → Create new release). See RELEASING.md.
+#
+# Required repository secrets:
+#   ANDROID_UPLOAD_KEYSTORE_BASE64    the upload keystore (PKCS12), base64-encoded
+#   ANDROID_UPLOAD_KEYSTORE_PASSWORD  its password (the key's password is the same)
+#
+# The keystore itself lives outside the repo; losing it means asking Google
+# support to reset the upload key, so keep the original somewhere safe.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Resolve the pinned Flutter version
+        id: flutter_pin
+        run: echo "version=$(cat "$GITHUB_WORKSPACE/mobile/.flutter-version")" >> "$GITHUB_OUTPUT"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ steps.flutter_pin.outputs.version }}
+
+      - name: Write the upload key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWORD }}
+        run: |
+          # Refuse rather than build: without these the release build falls back
+          # to the debug key, and Play rejects that only after the upload.
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ]; then
+            echo "::error::ANDROID_UPLOAD_KEYSTORE_BASE64 and ANDROID_UPLOAD_KEYSTORE_PASSWORD must be set"
+            exit 1
+          fi
+          umask 077
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > android/upload-keystore.p12
+          {
+            echo "storeFile=upload-keystore.p12"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=upload"
+            echo "keyPassword=$KEYSTORE_PASSWORD"
+          } > android/key.properties
+
+      - name: Test
+        run: |
+          flutter pub get
+          flutter analyze
+          flutter test
+
+      - name: Build the bundle
+        run: |
+          # Build numbers are minutes since 2026-01-01, the same scheme Xcode
+          # Cloud uses, so every build is higher than the last without anything
+          # to remember. Play refuses a version code it has seen before.
+          BUILD_NUMBER=$(( ( $(date -u +%s) - $(date -u -d 2026-01-01 +%s) ) / 60 ))
+          echo "BUILD_NUMBER=$BUILD_NUMBER" >> "$GITHUB_ENV"
+          flutter build appbundle --release --build-number="$BUILD_NUMBER"
+
+      - name: Check it is signed with the upload key, not the debug key
+        run: |
+          AAB=build/app/outputs/bundle/release/app-release.aab
+          SIGNER=$(keytool -printcert -jarfile "$AAB")
+          echo "$SIGNER" | grep -E "Owner|SHA1|SHA256"
+          if echo "$SIGNER" | grep -q "CN=Android Debug"; then
+            echo "::error::The bundle is signed with the debug key. Play will refuse it."
+            exit 1
+          fi
+          echo "$SIGNER" | grep -q "CN=Mojo and Co" || { echo "::error::Unexpected signer"; exit 1; }
+
+      - name: Remove the key from the runner
+        if: always()
+        run: rm -f android/upload-keystore.p12 android/key.properties
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mojo-and-co-android-${{ env.BUILD_NUMBER }}
+          path: mobile/build/app/outputs/bundle/release/app-release.aab
+          if-no-files-found: error

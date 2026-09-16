@@ -1405,7 +1405,7 @@ Three things about this that are not obvious:
 The tag, `pubspec.yaml` and the `CHANGELOG.md` heading must agree — both CI scripts stop
 rather than ship a binary whose version contradicts its tag.
 
-Android is not shippable: `build.gradle.kts` signs release builds with the debug key.
+**Android ships through the Android release bundle workflow**, signed with an upload key whose original lives outside the repo — see RELEASING.md → Google Play. The package is `uk.co.mojoandco.app`, permanent on Play; `build.gradle.kts` falls back to the debug key when there is no `key.properties`, and the workflow refuses to hand over a bundle signed that way.
 
 **Store screenshots are a workflow, not an afternoon.** `.github/workflows/
 store-screenshots.yml` (manually triggered) drives the real app on an iPhone 17 Pro Max

@@ -1,4 +1,4 @@
-package uk.co.mojoandco.mojo_app
+package uk.co.mojoandco.app
 
 import io.flutter.embedding.android.FlutterFragmentActivity
 
