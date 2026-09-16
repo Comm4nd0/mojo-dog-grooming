@@ -112,19 +112,12 @@ class DjoserUserSerializer(serializers.ModelSerializer):
     is_superuser = serializers.BooleanField(read_only=True)
     client_id = serializers.SerializerMethodField()
     has_client_record = serializers.SerializerMethodField()
-    # The account menu offers "Connect Google" or "Disconnect Google" from
-    # these. ``has_password`` is what decides whether disconnecting is allowed:
-    # an account made through Google has no password, and cutting its only way
-    # in would strand it.
-    google_email = serializers.SerializerMethodField()
-    has_password = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = [
             'id', 'username', 'email', 'first_name', 'last_name',
             'is_staff', 'is_superuser', 'client_id', 'has_client_record',
-            'google_email', 'has_password',
         ]
         read_only_fields = ['id', 'username', 'is_staff', 'is_superuser']
 
@@ -134,13 +127,6 @@ class DjoserUserSerializer(serializers.ModelSerializer):
 
     def get_has_client_record(self, obj):
         return getattr(obj, 'client', None) is not None
-
-    def get_google_email(self, obj):
-        identity = getattr(obj, 'google_identity', None)
-        return identity.email if identity else None
-
-    def get_has_password(self, obj):
-        return obj.has_usable_password()
 
 
 USERNAME_PATTERN = re.compile(r'^[\w.@+-]+$')

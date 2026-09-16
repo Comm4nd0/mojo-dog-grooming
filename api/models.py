@@ -209,40 +209,6 @@ class UserProfile(models.Model):
         return f'Profile for {self.user.username}'
 
 
-class GoogleIdentity(models.Model):
-    """A Google account that can sign in as this login.
-
-    Keyed on Google's ``sub``, never the email address: the subject is Google's
-    permanent ID for the person, while an address can be changed, or given up
-    and reissued to somebody else.
-
-    **Linking is never done on an email match.** Registration does not verify
-    addresses, so anybody could sign up today as ``alice@example.com`` with a
-    password of their own. If Alice later chose "Sign in with Google" and was
-    handed that account because the address matched, she would be using an
-    account a stranger holds the password to — and everything she and Jess put
-    in it after that is theirs to read. So a Google sign-in whose address
-    already belongs to an account is refused, and the owner connects Google
-    from inside the account instead, having proved they hold it.
-
-    **Never a staff login.** A Google account is one more way in, and Jess's
-    login opens the whole client book; that is not a door to add on the
-    strength of whoever controls a Gmail inbox.
-    """
-
-    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='google_identity')
-    subject = models.CharField(max_length=255, unique=True, help_text="Google's permanent ID for the person.")
-    email = models.EmailField(help_text='The Google address when it was connected. For recognising it, not for matching.')
-    created_at = models.DateTimeField(auto_now_add=True)
-    last_used_at = models.DateTimeField(null=True, blank=True)
-
-    class Meta:
-        verbose_name = 'Google sign-in'
-
-    def __str__(self):
-        return f'{self.email} → {self.user.username}'
-
-
 @receiver(post_save, sender=User)
 def ensure_user_profile(sender, instance, created, **kwargs):
     """Every user has a profile; staff created via the admin get one too."""

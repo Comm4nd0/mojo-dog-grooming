@@ -67,16 +67,6 @@ class CurrentUser {
   final bool isSuperuser;
   final int? clientId;
 
-  /// The Google account this login can be opened with, or null for none.
-  final String? googleEmail;
-
-  /// Whether the login has a password at all. A login made through Google
-  /// has none, and disconnecting Google from it would leave no way back in.
-  ///
-  /// Null when the server did not say — an older server — and that must not
-  /// read as "no password": it would hide a disconnect button that works.
-  final bool? hasPassword;
-
   const CurrentUser({
     required this.id,
     required this.username,
@@ -86,8 +76,6 @@ class CurrentUser {
     this.lastName = '',
     this.isSuperuser = false,
     this.clientId,
-    this.googleEmail,
-    this.hasPassword,
   });
 
   factory CurrentUser.fromJson(Map<String, dynamic> json) => CurrentUser(
@@ -99,11 +87,6 @@ class CurrentUser {
         isStaff: json['is_staff'] == true,
         isSuperuser: json['is_superuser'] == true,
         clientId: json['client_id'] as int?,
-        googleEmail: switch (json['google_email']) {
-          final String email when email.trim().isNotEmpty => email.trim(),
-          _ => null,
-        },
-        hasPassword: json['has_password'] is bool ? json['has_password'] as bool : null,
       );
 
   /// What to call this person on screen.

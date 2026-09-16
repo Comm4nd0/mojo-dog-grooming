@@ -6,7 +6,6 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../models/models.dart';
 import 'api_client.dart';
 import 'biometric_service.dart';
-import 'google_sign_in_service.dart';
 
 /// An account remembered on this device.
 ///
@@ -58,14 +57,9 @@ class SavedAccount {
 /// Tokens live in secure storage (Keychain / EncryptedSharedPreferences),
 /// never in plain preferences — each one grants full access to its account.
 class AuthService extends ChangeNotifier {
-  AuthService(
-    this._api, {
-    FlutterSecureStorage? storage,
-    BiometricAuthenticator? biometrics,
-    GoogleIdTokenSource? google,
-  })  : _storage = storage ?? const FlutterSecureStorage(),
-        _biometrics = biometrics ?? LocalAuthBiometricAuthenticator(),
-        _google = google ?? PluginGoogleIdTokenSource();
+  AuthService(this._api, {FlutterSecureStorage? storage, BiometricAuthenticator? biometrics})
+      : _storage = storage ?? const FlutterSecureStorage(),
+        _biometrics = biometrics ?? LocalAuthBiometricAuthenticator();
 
   /// Pre-multi-account storage slot: a single bare token. Read once on the
   /// first launch after upgrading, then deleted.
@@ -75,7 +69,6 @@ class AuthService extends ChangeNotifier {
   final ApiClient _api;
   final FlutterSecureStorage _storage;
   final BiometricAuthenticator _biometrics;
-  final GoogleIdTokenSource _google;
 
   CurrentUser? _user;
   bool _restoring = true;
@@ -212,15 +205,7 @@ class AuthService extends ChangeNotifier {
       'username': username.trim(),
       'password': password,
     });
-    await _adopt(response);
-  }
-
-  /// Take the token a sign-in handed back, whichever way it was signed in.
-  /// Google and a password end in the same place on purpose: from here on the
-  /// app cannot tell them apart, so the account switcher, the biometric lock
-  /// and sign-out all behave identically for both.
-  Future<void> _adopt(Object? response) async {
-    final token = (response as Map<String, dynamic>?)?['auth_token']?.toString();
+    final token = (response as Map<String, dynamic>)['auth_token']?.toString();
     if (token == null || token.isEmpty) {
       throw const ApiException(500, 'The server did not return a sign-in token.');
     }
@@ -228,58 +213,6 @@ class AuthService extends ChangeNotifier {
     _api.setToken(token);
     _user = await _fetchMe();
     await _rememberActive(token);
-    notifyListeners();
-  }
-
-  // ── Sign in with Google ─────────────────────────────────────────────
-
-  /// The Google client ID to ask for, or null when the button should not be
-  /// shown at all.
-  ///
-  /// Asked of the server rather than built into the app, so setting the ID on
-  /// the server is what switches Google on — no rebuild, no store review. Null
-  /// on any failure: a login screen that cannot reach the server has bigger
-  /// news than a missing Google button, and a button that then fails would
-  /// only add to it.
-  Future<String?> googleServerClientId() async {
-    if (!_google.platformSupported) return null;
-    try {
-      final payload = await _api.get('/auth/google/') as Map<String, dynamic>;
-      final id = payload['server_client_id']?.toString() ?? '';
-      return payload['enabled'] == true && id.isNotEmpty ? id : null;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  /// Sign in with Google. False if the person backed out of Google's picker,
-  /// which is not an error and should show nothing.
-  ///
-  /// The server decides which login a Google account opens, and refuses two
-  /// cases on purpose — a Google address that already belongs to a login (the
-  /// owner connects Google from inside it instead) and any staff login. Both
-  /// arrive as an [ApiException] whose message says what to do.
-  Future<bool> signInWithGoogle(String serverClientId) async {
-    final idToken = await _google.idToken(serverClientId: serverClientId);
-    if (idToken == null) return false;
-    final response = await _api.post('/auth/google/', {'id_token': idToken});
-    await _adopt(response);
-    return true;
-  }
-
-  /// Let the signed-in login be opened with Google from now on.
-  Future<bool> connectGoogle(String serverClientId) async {
-    final idToken = await _google.idToken(serverClientId: serverClientId);
-    if (idToken == null) return false;
-    await _api.post('/auth/google/connect/', {'id_token': idToken});
-    _user = await _fetchMe();
-    notifyListeners();
-    return true;
-  }
-
-  Future<void> disconnectGoogle() async {
-    await _api.delete('/auth/google/connect/');
-    _user = await _fetchMe();
     notifyListeners();
   }
 

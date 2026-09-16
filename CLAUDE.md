@@ -633,51 +633,6 @@ Usernames exist only in the database — from `createsuperuser` or
 `DJANGO_SUPERUSER_USERNAME`. `manage.py accounts` lists them; `manage.py reset_link`
 covers the one case the in-app flow cannot, the superuser being the one locked out.
 
-## Sign in with Google opens client logins only, and never on an email match
-
-`/api/auth/google/` (`api/google_views.py`) takes a Google ID token from the app and hands
-back the same `auth_token` as the password login, so from there the app cannot tell the two
-apart — the switcher, the biometric lock and sign-out all behave identically.
-`api/google_auth.py` checks the token, and each check is load-bearing: **`aud` must be one of
-our client IDs** (without it, a token any other app got for its own users would sign that
-person in here), `iss` is Google, `email_verified` is true, `exp` is in the future.
-
-- **Verified by asking Google's tokeninfo endpoint, not a JWT library.** `requirements.txt` is
-  pinned to p4td and adding to it obliges that project too — the same reason `sentry-sdk` is
-  prod-only. One stdlib HTTPS call per sign-in costs nothing at this volume. Google being
-  unreachable is a **503**, never a refusal. Tests patch `google_auth.fetch_tokeninfo`.
-- **`GoogleIdentity` is keyed on Google's `sub`, never the email.** An address can change
-  hands; the subject is the person.
-- **A Google address that already belongs to a login is refused (409, `account_exists`),
-  never linked.** Registration does not verify emails, so anybody can sign up today as
-  `alice@example.com` with a password of their own; handing Alice that login when she later
-  chose Google would put her in an account a stranger holds the password to. The owner
-  connects Google from inside instead — `POST /api/auth/google/connect/`, the account menu's
-  `GoogleConnectTile` — having proved they hold it by being signed in. It discloses nothing
-  new: registration already answers "that email is in use".
-- **Never a staff login**, in both directions: connect refuses staff, and sign-in refuses a
-  linked login that was made staff afterwards. Jess's login opens the whole client book.
-- **A login made through Google has no password** (`set_unusable_password`, not a random
-  one), and disconnecting Google from it is refused — it would be locked out. The forgotten-
-  password flow can still give it one. `DjoserUserSerializer` reports `google_email` and
-  `has_password`; in Dart `hasPassword` is `bool?` and **null does not mean no**, or an older
-  server would hide a disconnect that works.
-- **Off until `GOOGLE_OAUTH_WEB_CLIENT_ID` is set on the server.** The app asks
-  `GET /api/auth/google/` whether to show the button, so switching it on needs no rebuild. The
-  GET must never spend the sign-in throttle — `GoogleLoginThrottle` skips it, and there is a
-  test that forty reads still leave room to sign in.
-- **Android only, deliberately** (`PluginGoogleIdTokenSource.platformSupported`). Apple's
-  guideline 4.8 rejects an iOS app offering Google sign-in without Sign in with Apple, and the
-  first App Store release has not happened. iOS also needs its own client ID and the reversed
-  client ID as a URL scheme in `Info.plist`. Adding iOS means all three together.
-- **The Android OAuth client needs every signing key's SHA-1** — the upload key and Play's app
-  signing key. A build signed with a key Google does not know fails with a configuration
-  error, which the app words as "isn't set up properly" rather than blaming the person.
-- The plugin is signed out straight after each use. Mojo and Co keeps its own session, and a
-  remembered Google choice would skip the picker on a shared salon phone.
-
-`GoogleSignInTests` and `test/google_sign_in_test.dart` hold all of this.
-
 ## Biometric unlock is a local gate, not authentication
 
 `local_auth` guards the app, not the API. The token is already in the Keychain /

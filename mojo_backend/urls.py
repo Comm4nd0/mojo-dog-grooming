@@ -3,7 +3,6 @@ from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import include, path
 
-from api.google_views import GoogleConnectView, GoogleSignInView
 from api.views import PasswordResetFormView, PublicIntakeFormView, ThrottledTokenCreateView
 
 urlpatterns = [
@@ -20,9 +19,6 @@ urlpatterns = [
     # Sign-in, ahead of djoser's own route so the tighter throttle applies.
     # Anything below this line would never be reached for this path.
     path('api/auth/token/login/', ThrottledTokenCreateView.as_view(), name='login'),
-    # Sign in with Google — see api/google_auth.py and api/google_views.py.
-    path('api/auth/google/', GoogleSignInView.as_view(), name='google-login'),
-    path('api/auth/google/connect/', GoogleConnectView.as_view(), name='google-connect'),
     # Token login/logout and account management.
     path('api/auth/', include('djoser.urls')),
     path('api/auth/', include('djoser.urls.authtoken')),
