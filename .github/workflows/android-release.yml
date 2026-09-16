@@ -1,21 +1,48 @@
 name: Android release bundle
 
-# Builds a signed app bundle (.aab) for Google Play and hands it over as a
-# workflow artifact. Manually triggered: Actions → Android release bundle → Run.
+# Builds a signed app bundle (.aab) and puts it on Google Play's internal
+# testing track — the Android half of what Xcode Cloud does for TestFlight.
 #
-# It does not upload. Google only accepts a new app's first bundle through the
-# Play Console, so the first one is downloaded from this run and uploaded by
-# hand (Testing → Internal testing → Create new release). See RELEASING.md.
+# Runs on every push to main that touches the app, and by hand from the Actions
+# tab (where the track can be changed). The bundle is also kept as an artifact.
 #
 # Required repository secrets:
 #   ANDROID_UPLOAD_KEYSTORE_BASE64    the upload keystore (PKCS12), base64-encoded
 #   ANDROID_UPLOAD_KEYSTORE_PASSWORD  its password (the key's password is the same)
+#   PLAY_STORE_SERVICE_ACCOUNT_JSON   Play service account key, for the upload.
+#                                     Without it the build still runs and the
+#                                     bundle is left as an artifact.
 #
 # The keystore itself lives outside the repo; losing it means asking Google
 # support to reset the upload key, so keep the original somewhere safe.
 
 on:
+  push:
+    branches: [main]
+    # Backend-only and docs-only pushes do not change the app, and a build
+    # nobody needs still lands on every tester's phone as an update.
+    paths:
+      - "mobile/**"
+      - ".github/workflows/android-release.yml"
+      - "!mobile/store/**"
+      - "!mobile/**/*.md"
   workflow_dispatch:
+    inputs:
+      track:
+        description: "Play track to upload to"
+        type: choice
+        options: ["internal", "alpha", "beta"]
+        default: "internal"
+      upload:
+        description: "Upload to Google Play (otherwise build the artifact only)"
+        type: boolean
+        default: true
+
+# Two pushes in quick succession: build the newer one only. The build number is
+# the clock, so the later build is always the higher version code anyway.
+concurrency:
+  group: android-release
+  cancel-in-progress: true
 
 jobs:
   bundle:
@@ -95,3 +122,32 @@ jobs:
           name: mojo-and-co-android-${{ env.BUILD_NUMBER }}
           path: mobile/build/app/outputs/bundle/release/app-release.aab
           if-no-files-found: error
+
+      - uses: ruby/setup-ruby@v1
+        if: ${{ github.event_name == 'push' || inputs.upload }}
+        with:
+          ruby-version: "3.3"
+
+      - name: Upload to Google Play
+        if: ${{ github.event_name == 'push' || inputs.upload }}
+        env:
+          # Through env, never interpolated into the script: the key is JSON,
+          # and quotes inside it would break (or rewrite) an inline shell line.
+          PLAY_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
+          PLAY_TRACK: ${{ inputs.track || 'internal' }}
+        run: |
+          if [ -z "$PLAY_JSON" ]; then
+            echo "::warning::PLAY_STORE_SERVICE_ACCOUNT_JSON is not set, so nothing was uploaded. The bundle is in this run's artifacts."
+            exit 0
+          fi
+          gem install fastlane --no-document
+          umask 077
+          printf '%s' "$PLAY_JSON" > "$RUNNER_TEMP/play.json"
+          export SUPPLY_JSON_KEY="$RUNNER_TEMP/play.json"
+          export AAB_PATH="$PWD/build/app/outputs/bundle/release/app-release.aab"
+          (cd fastlane && fastlane android upload_bundle)
+          echo "::notice::Build $BUILD_NUMBER is on the $PLAY_TRACK track."
+
+      - name: Remove the Play key from the runner
+        if: always()
+        run: rm -f "$RUNNER_TEMP/play.json"

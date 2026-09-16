@@ -187,26 +187,56 @@ are never reused; App Store Connect will not take a second binary under one.
 Package name **`uk.co.mojoandco.app`**, permanent from the first upload. It is
 not the iOS bundle ID (`uk.co.mojoandco.mojoApp`), and does not need to be.
 
-### Building a bundle
+### How a build reaches testers
 
-Actions → **Android release bundle** → Run workflow. It tests, builds a signed
-`.aab`, refuses to hand over one signed with the debug key, and uploads it as an
-artifact named `mojo-and-co-android-<build number>`. Download it from the run.
+**Push to `main`.** Any push that changes the app runs the **Android release
+bundle** workflow, which tests, builds a signed `.aab`, refuses one signed with
+the debug key, and uploads it to Play's **internal testing** track, rolled out
+straight away. Testers who have opted in get it as an ordinary Play Store
+update. Backend-only and docs-only pushes do not build.
+
+By hand: Actions → Android release bundle → Run workflow, where the track can be
+changed to `alpha` (closed testing) or `beta` (open testing), or the upload
+turned off to get just the bundle. Every run keeps the bundle as an artifact
+named `mojo-and-co-android-<build number>`.
 
 Build numbers (Play's version code) are minutes since 2026-01-01, as on iOS, so
 each build is higher than the last. The version name comes from `pubspec.yaml`.
 
-### Uploading
+The upload is fastlane's `supply`, in the `upload_bundle` lane. Until
+`PLAY_STORE_SERVICE_ACCOUNT_JSON` is set the workflow still builds, and ends
+with a warning saying nothing was uploaded.
 
-Google only accepts a new app's **first** bundle through the Play Console:
-Testing → Internal testing → Create new release → upload the `.aab`. Add testers
-under the Testers tab — a list of Google account emails — and send them the
-opt-in link it shows. Leave **Play App Signing** on when asked: Google then
-holds the key that signs what users install, and a lost upload key can be reset
-through Play support instead of ending the app's updates for good.
+### One-time setup: the Play service account
 
-Later releases can be uploaded by fastlane once a service account exists
-(`PLAY_STORE_SERVICE_ACCOUNT_JSON`); not wired into this workflow yet.
+The first release had to go up through the Play Console by hand — Google insists
+on that for a new app — and did, on 16 September 2026. Everything after it can
+come from the workflow once Google Play will accept uploads from it:
+
+1. **Google Cloud Console** — pick or create a project, then APIs & Services →
+   Library → enable **Google Play Android Developer API**.
+2. IAM & Admin → Service accounts → **Create service account**. Any name; it
+   needs no Google Cloud roles. Open it → Keys → Add key → **JSON**. That file
+   downloads once.
+3. **Play Console** → Users and permissions → **Invite new users** → paste the
+   service account's email address (…@….iam.gserviceaccount.com). Under App
+   permissions add Mojo and Co, with **Release apps to testing tracks** (and
+   **Release to production** only if the workflow should ever do that).
+   Invite; a service account needs no accepting.
+4. Put the whole JSON file into the repository secret:
+   ```bash
+   gh secret set PLAY_STORE_SERVICE_ACCOUNT_JSON < ~/Downloads/<the key>.json
+   ```
+   then delete the downloaded file. The same secret is what the Store
+   Screenshots workflow uses to upload Play screenshots.
+
+Permission changes can take a few minutes to reach the API. An upload failing
+with "The caller does not have permission" straight after step 3 usually just
+needs a retry.
+
+Leave **Play App Signing** on: Google holds the key that signs what users
+install, and a lost upload key can be reset through Play support instead of
+ending the app's updates for good.
 
 ### The upload key
 

@@ -111,6 +111,30 @@ platform :ios do
 end
 
 platform :android do
+  # The app bundle, to a Play testing track. Run by the Android release bundle
+  # workflow after it has built and checked the signature; see RELEASING.md.
+  #
+  # Rolled out as soon as it lands (release_status "completed") — for internal
+  # testing that is the point, and it is what TestFlight does on iOS. Google
+  # refuses "completed" on an app that has never had any release rolled out
+  # ("Only releases with status draft may be created on draft app"); the first
+  # release here went out by hand, so that no longer applies, and
+  # PLAY_RELEASE_STATUS=draft is the escape hatch if it ever does.
+  lane :upload_bundle do
+    supply(
+      package_name:            ANDROID_PACKAGE,
+      json_key:                ENV.fetch("SUPPLY_JSON_KEY"),
+      aab:                     ENV.fetch("AAB_PATH"),
+      track:                   ENV.fetch("PLAY_TRACK", "internal"),
+      release_status:          ENV.fetch("PLAY_RELEASE_STATUS", "completed"),
+      skip_upload_apk:         true,
+      skip_upload_metadata:    true,
+      skip_upload_changelogs:  true,
+      skip_upload_images:      true,
+      skip_upload_screenshots: true,
+    )
+  end
+
   lane :upload_android do
     supply(
       package_name:            ANDROID_PACKAGE,
