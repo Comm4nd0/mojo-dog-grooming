@@ -14,6 +14,7 @@ import 'biometric_service.dart';
 /// her retype a password every time she wants to see the other half of the app.
 class SavedAccount {
   final String username;
+  final int userId;
   final String token;
   final bool isStaff;
 
@@ -25,6 +26,7 @@ class SavedAccount {
 
   const SavedAccount({
     required this.username,
+    this.userId = 0,
     required this.token,
     required this.isStaff,
     this.biometricsEnabled = false,
@@ -32,6 +34,7 @@ class SavedAccount {
 
   factory SavedAccount.fromJson(Map<String, dynamic> json) => SavedAccount(
         username: json['username']?.toString() ?? '',
+        userId: (json['user_id'] as num?)?.toInt() ?? 0,
         token: json['token']?.toString() ?? '',
         isStaff: json['is_staff'] == true,
         biometricsEnabled: json['biometrics'] == true,
@@ -39,6 +42,7 @@ class SavedAccount {
 
   Map<String, dynamic> toJson() => {
         'username': username,
+        'user_id': userId,
         'token': token,
         'is_staff': isStaff,
         'biometrics': biometricsEnabled,
@@ -46,6 +50,7 @@ class SavedAccount {
 
   SavedAccount copyWith({bool? biometricsEnabled}) => SavedAccount(
         username: username,
+        userId: userId,
         token: token,
         isStaff: isStaff,
         biometricsEnabled: biometricsEnabled ?? this.biometricsEnabled,
@@ -57,7 +62,7 @@ class SavedAccount {
 /// Tokens live in secure storage (Keychain / EncryptedSharedPreferences),
 /// never in plain preferences — each one grants full access to its account.
 class AuthService extends ChangeNotifier {
-  AuthService(this._api, {FlutterSecureStorage? storage, BiometricAuthenticator? biometrics})
+  AuthService(this._api, {FlutterSecureStorage? storage, BiometricAuthenticator? biometrics, this.onAccountChanged})
       : _storage = storage ?? const FlutterSecureStorage(),
         _biometrics = biometrics ?? LocalAuthBiometricAuthenticator();
 
@@ -67,6 +72,7 @@ class AuthService extends ChangeNotifier {
   static const _accountsKey = 'mojo_accounts';
 
   final ApiClient _api;
+  final Future<void> Function(String? username, bool isStaff)? onAccountChanged;
   final FlutterSecureStorage _storage;
   final BiometricAuthenticator _biometrics;
 
@@ -123,7 +129,13 @@ class AuthService extends ChangeNotifier {
       // A rejected token is stale — clear it rather than looping on 401s.
       if (error.isUnauthorised) await _clearActive();
     } on NoConnectionException {
-      // Offline at startup: keep the token, let the user retry.
+      // A previously authenticated staff identity can read its own saved
+      // book offline. A token rejection above never takes this route.
+      final active = _activeAccount;
+      if (active != null && active.username.isNotEmpty) {
+        _user = await _restoreLockedUser(active);
+        await onAccountChanged?.call('${active.userId}:${active.username}', active.isStaff);
+      }
     } finally {
       _restoring = false;
       notifyListeners();
@@ -135,7 +147,7 @@ class AuthService extends ChangeNotifier {
   /// Built from what this device already stored rather than from `/users/me`,
   /// so nothing is fetched until the lock is cleared.
   Future<CurrentUser> _restoreLockedUser(SavedAccount account) async => CurrentUser(
-        id: 0,
+        id: account.userId,
         username: account.username,
         email: '',
         isStaff: account.isStaff,
@@ -163,6 +175,9 @@ class AuthService extends ChangeNotifier {
         return false;
       }
       rethrow;
+    } on NoConnectionException {
+      _user = await _restoreLockedUser(account);
+      await onAccountChanged?.call('${account.userId}:${account.username}', account.isStaff);
     }
     notifyListeners();
     return true;
@@ -267,6 +282,8 @@ class AuthService extends ChangeNotifier {
     _api.setToken(account.token);
     try {
       _user = await _fetchMe();
+    } on NoConnectionException {
+      _user = await _restoreLockedUser(account);
     } catch (error) {
       // Roll back rather than strand the user signed out of everything.
       _api.setToken(previousToken);
@@ -364,12 +381,14 @@ class AuthService extends ChangeNotifier {
         if (account.username != user.username && account.token != token) account,
       SavedAccount(
         username: user.username,
+        userId: user.id,
         token: token,
         isStaff: user.isStaff,
         biometricsEnabled: wasEnabled,
       ),
     ];
     _activeUsername = user.username;
+    await onAccountChanged?.call('${user.id}:${user.username}', user.isStaff);
     await _storage.delete(key: _tokenKey);
     await _persist();
   }
@@ -387,6 +406,7 @@ class AuthService extends ChangeNotifier {
     _locked = false;
     _api.setToken(null);
     _user = null;
+    await onAccountChanged?.call(null, false);
     await _storage.delete(key: _tokenKey);
     await _persist();
   }

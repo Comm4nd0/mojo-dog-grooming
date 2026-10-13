@@ -16,11 +16,12 @@ from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from functools import lru_cache
 from pathlib import Path
+from uuid import UUID
 
 from django.conf import settings as django_settings
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.http import FileResponse
 from django.db.models import Q, Value
 from django.db.models.functions import Replace, Upper
@@ -1022,6 +1023,37 @@ class DogViewSet(StaffWriteOnlyMixin, ClientScopedMixin, viewsets.ModelViewSet):
             raise PermissionDenied('Only staff can add dogs.')
         serializer.save()
 
+    @action(detail=False, methods=['get'], permission_classes=[IsAdminUser])
+    def offline(self, request):
+        """One complete staff snapshot; no paginated partial client book.
+
+        Paperwork bytes and bookings are deliberately fetched online. The
+        snapshot is for reading Doguments and writing up grooms, not deciding
+        whether a slot is still free.
+        """
+        settings = AppSettings.get()
+        context = {'request': request, 'booking_buffer': settings.groom_time_buffer_minutes or 0}
+        dogs = list(self.queryset.prefetch_related('default_services', 'client__consents', 'client__dogs'))
+        def rows(serializer, queryset):
+            return serializer(queryset, many=True, context=context).data
+        response = Response({
+            'saved_at': timezone.now(),
+            'dogs': rows(DogListSerializer, dogs),
+            'profiles': rows(DogSerializer, dogs),
+            'clients': rows(ClientSerializer, Client.objects.prefetch_related('consents', 'dogs')),
+            'visits': rows(GroomSessionSerializer, GroomSession.objects.select_related(
+                'dog', 'appointment', 'invoice',
+            ).prefetch_related('timings', 'equipment_used')),
+            'photos': rows(DogPhotoSerializer, DogPhoto.objects.all()),
+            'documents': rows(DogDocumentSerializer, DogDocument.objects.all()),
+            'breeds': rows(BreedSerializer, Breed.objects.all()),
+            'grades': rows(TemperamentGradeSerializer, TemperamentGrade.objects.all()),
+            'equipment': rows(EquipmentSerializer, Equipment.objects.all()),
+            'settings': AppSettingsSerializer(settings, context=context).data,
+        })
+        response['Cache-Control'] = 'private, no-store'
+        return response
+
     @action(detail=True, methods=['get'])
     def photos(self, request, pk=None):
         dog = self.get_object()
@@ -1514,7 +1546,7 @@ class BookingSeriesViewSet(viewsets.ModelViewSet):
 # ── Groom timing ───────────────────────────────────────────────────────
 
 class GroomSessionViewSet(viewsets.ModelViewSet):
-    queryset = GroomSession.objects.select_related('dog').prefetch_related('timings', 'equipment_used')
+    queryset = GroomSession.objects.select_related('dog', 'invoice').prefetch_related('timings', 'equipment_used')
     serializer_class = GroomSessionSerializer
     permission_classes = [IsAdminUser]
 
@@ -1523,11 +1555,63 @@ class GroomSessionViewSet(viewsets.ModelViewSet):
         dog_id = self.request.query_params.get('dog')
         if dog_id:
             queryset = queryset.filter(dog_id=dog_id)
+        if self.request.query_params.get('unassigned') == '1':
+            queryset = queryset.filter(dog__isnull=True)
         visit_type = self.request.query_params.get('visit_type')
         return queryset.filter(visit_type=visit_type) if visit_type else queryset
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
+
+    def create(self, request, *args, **kwargs):
+        reference = request.data.get('client_reference')
+        try:
+            reference = UUID(str(reference)) if reference else None
+        except (ValueError, TypeError):
+            return Response({'client_reference': ['Invalid upload reference.']}, status=400)
+
+        def replay():
+            existing = GroomSession.objects.filter(client_reference=reference).first()
+            if existing is None:
+                return None
+            if existing.created_by_id != request.user.pk:
+                return Response({'detail': 'This upload reference is already in use.'}, status=409)
+            return Response(self.get_serializer(existing).data)
+
+        if reference and (response := replay()) is not None:
+            return response
+        try:
+            with transaction.atomic():
+                return super().create(request, *args, **kwargs)
+        except IntegrityError:
+            # The unique index is the arbiter when two retries arrive together.
+            if reference and (response := replay()) is not None:
+                return response
+            raise
+
+    @action(detail=True, methods=['post'])
+    def assign(self, request, pk=None):
+        from .invoicing import prepare_groom_invoice
+        with transaction.atomic():
+            # dog/appointment are nullable outer joins. PostgreSQL must lock
+            # just the visit, not their nullable side.
+            session = self.get_queryset().select_for_update(of=('self',)).get(pk=self.get_object().pk)
+            try:
+                dog_id = int(request.data.get('dog'))
+            except (TypeError, ValueError):
+                return Response({'dog': ['Choose a dog.']}, status=400)
+            dog = Dog.objects.filter(pk=dog_id).first()
+            if dog is None:
+                return Response({'dog': ['Choose an existing dog, or create its profile first.']}, status=400)
+            if session.dog_id is not None:
+                if session.dog_id == dog.pk:
+                    return Response(self.get_serializer(session).data)
+                return Response({'detail': 'This visit is already assigned to a dog.'}, status=409)
+            session.dog = dog
+            session.save(update_fields=['dog'])
+            session.link_to_appointment()
+            prepare_groom_invoice(session)
+            return Response(self.get_serializer(session).data)
 
     @action(detail=True, methods=['post'])
     def apply_to_dog(self, request, pk=None):
@@ -1560,7 +1644,7 @@ class GroomReportViewSet(ClientScopedMixin, viewsets.ReadOnlyModelViewSet):
     ids interchangeable with ``/groom-sessions/`` when the app has both.
     """
 
-    queryset = GroomSession.objects.select_related('dog')
+    queryset = GroomSession.objects.filter(dog__isnull=False).select_related('dog')
     serializer_class = GroomReportSerializer
     permission_classes = [IsAuthenticated]
     client_lookup = 'dog__client'
@@ -1583,7 +1667,15 @@ class InvoiceViewSet(ClientScopedMixin, viewsets.ModelViewSet):
         if not user.is_staff and not AppSettings.get().invoicing_visible_to_clients:
             # Invoicing starts hidden from clients entirely.
             return Invoice.objects.none()
-        return self.scope_to_client(super().get_queryset())
+        queryset = self.scope_to_client(super().get_queryset())
+        if not user.is_staff:
+            queryset = queryset.exclude(auto_generated=True, status=Invoice.Status.DRAFT)
+            queryset = queryset.exclude(
+                auto_generated=True, status=Invoice.Status.VOID,
+                sent_at__isnull=True, paid_at__isnull=True,
+            )
+        client_id = self.request.query_params.get('client')
+        return queryset.filter(client_id=client_id) if client_id else queryset
 
     def perform_create(self, serializer):
         if not self.request.user.is_staff:
@@ -1650,9 +1742,15 @@ class InvoiceViewSet(ClientScopedMixin, viewsets.ModelViewSet):
             unpriced.append(ServiceType(appointment.service_type).label)
 
         with transaction.atomic():
+            from .invoicing import invoice_for_appointment
+            Appointment.objects.select_for_update().get(pk=appointment.pk)
+            existing = invoice_for_appointment(appointment)
+            if existing is not None:
+                return Response({'invoice': self.get_serializer(existing).data, 'unpriced': []})
             invoice = Invoice.objects.create(
                 client=appointment.dog.client,
                 number=number,
+                source_appointment=appointment,
                 created_by=request.user,
             )
             for description, price in lines:
@@ -1673,6 +1771,8 @@ class InvoiceViewSet(ClientScopedMixin, viewsets.ModelViewSet):
     def mark_sent(self, request, pk=None):
         """Record that the invoice has gone out, and when."""
         invoice = self.get_object()
+        if invoice.auto_generated and not invoice.lines.exists():
+            return Response({'detail': 'Add the groom price before marking this invoice sent.'}, status=400)
         if not invoice.can_transition_to(Invoice.Status.SENT):
             return Response(
                 {
@@ -1700,6 +1800,8 @@ class InvoiceViewSet(ClientScopedMixin, viewsets.ModelViewSet):
         was cash in hand or a bank transfer.
         """
         invoice = self.get_object()
+        if invoice.auto_generated and not invoice.lines.exists():
+            return Response({'detail': 'Add the groom price before marking this invoice paid.'}, status=400)
         if not invoice.can_transition_to(Invoice.Status.PAID):
             return Response(
                 {'detail': 'A void invoice cannot be paid.'},
@@ -2040,6 +2142,7 @@ class IntakeSubmissionViewSet(viewsets.ReadOnlyModelViewSet):
                     vet=entry.get('vet', ''),
                     last_vet_visit=entry.get('last_vet_visit', ''),
                     owner_grooming=entry.get('owner_grooming', ''),
+                    groom_expectations=entry.get('groom_expectations', ''),
                     general_notes=entry.get('general_notes', ''),
                 )
                 for area in entry.get('problem_areas', []) or []:

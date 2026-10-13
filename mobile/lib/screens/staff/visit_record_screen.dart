@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import '../../constants/app_colors.dart';
 import '../../models/models.dart';
 import '../../services/data_service.dart';
+import '../../services/offline_store.dart';
+import '../../widgets/offline_status.dart';
 import '../../services/service_locator.dart';
 import '../../widgets/common.dart';
 import '../../widgets/temperament_picker.dart';
@@ -41,9 +43,13 @@ class VisitRecordScreen extends StatefulWidget {
     this.session,
     this.appointmentId,
     this.liveGroom,
+    this.clientReference,
+    this.startedAt,
   });
 
   final int dogId;
+  final String? clientReference;
+  final DateTime? startedAt;
   final String dogName;
 
   /// What the visit was for, when the opener knows — the timer leaves the
@@ -92,6 +98,8 @@ class LiveGroom {
 
 class _VisitRecordScreenState extends State<VisitRecordScreen> {
   final _data = getIt<DataService>();
+  late final _reference = widget.clientReference ?? newGroomReference();
+  late final _startedAt = widget.startedAt ?? DateTime.now();
 
   late final TextEditingController _recordedMinutes;
   late final TextEditingController _healthCheck;
@@ -387,10 +395,20 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
     setState(() => _busy = true);
     try {
       if (_isEditing) {
-        await _data.updateGroomSession(widget.session!.id, _record);
+        if (widget.session!.pendingSync) {
+          await _data.revisePendingGroom(widget.session!.clientReference!, {..._record, 'complete_card': true});
+          if (mounted) showSnack(context, 'Saved on this device. Ready to retry the upload.');
+        } else {
+          final updated = await _data.updateGroomSession(widget.session!.id, {..._record, 'complete_card': true});
+          if (mounted) reportSavedVisit(context, updated, saved: 'Visit record saved.');
+        }
       } else {
         final session = await _data.createGroomSession(
           dogId: widget.dogId,
+          dogName: widget.dogName,
+          clientReference: _reference,
+          startedAt: _startedAt,
+          completeCard: true,
           appointmentId: widget.appointmentId,
           // Banked now, not when the card was opened: the clock has been
           // going the whole time this was being filled in.
@@ -634,10 +652,10 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
         children: [
           Icon(Icons.visibility_outlined, size: 13, color: context.mojo.muted),
           const SizedBox(width: 5),
-          Text(
+          Flexible(child: Text(
             what,
             style: TextStyle(fontSize: 11.5, color: context.mojo.muted),
-          ),
+          )),
         ],
       ),
     );
@@ -652,8 +670,19 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
           : ListView(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
               children: [
+                const OfflineStatus(),
                 Text(widget.dogName, style: AppColors.display(22)),
                 const SizedBox(height: 16),
+                if (widget.session?.invoiceId != null)
+                  Padding(padding: const EdgeInsets.only(bottom: 16), child: Text(
+                    'Linked to invoice ${widget.session!.invoiceNumber ?? ''} on the owner’s profile.',
+                  ))
+                else if (widget.session == null || widget.session!.invoiceState != 'LEGACY')
+                  Padding(padding: const EdgeInsets.only(bottom: 16), child: Text(
+                    widget.session?.invoiceState == 'DONE'
+                      ? 'The invoice for this groom was removed. Saving this card will not create another.'
+                      : 'Saving the completed card prepares a draft invoice once the groom has a recorded time and is assigned to a dog.',
+                  )),
 
                 // The one thing that is different about a card opened
                 // mid-groom, said once at the top: nothing here is lost by
@@ -689,6 +718,7 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
                 if (_timings.isEmpty && !_onTheClock) ...[
                   DropdownButtonFormField<String>(
                     initialValue: _visitType,
+                    isExpanded: true,
                     decoration: const InputDecoration(labelText: 'What kind of visit'),
                     hint: const Text('Choose one'),
                     items: const [
@@ -1017,7 +1047,15 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
 /// showing it separately would mean two bars in a row — the second hides the
 /// first, so the first may as well not have been shown.
 void reportSavedVisit(BuildContext context, GroomSession session, {String? saved}) {
-  final message = [saved, session.bookingNote].whereType<String>().join(' ');
+  if (session.pendingSync) {
+    showSnack(context, 'Saved on this device. It will upload when connected.');
+    return;
+  }
+  final message = [
+    saved, session.bookingNote,
+    if (session.invoiceId != null) 'Linked to invoice ${session.invoiceNumber ?? ''} on the owner’s profile.',
+    if (session.isWalkIn && session.invoiceState == 'READY') 'The invoice will be prepared after you assign the dog.',
+  ].whereType<String>().join(' ');
   if (message.isEmpty) return;
 
   final bookingId = session.appointmentId;

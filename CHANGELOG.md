@@ -15,6 +15,18 @@ either on TestFlight or waiting for the first tag.
 
 ## [Unreleased]
 
+- Completing a timed groom card now prepares a draft invoice for review. It
+  keeps the booking's quoted price, supports offline uploads and walk-ins,
+  and avoids creating another invoice when a groom is uploaded again.
+
+- Behind the counter, start a named walk-in groom before making a dog profile,
+  then assign the finished groom to the right dog later.
+- Doguments and groom timers now work offline after the records have been saved
+  on the device. Finished grooms upload when the connection returns and the app is open.
+- Blocked diary time has colour categories, dog profiles link straight to breed
+  standards and bookings, and owners' invoices are available on their profiles.
+- Home grooming and what owners expect from a groom now have separate fields.
+
 Getting back into your account no longer means starting again.
 
 - Forgotten your password? There's now a link on the sign-in screen. Mojo and Co

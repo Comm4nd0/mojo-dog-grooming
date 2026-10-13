@@ -8,6 +8,7 @@ import '../../services/data_service.dart';
 import '../../services/groom_timer_service.dart';
 import '../../services/service_locator.dart';
 import '../../widgets/common.dart';
+import '../../widgets/offline_status.dart';
 import 'visit_record_screen.dart';
 
 /// Time a groom phase by phase.
@@ -151,6 +152,8 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
           dogId: widget.dogId,
           dogName: widget.dogName,
           appointmentId: session.appointmentId,
+          clientReference: session.clientReference,
+          startedAt: session.startedAt,
           liveGroom: LiveGroom(
             phases: () => _timer.timingsSnapshot(widget.dogId),
             settle: () => _timer.timingsNow(widget.dogId),
@@ -180,15 +183,16 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
     try {
       final session = await _data.createGroomSession(
         dogId: widget.dogId,
+        dogName: widget.dogName,
+        clientReference: _session?.clientReference,
+        startedAt: _session?.startedAt,
+        applyToDog: applyToDog,
         appointmentId: _session?.appointmentId,
         timings: timings,
         // Whatever she has put on the card so far goes with it. These two
         // buttons skip the card, and skipping it must not mean losing it.
         record: _session?.draft ?? const {},
       );
-      if (applyToDog) {
-        await _data.applySessionToDog(session.id);
-      }
       await _timer.clearSession(widget.dogId);
       if (!mounted) return;
       // One bar carrying both halves, and the undo if a booking was closed.
@@ -266,6 +270,11 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
           return ListView(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
             children: [
+              const OfflineStatus(),
+              if (widget.dogId < 0)
+                const Padding(padding: EdgeInsets.only(bottom: 12), child: Text(
+                  'Walk-in — finish the groom now, then assign it to a dog from Walk-in grooms.',
+                )),
               Container(
                 padding: const EdgeInsets.symmetric(vertical: 20),
                 color: context.mojo.tintWash,
@@ -275,7 +284,7 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
                     Text(models.formatClock(_totalSeconds), style: AppColors.display(44)),
                     const SizedBox(height: 4),
                     Text(
-                      'Usual: ${models.formatDuration(widget.usualMinutes)}',
+                      widget.dogId < 0 ? 'Walk-in' : 'Usual: ${models.formatDuration(widget.usualMinutes)}',
                       style: TextStyle(fontSize: 12, color: context.mojo.muted),
                     ),
                   ],
@@ -352,7 +361,7 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
                   style: TextStyle(fontSize: 12, color: context.mojo.muted),
                 ),
               ),
-              ElevatedButton(
+              if (widget.dogId > 0) ElevatedButton(
                 onPressed: _busy || totalMinutes == 0 ? null : () => _save(applyToDog: true),
                 child: Text(
                   _busy
@@ -368,7 +377,7 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
               const SizedBox(height: 10),
               OutlinedButton(
                 onPressed: _busy || totalMinutes == 0 ? null : () => _save(applyToDog: false),
-                child: const Text('SAVE WITHOUT CHANGING DEFAULT'),
+                child: Text(widget.dogId < 0 ? 'SAVE WALK-IN FOR LATER' : 'SAVE WITHOUT CHANGING DEFAULT'),
               ),
               if (totalMinutes > 0 || (_session?.hasDraft ?? false)) ...[
                 const SizedBox(height: 10),
@@ -382,7 +391,7 @@ class _GroomTimerScreenState extends State<GroomTimerScreen> {
               // those inside the prep and health-check parts of the groom, so
               // the timer does see them. What the phases genuinely never
               // cover is the handover at both ends and anything off the clock.
-              Text(
+              if (widget.dogId > 0) Text(
                 _bookingBuffer == null
                     // Said plainly rather than silently booking the raw timing.
                     // Nothing is added until Jess sets a figure.

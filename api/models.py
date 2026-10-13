@@ -916,6 +916,9 @@ class Dog(models.Model):
         blank=True,
         help_text='What the owner does themselves between grooms, and how often.',
     )
+    groom_expectations = models.TextField(
+        blank=True, help_text='What the owner expects of a groom, in their own words.',
+    )
     general_notes = models.TextField(blank=True)
 
     # What this dog usually has done. NOT staff-only, deliberately: it is what
@@ -1354,6 +1357,15 @@ class BlockedTime(models.Model):
     point is that every client sees the same blocked span.
     """
 
+    class Category(models.TextChoices):
+        SOCIAL = 'SOCIAL', 'Social'
+        KENNELS = 'KENNELS', 'Kennels'
+        IMPORTANT = 'IMPORTANT', 'Important'
+        SHOOT = 'SHOOT', 'Shoot'
+        DOG_CARE = 'DOG_CARE', 'Dog Care'
+        SHOWS = 'SHOWS', 'Shows'
+
+    category = models.CharField(max_length=12, choices=Category.choices, blank=True)
     start_at = models.DateTimeField()
     end_at = models.DateTimeField()
     notes = models.TextField(
@@ -1849,7 +1861,24 @@ class GroomSession(models.Model):
     slice served read-only through ``GroomReportViewSet``.
     """
 
-    dog = models.ForeignKey(Dog, on_delete=models.CASCADE, related_name='groom_sessions')
+    dog = models.ForeignKey(
+        Dog, on_delete=models.CASCADE, related_name='groom_sessions', null=True, blank=True,
+    )
+    walk_in_name = models.CharField(max_length=120, blank=True)
+    # A phone can lose the response after the server commits. Replaying the
+    # same reference must return that visit, not record the groom twice.
+    client_reference = models.UUIDField(null=True, blank=True, unique=True, editable=False)
+    class InvoiceState(models.TextChoices):
+        LEGACY = 'LEGACY', 'Historical record'
+        AWAITING_CARD = 'AWAITING_CARD', 'Waiting for completed card'
+        READY = 'READY', 'Card completed'
+        DONE = 'DONE', 'Invoice prepared'
+
+    # Existing records stay LEGACY. New API visits opt in explicitly; editing
+    # years of old cards must not generate a new set of bills.
+    invoice_state = models.CharField(max_length=16, choices=InvoiceState.choices, default=InvoiceState.LEGACY)
+    invoice = models.ForeignKey('Invoice', on_delete=models.SET_NULL, null=True, blank=True,
+                                related_name='groom_sessions')
     appointment = models.ForeignKey(
         Appointment, on_delete=models.SET_NULL, null=True, blank=True, related_name='groom_sessions',
     )
@@ -1999,7 +2028,8 @@ class GroomSession(models.Model):
         ordering = ['-started_at']
 
     def __str__(self):
-        return f'{self.dog.name} {self.get_visit_type_display().lower()} {self.started_at:%d %b %Y}'
+        name = self.dog.name if self.dog_id else self.walk_in_name
+        return f'{name} {self.get_visit_type_display().lower()} {self.started_at:%d %b %Y}'
 
     @property
     def total_seconds(self):
@@ -2069,7 +2099,7 @@ class GroomSession(models.Model):
         Dry" is now one as well, and letting that overwrite a 105-minute
         ``Dog.groom_minutes`` is the same bug in a new coat.
         """
-        if self.visit_type != ServiceType.GROOM:
+        if self.dog_id is None or self.visit_type != ServiceType.GROOM:
             return False
         if not self._was_a_whole_groom():
             return False
@@ -2125,6 +2155,8 @@ class GroomSession(models.Model):
         — the app both says which booking it was and gives Jess one tap to
         undo it, which is what makes it reasonable to do automatically.
         """
+        if self.dog_id is None:
+            return None
         if self.appointment_id is None:
             day = timezone.localtime(self.started_at).date()
             candidates = (
@@ -2188,13 +2220,15 @@ class GroomSession(models.Model):
         # against afterwards.
         dog = self.dog
         result = super().delete(*args, **kwargs)
-        dog.recalculate_average_groom_minutes()
+        if dog is not None:
+            dog.recalculate_average_groom_minutes()
         return result
 
     def _refresh_dog_average(self):
         # `update_fields` on the dog is deliberately narrow, so this cannot
         # clobber a concurrent edit to the rest of the profile.
-        self.dog.recalculate_average_groom_minutes()
+        if self.dog_id is not None:
+            self.dog.recalculate_average_groom_minutes()
 
     def _was_a_whole_groom(self):
         """Whether this session's time is a fair default for a full groom.
@@ -2242,6 +2276,10 @@ class Invoice(models.Model):
         VOID = 'VOID', 'Void'
 
     client = models.ForeignKey(Client, on_delete=models.PROTECT, related_name='invoices')
+    auto_generated = models.BooleanField(default=False, editable=False)
+    source_appointment = models.ForeignKey(
+        Appointment, on_delete=models.SET_NULL, null=True, blank=True, related_name='generated_invoices',
+    )
     number = models.CharField(max_length=32, unique=True, blank=True)
     issue_date = models.DateField(default=timezone.localdate)
     due_date = models.DateField(null=True, blank=True)

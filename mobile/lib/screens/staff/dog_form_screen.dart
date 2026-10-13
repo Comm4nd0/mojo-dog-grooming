@@ -50,6 +50,7 @@ class _DogFormScreenState extends State<DogFormScreen> {
   late final TextEditingController _vet;
   late final TextEditingController _lastVetVisit;
   late final TextEditingController _ownerGrooming;
+  late final TextEditingController _groomExpectations;
   late final TextEditingController _generalNotes;
   late final Map<String, TextEditingController> _prefs;
 
@@ -97,6 +98,7 @@ class _DogFormScreenState extends State<DogFormScreen> {
     _vet = TextEditingController(text: dog?.vet ?? '');
     _lastVetVisit = TextEditingController(text: dog?.lastVetVisit ?? '');
     _ownerGrooming = TextEditingController(text: dog?.ownerGrooming ?? '');
+    _groomExpectations = TextEditingController(text: dog?.groomExpectations ?? '');
     _generalNotes = TextEditingController(text: dog?.generalNotes ?? '');
     _prefs = {
       'pref_body': TextEditingController(text: dog?.prefBody ?? ''),
@@ -123,7 +125,7 @@ class _DogFormScreenState extends State<DogFormScreen> {
       _name, _breedOther, _groomMinutes, _price, _scheduleWeeks,
       _temperamentNotes, _colour, _microchip, _allergies, _medications,
       _medicalIssues, _vaccinations, _medicalNotes, _vet, _lastVetVisit,
-      _ownerGrooming, _generalNotes, ..._prefs.values,
+      _ownerGrooming, _groomExpectations, _generalNotes, ..._prefs.values,
     ]) {
       controller.dispose();
     }
@@ -272,6 +274,7 @@ class _DogFormScreenState extends State<DogFormScreen> {
       'vet': _vet.text.trim(),
       'last_vet_visit': _lastVetVisit.text.trim(),
       'owner_grooming': _ownerGrooming.text.trim(),
+      'groom_expectations': _groomExpectations.text.trim(),
       'general_notes': _generalNotes.text.trim(),
       'default_services': _defaultServices.toList(),
       for (final entry in _prefs.entries) entry.key: entry.value.text.trim(),
@@ -670,9 +673,15 @@ class _DogFormScreenState extends State<DogFormScreen> {
 
             const SectionHeader(title: 'Notes'),
             MojoTextField(
+              controller: _groomExpectations,
+              decoration: const InputDecoration(labelText: 'What Owners Expect of a Groom'),
+              maxLines: 3,
+            ),
+            const SizedBox(height: 12),
+            MojoTextField(
               controller: _ownerGrooming,
               decoration: const InputDecoration(
-                labelText: 'What the owner does themselves, and how often',
+                labelText: 'What Grooming Owners Carry Out Themselves',
               ),
               maxLines: 2,
               textCapitalization: TextCapitalization.sentences,

@@ -2,26 +2,29 @@ import 'package:flutter/foundation.dart';
 
 import '../models/models.dart';
 import 'api_client.dart';
+import 'offline_store.dart';
 
 /// Every API call the app makes, in one place.
 ///
 /// Screens depend on this rather than [ApiClient] directly, so the endpoint
 /// shapes live here and the widgets stay about presentation.
 class DataService {
-  DataService(this._api);
+  DataService(this._api, {this.offline});
+
+  final OfflineStore? offline;
 
   final ApiClient _api;
 
   // ── Settings and profile ───────────────────────────────────────────
 
   Future<AppSettings> getSettings() async =>
-      AppSettings.fromJson(await _api.get('/settings/') as Map<String, dynamic>);
+      AppSettings.fromJson(await _get('/settings/') as Map<String, dynamic>);
 
   Future<void> updateSettings(Map<String, dynamic> changes) =>
       _api.patch('/settings/', changes);
 
   Future<Map<String, dynamic>> getMyProfile() async =>
-      await _api.get('/me/') as Map<String, dynamic>;
+      await _get('/me/') as Map<String, dynamic>;
 
   Future<void> updateMyProfile(Map<String, dynamic> changes) => _api.patch('/me/', changes);
 
@@ -30,7 +33,7 @@ class DataService {
   /// The Doguments list. Server-side [search] covers dog name, client name,
   /// client UID and phone number.
   Future<List<DogSummary>> getDogs({String? search, bool includeInactive = false}) async {
-    final payload = await _api.get('/dogs/', query: {
+    final payload = await _getAll('/dogs/', query: {
       if (search != null && search.isNotEmpty) 'search': search,
       if (includeInactive) 'include_inactive': '1',
     });
@@ -38,7 +41,7 @@ class DataService {
   }
 
   Future<Dog> getDog(int id) async =>
-      Dog.fromJson(await _api.get('/dogs/$id/') as Map<String, dynamic>);
+      Dog.fromJson(await _get('/dogs/$id/') as Map<String, dynamic>);
 
   Future<Dog> createDog(Map<String, dynamic> body) async =>
       Dog.fromJson(await _api.post('/dogs/', body) as Map<String, dynamic>);
@@ -57,7 +60,7 @@ class DataService {
   /// answer rather than a missing one.
   Future<({String? dueDate, String basis})> getSuggestedNextGroom(int dogId) async {
     final payload =
-        await _api.get('/dogs/$dogId/suggested_next_groom/') as Map<String, dynamic>;
+        await _get('/dogs/$dogId/suggested_next_groom/') as Map<String, dynamic>;
     return (
       dueDate: payload['due_date']?.toString(),
       basis: payload['basis']?.toString() ?? '',
@@ -69,7 +72,7 @@ class DataService {
   /// Dogs already in the diary are left out by the server unless
   /// [includeBooked], which is what makes it a call list rather than a report.
   Future<List<DueDog>> getDogsDue({int withinDays = 14, bool includeBooked = false}) async {
-    final payload = await _api.get('/dogs/due/', query: {
+    final payload = await _get('/dogs/due/', query: {
       'within_days': '$withinDays',
       if (includeBooked) 'include_booked': '1',
     });
@@ -80,14 +83,14 @@ class DataService {
   // ── Clients ────────────────────────────────────────────────────────
 
   Future<List<ClientRecord>> getClients({String? search}) async {
-    final payload = await _api.get('/clients/', query: {
+    final payload = await _getAll('/clients/', query: {
       if (search != null && search.isNotEmpty) 'search': search,
     });
     return ApiClient.resultsOf(payload).map(ClientRecord.fromJson).toList();
   }
 
   Future<ClientRecord> getClient(int id) async =>
-      ClientRecord.fromJson(await _api.get('/clients/$id/') as Map<String, dynamic>);
+      ClientRecord.fromJson(await _get('/clients/$id/') as Map<String, dynamic>);
 
   Future<ClientRecord> createClient(Map<String, dynamic> body) async =>
       ClientRecord.fromJson(await _api.post('/clients/', body) as Map<String, dynamic>);
@@ -101,14 +104,14 @@ class DataService {
   /// short looks like a reference list, which is how "not all the breeds
   /// are showing" went unnoticed until Jess added some past the cut.
   Future<List<Breed>> getBreeds({String? search}) async {
-    final rows = await _api.getAll('/breeds/', query: {
+    final rows = await _getAll('/breeds/', query: {
       if (search != null && search.isNotEmpty) 'search': search,
     });
     return rows.map(Breed.fromJson).toList();
   }
 
   Future<Breed> getBreed(int id) async =>
-      Breed.fromJson(await _api.get('/breeds/$id/') as Map<String, dynamic>);
+      Breed.fromJson(await _get('/breeds/$id/') as Map<String, dynamic>);
 
   Future<void> updateBreed(int id, Map<String, dynamic> changes) =>
       _api.patch('/breeds/$id/', changes);
@@ -120,7 +123,7 @@ class DataService {
   // is seeded or written by the app: it is veterinary information.
 
   Future<List<MedicalNote>> getMedicalNotes({String? search, String? kind, int? breedId}) async {
-    final rows = await _api.getAll('/medical-notes/', query: {
+    final rows = await _getAll('/medical-notes/', query: {
       'search': ?search,
       'kind': ?kind,
       if (breedId != null) 'breed': '$breedId',
@@ -140,7 +143,7 @@ class DataService {
   // ── Problem areas ──────────────────────────────────────────────────
 
   Future<List<ProblemArea>> getProblemAreas(int dogId) async {
-    final payload = await _api.get('/problem-areas/', query: {'dog': dogId});
+    final payload = await _get('/problem-areas/', query: {'dog': dogId});
     return ApiClient.resultsOf(payload).map(ProblemArea.fromJson).toList();
   }
 
@@ -162,7 +165,7 @@ class DataService {
   // ── Photos ─────────────────────────────────────────────────────────
 
   Future<List<DogPhoto>> getDogPhotos(int dogId) async {
-    final payload = await _api.get('/dog-photos/', query: {'dog': dogId});
+    final payload = await _get('/dog-photos/', query: {'dog': dogId});
     return ApiClient.resultsOf(payload).map(DogPhoto.fromJson).toList();
   }
 
@@ -198,7 +201,7 @@ class DataService {
 
     // Null query values are dropped by ApiClient, so these can be passed
     // unconditionally.
-    final payload = await _api.get('/appointments/', query: {
+    final payload = await _getAll('/appointments/', query: {
       'from': asDate(from),
       'to': asDate(to),
       'dog': dogId,
@@ -243,7 +246,7 @@ class DataService {
     DateTime? from,
     int count = 3,
   }) async {
-    final payload = await _api.get('/appointments/next_available/', query: {
+    final payload = await _get('/appointments/next_available/', query: {
       'dog': dogId,
       'service_type': serviceType,
       'count': count,
@@ -279,7 +282,7 @@ class DataService {
   /// way to list them — without one the badge pointed at a screen that could
   /// not show them.
   Future<List<Appointment>> getAppointmentRequests() async {
-    final payload = await _api.get('/appointments/', query: {'status': 'REQUESTED'});
+    final payload = await _get('/appointments/', query: {'status': 'REQUESTED'});
     return ApiClient.resultsOf(payload).map(Appointment.fromJson).toList();
   }
 
@@ -365,29 +368,119 @@ class DataService {
   // ── Groom sessions ─────────────────────────────────────────────────
 
   Future<List<GroomSession>> getGroomSessions(int dogId, {String? visitType}) async {
-    final payload = await _api.get('/groom-sessions/', query: {
+    final payload = await _getAll('/groom-sessions/', query: {
       'dog': dogId,
       'visit_type': ?visitType,
     });
-    return ApiClient.resultsOf(payload).map(GroomSession.fromJson).toList();
+    return [
+      ...ApiClient.resultsOf(payload).map(GroomSession.fromJson),
+      for (final entry in offline?.pending ?? <Map<String, dynamic>>[])
+        if (entry['body']['dog'] == dogId && (visitType == null || entry['body']['visit_type'] == visitType))
+          _pendingSession(Map<String, dynamic>.from(entry['body'] as Map), entry['dog_name'] as String),
+    ];
   }
 
   Future<GroomSession> createGroomSession({
     required int dogId,
+    String dogName = '',
+    String? clientReference,
+    DateTime? startedAt,
+    bool applyToDog = false,
+    bool completeCard = false,
     int? appointmentId,
     required List<PhaseTiming> timings,
     String notes = '',
     Map<String, dynamic> record = const {},
   }) async {
-    final payload = await _api.post('/groom-sessions/', {
-      'dog': dogId,
-      'appointment': ?appointmentId,
-      'timings': timings.map((t) => t.toJson()).toList(),
+    var body = <String, dynamic>{
       'notes': notes,
       ...record,
-    });
-    return GroomSession.fromJson(payload as Map<String, dynamic>);
+      'dog': dogId > 0 ? dogId : null,
+      if (dogId <= 0) 'walk_in_name': dogName,
+      'appointment': ?appointmentId,
+      'timings': timings.map((t) => t.toJson()).toList(),
+      'started_at': (startedAt ?? DateTime.now()).toUtc().toIso8601String(),
+      'finished_at': DateTime.now().toUtc().toIso8601String(),
+      'client_reference': clientReference ?? newGroomReference(),
+      'apply_to_dog': applyToDog,
+      'complete_card': completeCard,
+    };
+    final store = offline;
+    final epoch = store?.generation;
+    if (store?.enabled ?? false) {
+      for (final entry in store!.pending) {
+        if (entry['body']['client_reference'] == body['client_reference']) {
+          body = Map<String, dynamic>.from(entry['body'] as Map);
+          break;
+        }
+      }
+      await store.enqueue(body, dogName);
+      if (epoch != store.generation) throw const ApiException(409, 'Account changed while saving.');
+    }
+    try {
+      final payload = await _api.post('/groom-sessions/', body) as Map<String, dynamic>;
+      if (epoch != store?.generation) throw const ApiException(409, 'Account changed while saving.');
+      if (store?.enabled ?? false) {
+        await store!.remove(body['client_reference'] as String);
+        if (epoch != store.generation) throw const ApiException(409, 'Account changed while saving.');
+        store.status(offline: false);
+      }
+      return GroomSession.fromJson(payload);
+    } on NoConnectionException {
+      if (store == null || !store.enabled || epoch != store.generation) rethrow;
+      store.status(offline: true);
+      return _pendingSession(body, dogName);
+    } on ApiException catch (error) {
+      if (store == null || !store.enabled || epoch != store.generation) rethrow;
+      if (error.statusCode >= 500) {
+        store.status(error: error.message);
+        return _pendingSession(body, dogName);
+      }
+      await store.remove(body['client_reference'] as String);
+      rethrow;
+    }
   }
+
+  GroomSession _pendingSession(Map<String, dynamic> body, String name, {String? error}) {
+    final timings = (body['timings'] as List? ?? []);
+    final seconds = timings.fold<int>(0, (sum, t) => sum + ((t['duration_seconds'] as num?)?.toInt() ?? 0));
+    return GroomSession.fromJson({
+      ...body, 'id': -1, 'dog_name': name, 'pending_sync': true,
+      'invoice_state': body['complete_card'] == true ? 'READY' : 'AWAITING_CARD',
+      'pending_error': error,
+      'total_minutes': body['recorded_minutes'] ?? (seconds / 60).round(),
+    });
+  }
+
+  List<GroomSession> get pendingGrooms => [
+    for (final entry in offline?.pending ?? <Map<String, dynamic>>[])
+      _pendingSession(Map<String, dynamic>.from(entry['body'] as Map),
+        entry['dog_name'] as String, error: entry['error']?.toString()),
+  ];
+
+  Future<void> revisePendingGroom(String reference, Map<String, dynamic> changes, {String? dogName}) async {
+    if (offline == null) throw StateError('No saved upload found.');
+    await offline!.revise(reference, changes, dogName: dogName);
+  }
+
+  Future<List<GroomSession>> getWalkIns() async {
+    List<Map<String, dynamic>> rows;
+    try {
+      rows = await _getAll('/groom-sessions/', query: {'unassigned': '1'});
+    } on NoConnectionException {
+      if (offline?.pendingCount == 0 || offline == null) rethrow;
+      rows = [];
+    }
+    return [
+      ...rows.map(GroomSession.fromJson),
+      for (final entry in offline?.pending ?? <Map<String, dynamic>>[])
+        if (entry['body']['dog'] == null)
+          _pendingSession(Map<String, dynamic>.from(entry['body'] as Map), entry['dog_name'] as String),
+    ];
+  }
+
+  Future<GroomSession> assignWalkIn(int sessionId, int dogId) async =>
+      GroomSession.fromJson(await _api.post('/groom-sessions/$sessionId/assign/', {'dog': dogId}) as Map<String, dynamic>);
 
   Future<GroomSession> updateGroomSession(int id, Map<String, dynamic> changes) async =>
       GroomSession.fromJson(await _api.patch('/groom-sessions/$id/', changes) as Map<String, dynamic>);
@@ -402,7 +495,7 @@ class DataService {
   /// The owner-visible slice of a dog's visit records. Scoped on the server,
   /// so a client only ever gets their own dogs' reports back.
   Future<List<GroomReport>> getGroomReports(int dogId) async {
-    final payload = await _api.get('/groom-reports/', query: {'dog': dogId});
+    final payload = await _get('/groom-reports/', query: {'dog': dogId});
     return ApiClient.resultsOf(payload).map(GroomReport.fromJson).toList();
   }
 
@@ -410,7 +503,7 @@ class DataService {
 
   /// What Jess does, in her order. Active services only.
   Future<List<ServiceItem>> getServices() async {
-    final payload = await _api.get('/services/');
+    final payload = await _get('/services/');
     return ApiClient.resultsOf(payload).map(ServiceItem.fromJson).toList();
   }
 
@@ -424,7 +517,7 @@ class DataService {
 
   Future<PendingCounts> getPending() async {
     final counts = PendingCounts.fromJson(
-      await _api.get('/pending/') as Map<String, dynamic>,
+      await _get('/pending/') as Map<String, dynamic>,
     );
     pendingTotal.value = counts.total;
     return counts;
@@ -433,7 +526,7 @@ class DataService {
   // ── Change requests ────────────────────────────────────────────────
 
   Future<List<ChangeRequest>> getChangeRequests({String? status}) async {
-    final payload = await _api.get(
+    final payload = await _get(
       '/client-change-requests/',
       query: {'status': ?status},
     );
@@ -457,7 +550,7 @@ class DataService {
   // edit. A consent is evidence of what was signed on a day.
 
   Future<List<ConsentKindOption>> getConsentKinds() async {
-    final payload = await _api.get('/consents/kinds/');
+    final payload = await _get('/consents/kinds/');
     return (payload as List<dynamic>)
         .map((row) => ConsentKindOption.fromJson(row as Map<String, dynamic>))
         .toList();
@@ -486,7 +579,7 @@ class DataService {
   // move one; Jess reviews it and the booking is unchanged until she does.
 
   Future<List<AppointmentChangeRequest>> getAppointmentChangeRequests({String? status}) async {
-    final payload = await _api.get('/appointment-change-requests/', query: {
+    final payload = await _get('/appointment-change-requests/', query: {
       'status': ?status,
     });
     return ApiClient.resultsOf(payload).map(AppointmentChangeRequest.fromJson).toList();
@@ -529,7 +622,7 @@ class DataService {
   // update — free text, reviewed by Jess, who makes any edit herself.
 
   Future<List<DogChangeRequest>> getDogChangeRequests({String? status}) async {
-    final payload = await _api.get('/dog-change-requests/', query: {
+    final payload = await _get('/dog-change-requests/', query: {
       'status': ?status,
     });
     return ApiClient.resultsOf(payload).map(DogChangeRequest.fromJson).toList();
@@ -549,7 +642,7 @@ class DataService {
   // ── Documents ──────────────────────────────────────────────────────
 
   Future<List<DogDocument>> getDogDocuments(int dogId) async {
-    final payload = await _api.get('/dog-documents/', query: {'dog': '$dogId'});
+    final payload = await _get('/dog-documents/', query: {'dog': '$dogId'});
     return ApiClient.resultsOf(payload).map(DogDocument.fromJson).toList();
   }
 
@@ -586,7 +679,7 @@ class DataService {
   /// shades a missing weekday entirely, because "no hours set" means "not
   /// normally open", not "open all hours".
   Future<Map<int, (int, int)>> getOpeningHoursByWeekday() async {
-    final rows = ApiClient.resultsOf(await _api.get('/opening-hours/'));
+    final rows = ApiClient.resultsOf(await _get('/opening-hours/'));
     final hours = <int, (int, int)>{};
     for (final row in rows) {
       if (row['is_closed'] == true) continue;
@@ -601,7 +694,7 @@ class DataService {
   }
 
   Future<Set<DateTime>> getClosureDates() async {
-    final rows = ApiClient.resultsOf(await _api.get('/closures/'));
+    final rows = ApiClient.resultsOf(await _get('/closures/'));
     return {
       for (final row in rows)
         if (DateTime.tryParse(row['date']?.toString() ?? '') case final date?)
@@ -616,7 +709,7 @@ class DataService {
   /// request sheet say "not available" before anything is sent.
   Future<List<BlockedTime>> getBlockedTimes({DateTime? from, DateTime? to}) async {
     String? asDate(DateTime? value) => value?.toIso8601String().split('T').first;
-    final payload = await _api.get('/blocked-times/', query: {
+    final payload = await _get('/blocked-times/', query: {
       'from': asDate(from),
       'to': asDate(to),
       'page_size': '500',
@@ -628,11 +721,13 @@ class DataService {
     required DateTime startAt,
     required DateTime endAt,
     String notes = '',
+    String category = '',
   }) async {
     final payload = await _api.post('/blocked-times/', {
       'start_at': startAt.toUtc().toIso8601String(),
       'end_at': endAt.toUtc().toIso8601String(),
       'notes': notes,
+      'category': category,
     });
     return BlockedTime.fromJson(payload as Map<String, dynamic>);
   }
@@ -660,7 +755,7 @@ class DataService {
   /// anything in the app that spells out "Fidgety" will be wrong the day she
   /// changes it.
   Future<List<TemperamentGrade>> getTemperamentGrades() async {
-    final payload = await _api.get('/temperament-grades/');
+    final payload = await _get('/temperament-grades/');
     return ApiClient.resultsOf(payload).map(TemperamentGrade.fromJson).toList();
   }
 
@@ -676,7 +771,7 @@ class DataService {
   static final ValueNotifier<int> outstandingTodos = ValueNotifier<int>(0);
 
   Future<List<TodoItem>> getTodos() async {
-    final payload = await _api.get('/todos/');
+    final payload = await _get('/todos/');
     final todos = ApiClient.resultsOf(payload).map(TodoItem.fromJson).toList();
     outstandingTodos.value = todos.where((todo) => !todo.isDone).length;
     return todos;
@@ -709,7 +804,7 @@ class DataService {
   // ── Equipment ──────────────────────────────────────────────────────
 
   Future<List<Equipment>> getEquipment() async {
-    final payload = await _api.get('/equipment/');
+    final payload = await _get('/equipment/');
     return ApiClient.resultsOf(payload).map(Equipment.fromJson).toList();
   }
 
@@ -724,8 +819,8 @@ class DataService {
 
   // ── Invoices ───────────────────────────────────────────────────────
 
-  Future<List<Invoice>> getInvoices() async {
-    final payload = await _api.get('/invoices/');
+  Future<List<Invoice>> getInvoices({int? clientId}) async {
+    final payload = await _getAll('/invoices/', query: {'client': clientId});
     return ApiClient.resultsOf(payload).map(Invoice.fromJson).toList();
   }
 
@@ -791,7 +886,7 @@ class DataService {
   // ── Intake ─────────────────────────────────────────────────────────
 
   Future<List<IntakeSubmission>> getIntakeSubmissions({String? status}) async {
-    final payload = await _api.get('/intake-submissions/', query: {
+    final payload = await _get('/intake-submissions/', query: {
       'status': ?status,
     });
     return ApiClient.resultsOf(payload).map(IntakeSubmission.fromJson).toList();
@@ -815,7 +910,7 @@ class DataService {
   // ── Profile claims ─────────────────────────────────────────────────
 
   Future<List<ClaimRequest>> getClaimRequests() async {
-    final payload = await _api.get('/claim-requests/');
+    final payload = await _get('/claim-requests/');
     return ApiClient.resultsOf(payload).map(ClaimRequest.fromJson).toList();
   }
 
@@ -846,14 +941,14 @@ class DataService {
   // ── Logins and passwords (superuser only) ──────────────────────────
 
   Future<List<AccountSummary>> getAccounts({String? search}) async {
-    final payload = await _api.get('/accounts/', query: {
+    final payload = await _get('/accounts/', query: {
       'search': ?search,
     });
     return ApiClient.resultsOf(payload).map(AccountSummary.fromJson).toList();
   }
 
   Future<List<PasswordHelpRequest>> getPasswordHelpRequests({String? status}) async {
-    final payload = await _api.get('/password-reset-requests/', query: {
+    final payload = await _get('/password-reset-requests/', query: {
       'status': ?status,
     });
     return ApiClient.resultsOf(payload).map(PasswordHelpRequest.fromJson).toList();
@@ -880,5 +975,110 @@ class DataService {
       'send_email': sendEmail,
     });
     return IssuedResetLink.fromJson(payload as Map<String, dynamic>);
+  }
+
+  static const _offlinePaths = {
+    'dogs', 'clients', 'breeds', 'groom-sessions', 'dog-photos',
+    'dog-documents', 'temperament-grades', 'equipment', 'settings',
+  };
+
+  bool _canCache(String path) {
+    final bits = path.split('/').where((s) => s.isNotEmpty).toList();
+    return bits.isNotEmpty && _offlinePaths.contains(bits.first) &&
+        (bits.length == 1 || (bits.length == 2 && int.tryParse(bits[1]) != null));
+  }
+
+  Future<dynamic> _read(String path, Map<String, dynamic>? query, {bool all = false}) async {
+    final store = offline;
+    final epoch = store?.generation;
+    final cacheable = _canCache(path) && (store?.enabled ?? false);
+    final cached = cacheable ? store!.read(path, query) : null;
+    if (store?.enabled == true && store!.isOffline) {
+      if (cached != null) return cached;
+      throw const NoConnectionException();
+    }
+    try {
+      final result = all ? await _api.getAll(path, query: query) : await _api.get(path, query: query);
+      if (epoch != store?.generation) throw const ApiException(409, 'Account changed.');
+      if (cacheable) {
+        // An ordinary read still works if the device cannot cache it. Finishing
+        // a groom, unlike reading one, never swallows a storage failure.
+        try { await store!.remember(path, query, result); } catch (_) {}
+        if (epoch != store!.generation) throw const ApiException(409, 'Account changed.');
+        store.status(offline: false);
+      }
+      return result;
+    } on ApiException catch (error) {
+      if (epoch == store?.generation && (error.isUnauthorised || error.isForbidden)) {
+        await store?.activate(null);
+      }
+      rethrow;
+    } on NoConnectionException {
+      if (epoch != store?.generation) rethrow;
+      if (store?.enabled == true) store!.status(offline: true);
+      if (cached != null) return cached;
+      rethrow;
+    }
+  }
+
+  Future<dynamic> _get(String path, {Map<String, dynamic>? query}) => _read(path, query);
+  Future<List<Map<String, dynamic>>> _getAll(String path, {Map<String, dynamic>? query}) async =>
+      ApiClient.resultsOf(await _read(path, query, all: true));
+
+  /// Called on opening/resuming the staff app and periodically while open.
+  /// A reference stays on disk until its server response is acknowledged.
+  Future<void> syncOffline({bool refreshSnapshot = false}) async {
+    final store = offline;
+    if (store == null || !store.enabled || store.syncing) return;
+    final epoch = store.generation;
+    final hadPending = store.pendingCount > 0;
+    store.status(busy: true);
+    try {
+      // Revalidate the remembered role before sending any saved staff data.
+      final identity = await _api.get('/auth/users/me/') as Map<String, dynamic>;
+      if (epoch != store.generation) return;
+      if (identity['is_staff'] != true) {
+        await store.activate(null);
+        return;
+      }
+      for (final entry in store.pending) {
+        if (epoch != store.generation) return;
+        final body = Map<String, dynamic>.from(entry['body'] as Map);
+        try {
+          await _api.post('/groom-sessions/', body);
+        } on ApiException catch (error) {
+          if (epoch != store.generation) return;
+          if (error.statusCode == 400) {
+            await store.reject(body['client_reference'] as String, error.message);
+            continue;
+          }
+          rethrow;
+        }
+        if (epoch != store.generation) return;
+        await store.remove(body['client_reference'] as String);
+        if (epoch != store.generation) return;
+      }
+      // This both probes the connection and refreshes the offline book after
+      // uploads. One response is complete, including dogs past the first page.
+      if (refreshSnapshot || hadPending || store.isOffline || store.savedAt == null) {
+        final snapshot = await _api.get('/dogs/offline/') as Map<String, dynamic>;
+        if (epoch != store.generation) return;
+        await store.saveSnapshot(snapshot);
+        if (epoch != store.generation) return;
+      }
+      store.status(offline: false, busy: false,
+        error: store.pendingCount > 0 ? 'Review the saved grooms in Doguments.' : null);
+    } on ApiException catch (error) {
+      if (epoch != store.generation) return;
+      if (error.isUnauthorised || error.isForbidden) {
+        await store.activate(null);
+      } else {
+        store.status(busy: false, error: error.message);
+      }
+    } on NoConnectionException {
+      if (epoch == store.generation) store.status(offline: true, busy: false);
+    } catch (error) {
+      if (epoch == store.generation) store.status(busy: false, error: error.toString());
+    }
   }
 }

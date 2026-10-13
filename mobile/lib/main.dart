@@ -76,6 +76,8 @@ class _MojoAppState extends State<MojoApp> {
     if (!_auth.isSignedIn) return const LoginScreen();
     // Staff and clients get entirely different shells — a client never sees
     // the management surface at all.
-    return _auth.isStaff ? const StaffShell() : const ClientShell();
+    return _auth.isStaff
+        ? StaffShell(key: ValueKey('staff-${_auth.user!.username}'))
+        : ClientShell(key: ValueKey('client-${_auth.user!.username}'));
   }
 }

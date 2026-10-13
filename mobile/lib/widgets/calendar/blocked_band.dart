@@ -1,16 +1,15 @@
 import 'package:flutter/material.dart';
 
-import '../../constants/app_colors.dart';
 import 'timeline_layout.dart';
+import 'block_category.dart';
 import 'timeline_metrics.dart';
 
 /// Blocked-out time, drawn on the axis.
 ///
 /// Hatched rather than filled, so it reads as "nothing goes here" rather than
 /// as a booking with no name — and so a booking Jess puts on top of it (a
-/// warning, never a refusal) still stands out as the solid thing. Grey, not
-/// a temperament colour: the left edge of every other block on this axis
-/// means a handling grade, and this is not a dog.
+/// warning, never a refusal) still stands out as the solid thing. The hatch
+/// stays distinct from a dog booking even when Jess gives it a category colour.
 class BlockedBand extends StatelessWidget {
   const BlockedBand({
     super.key,
@@ -28,11 +27,13 @@ class BlockedBand extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final height = placed.height(metrics);
-    final ink = context.mojo.muted;
+    final ink = blockCategoryColour(context, placed.block.category);
     final block = placed.block;
-    final headline = block.headline;
+    final category = blockCategoryLabels[block.category] ?? '';
+    final headline = [if ((block.category ?? '').isNotEmpty) category, block.headline]
+        .where((s) => s.isNotEmpty).join(' · ');
     final label = compact || headline.isEmpty || height < 34
-        ? 'Blocked'
+        ? (category.isNotEmpty && (block.category ?? '').isNotEmpty ? category : 'Blocked')
         : 'Blocked · $headline';
 
     return CustomPaint(

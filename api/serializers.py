@@ -18,6 +18,7 @@ from django.conf import settings
 from django.contrib.auth.models import User
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
 from django.utils import timezone
 from djoser.serializers import UserCreateSerializer as DjoserUserCreateSerializer
 from rest_framework import serializers
@@ -481,11 +482,11 @@ class BlockedTimeSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
     scoped because the span is the same for everyone.
     """
 
-    staff_only_fields = ('notes', 'created_by')
+    staff_only_fields = ('notes', 'category', 'created_by')
 
     class Meta:
         model = BlockedTime
-        fields = ['id', 'start_at', 'end_at', 'notes', 'created_by', 'created_at', 'updated_at']
+        fields = ['id', 'start_at', 'end_at', 'notes', 'category', 'created_by', 'created_at', 'updated_at']
         read_only_fields = ['id', 'created_by', 'created_at', 'updated_at']
 
     def validate(self, data):
@@ -597,6 +598,8 @@ class ClientSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at', 'updated_at']
 
     def get_dog_count(self, obj):
+        if 'dogs' in getattr(obj, '_prefetched_objects_cache', {}):
+            return sum(dog.is_active for dog in obj.dogs.all())
         return obj.dogs.filter(is_active=True).count()
 
     def get_has_login(self, obj):
@@ -993,7 +996,7 @@ class DogSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
             'pref_body', 'pref_feet', 'pref_tail', 'pref_face', 'pref_ears', 'pref_skirt',
             'default_services', 'default_services_detail',
             'allergies', 'medications', 'medical_issues', 'vaccinations',
-            'medical_notes', 'vet', 'last_vet_visit', 'owner_grooming',
+            'medical_notes', 'vet', 'last_vet_visit', 'owner_grooming', 'groom_expectations',
             'general_notes', 'is_active',
             'problem_areas', 'created_at', 'updated_at',
         ]
@@ -1238,13 +1241,17 @@ class PhaseTimingSerializer(serializers.ModelSerializer):
 
 class GroomSessionSerializer(serializers.ModelSerializer):
     timings = PhaseTimingSerializer(many=True, required=False)
-    dog_name = serializers.CharField(source='dog.name', read_only=True)
+    dog_name = serializers.SerializerMethodField()
+    client_reference = serializers.UUIDField(required=False, allow_null=True)
+    apply_to_dog = serializers.BooleanField(write_only=True, required=False, default=False)
+    complete_card = serializers.BooleanField(write_only=True, required=False, default=False)
+    invoice_number = serializers.CharField(source='invoice.number', read_only=True, default=None)
     total_seconds = serializers.IntegerField(read_only=True)
     total_minutes = serializers.IntegerField(read_only=True)
     # What this visit says to book next time, which is not what it timed — see
     # GroomSession.bookable_minutes. Sent so the app can say which figure it
     # wrote to the dog rather than quoting the stopwatch back at Jess.
-    bookable_minutes = serializers.IntegerField(read_only=True)
+    bookable_minutes = serializers.SerializerMethodField()
 
     visit_type_display = serializers.CharField(source='get_visit_type_display', read_only=True)
     # Jess's own wording for the grade, not the frozen enum label — she renames
@@ -1276,7 +1283,9 @@ class GroomSessionSerializer(serializers.ModelSerializer):
     class Meta:
         model = GroomSession
         fields = [
-            'id', 'dog', 'dog_name', 'appointment', 'visit_type', 'visit_type_display',
+            'id', 'dog', 'dog_name', 'walk_in_name', 'client_reference', 'apply_to_dog',
+            'complete_card', 'invoice_state', 'invoice', 'invoice_number',
+            'appointment', 'visit_type', 'visit_type_display',
             'appointment_start_at', 'appointment_status', 'appointment_status_before',
             'started_at', 'finished_at', 'recorded_minutes',
             'health_check_notes',
@@ -1295,7 +1304,15 @@ class GroomSessionSerializer(serializers.ModelSerializer):
             'timings', 'total_seconds', 'total_minutes', 'bookable_minutes',
             'applied_to_dog_at', 'created_at',
         ]
-        read_only_fields = ['id', 'applied_to_dog_at', 'created_at']
+        read_only_fields = ['id', 'applied_to_dog_at', 'created_at', 'invoice_state', 'invoice']
+
+    def get_dog_name(self, obj):
+        return obj.dog.name if obj.dog_id else obj.walk_in_name
+
+    def get_bookable_minutes(self, obj):
+        if 'booking_buffer' in self.context:
+            return obj.bookable_minutes_with(self.context['booking_buffer'])
+        return obj.bookable_minutes
 
     def get_appointment_start_at(self, obj):
         return obj.appointment.start_at if obj.appointment_id else None
@@ -1322,6 +1339,20 @@ class GroomSessionSerializer(serializers.ModelSerializer):
         def value(name, default=None):
             return attrs.get(name, getattr(self.instance, name, default))
 
+        dog = value('dog')
+        if dog is None and not str(value('walk_in_name', '')).strip():
+            raise serializers.ValidationError({'walk_in_name': 'Give this walk-in a name.'})
+        appointment = value('appointment')
+        if appointment and (dog is None or appointment.dog_id != dog.pk):
+            raise serializers.ValidationError({'appointment': 'Choose a booking for this dog.'})
+        if self.instance:
+            if 'client_reference' in attrs and attrs['client_reference'] != self.instance.client_reference:
+                raise serializers.ValidationError({'client_reference': 'The upload reference cannot change.'})
+            if 'dog' in attrs and attrs['dog'] != self.instance.dog:
+                raise serializers.ValidationError({'dog': 'Use Assign to dog to file a walk-in.'})
+        if value('finished_at') and value('started_at') and value('finished_at') < value('started_at'):
+            raise serializers.ValidationError({'finished_at': 'Finish must be after the start.'})
+
         if value('bathed') is False and (
             value('bathed_well_behaved') is not None
             or str(value('bathing_notes', '') or '').strip()
@@ -1346,10 +1377,16 @@ class GroomSessionSerializer(serializers.ModelSerializer):
             )
         return attrs
 
+    @transaction.atomic
     def create(self, validated_data):
+        from .invoicing import prepare_groom_invoice
+        complete_card = validated_data.pop('complete_card', False)
+        apply = validated_data.pop('apply_to_dog', False)
         timings = validated_data.pop('timings', [])
         equipment = validated_data.pop('equipment_used', None)
-        session = GroomSession.objects.create(**validated_data)
+        session = GroomSession.objects.create(
+            **validated_data, invoice_state=GroomSession.InvoiceState.AWAITING_CARD,
+        )
         if equipment is not None:
             session.equipment_used.set(equipment)
         for timing in timings:
@@ -1357,15 +1394,23 @@ class GroomSessionSerializer(serializers.ModelSerializer):
         # After the timings, not before: `total_seconds` sums them, so the
         # average GroomSession.save() worked out a moment ago was computed
         # against a session that had none yet.
-        session.dog.recalculate_average_groom_minutes()
+        if session.dog_id is not None:
+            session.dog.recalculate_average_groom_minutes()
         # Find the booking this was worked against, if the caller didn't say,
         # and mark it done. See GroomSession.link_to_appointment — a groom that
         # is never marked off is a dog that turns up on the overdue list the
         # same evening.
         session.link_to_appointment()
-        return session
+        if apply and not session.apply_to_dog():
+            raise serializers.ValidationError({'apply_to_dog': 'Only a timed full groom assigned to a dog can set its default.'})
+        return prepare_groom_invoice(session, complete_card=complete_card)
 
+    @transaction.atomic
     def update(self, instance, validated_data):
+        from .invoicing import prepare_groom_invoice
+        instance = GroomSession.objects.select_for_update().get(pk=instance.pk)
+        complete_card = validated_data.pop('complete_card', False)
+        validated_data.pop('apply_to_dog', None)
         timings = validated_data.pop('timings', None)
         equipment = validated_data.pop('equipment_used', None)
         for attr, value in validated_data.items():
@@ -1383,8 +1428,9 @@ class GroomSessionSerializer(serializers.ModelSerializer):
             instance.timings.all().delete()
             for timing in timings:
                 PhaseTiming.objects.create(session=instance, **timing)
-        instance.dog.recalculate_average_groom_minutes()
-        return instance
+        if instance.dog_id is not None:
+            instance.dog.recalculate_average_groom_minutes()
+        return prepare_groom_invoice(instance, complete_card=complete_card)
 
 
 class GroomReportSerializer(serializers.ModelSerializer):
@@ -1447,7 +1493,7 @@ class PaymentSerializer(serializers.ModelSerializer):
 class InvoiceSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
     # Reachable by a client once `invoicing_visible_to_clients` is on, so the
     # UID has to be gated on this route too.
-    staff_only_fields = ('client_uid',)
+    staff_only_fields = ('client_uid', 'auto_generated', 'source_appointment')
 
     lines = InvoiceLineSerializer(many=True, required=False)
     payments = PaymentSerializer(many=True, read_only=True)
@@ -1462,9 +1508,10 @@ class InvoiceSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
         fields = [
             'id', 'client', 'client_name', 'client_uid', 'number', 'issue_date', 'due_date',
             'status', 'sent_at', 'paid_at', 'notes', 'lines', 'payments',
+            'auto_generated', 'source_appointment',
             'total', 'amount_paid', 'balance', 'created_at', 'updated_at',
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at', 'auto_generated', 'source_appointment']
         extra_kwargs = {
             # Blank means "allocate the next one" — see Invoice.next_number.
             # Still writable, because Jess occasionally needs to match a number
@@ -1489,6 +1536,16 @@ class InvoiceSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
             )
         return value
 
+    def validate(self, attrs):
+        if self.instance and self.instance.auto_generated:
+            state = attrs.get('status', self.instance.status)
+            lines = attrs.get('lines', None)
+            has_lines = bool(lines) if lines is not None else self.instance.lines.exists()
+            if state in (Invoice.Status.SENT, Invoice.Status.PAID) and not has_lines:
+                raise serializers.ValidationError({'lines': 'Add the groom price before marking this invoice sent or paid.'})
+        return attrs
+
+    @transaction.atomic
     def create(self, validated_data):
         lines = validated_data.pop('lines', [])
         invoice = Invoice.objects.create(**validated_data)
@@ -1496,6 +1553,7 @@ class InvoiceSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
             InvoiceLine.objects.create(invoice=invoice, **line)
         return invoice
 
+    @transaction.atomic
     def update(self, instance, validated_data):
         lines = validated_data.pop('lines', None)
         for attr, value in validated_data.items():

@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../models/models.dart' as models;
+import 'offline_store.dart';
 
 /// One dog's timing: its phases, the phase running now, and where it came
 /// from. Held by [GroomTimerService], which owns several of these at once.
@@ -18,9 +19,15 @@ class GroomTimerSession {
     required this.dogName,
     this.appointmentId,
     this.usualMinutes = 0,
-  });
+    String? clientReference,
+    DateTime? startedAt,
+  }) : clientReference = clientReference ?? newGroomReference(),
+       startedAt = startedAt ?? DateTime.now();
 
   final int dogId;
+  final String clientReference;
+  final DateTime startedAt;
+  bool get isWalkIn => dogId < 0;
   String dogName;
   int? appointmentId;
   int usualMinutes;
@@ -86,6 +93,8 @@ class GroomTimerSession {
 
   Map<String, dynamic> toJson() => {
         'dogId': dogId,
+        'clientReference': clientReference,
+        'startedAt': startedAt.toIso8601String(),
         'dogName': dogName,
         'appointmentId': appointmentId,
         'usualMinutes': usualMinutes,
@@ -102,6 +111,8 @@ class GroomTimerSession {
     if (dogId == null) return null;
     final session = GroomTimerSession(
       dogId: dogId,
+      clientReference: data['clientReference']?.toString(),
+      startedAt: DateTime.tryParse(data['startedAt']?.toString() ?? ''),
       dogName: data['dogName']?.toString() ?? '',
       appointmentId: (data['appointmentId'] as num?)?.toInt(),
       usualMinutes: (data['usualMinutes'] as num?)?.toInt() ?? 0,
@@ -155,15 +166,19 @@ class GroomTimerSession {
 /// ticks. Storage is [FlutterSecureStorage] because it is already a
 /// dependency, not because a running timer is a secret.
 class GroomTimerService extends ChangeNotifier {
-  GroomTimerService({FlutterSecureStorage? storage})
+  GroomTimerService({FlutterSecureStorage? storage, this.accountScoped = false})
       : _storage = storage ?? const FlutterSecureStorage() {
     // Started here rather than awaited: listeners are notified if anything was
     // found, and the app is usable in the meantime either way. The future is
     // kept so a caller that *does* care can wait — see [ready].
-    _restoring = restore();
+    _restoring = accountScoped ? Future.value() : restore();
   }
 
-  static const _storageKey = 'mojo_groom_timer';
+  String _storageKey = 'mojo_groom_timer';
+  final bool accountScoped;
+  int _accountEpoch = 0;
+  String? _scope;
+  Future<void> _writes = Future.value();
 
   /// Past this, a running phase is far more likely to have been left on than
   /// to be real work. Nothing is discarded or capped on the strength of it —
@@ -191,6 +206,37 @@ class GroomTimerService extends ChangeNotifier {
   /// Every open session, in the order the dogs were opened.
   List<GroomTimerSession> get sessions => List.unmodifiable(_sessions);
 
+  Future<void> activateAccount(String? scope) async {
+    if (!accountScoped || scope == _scope) return;
+    await _persist();
+    await _writes.catchError((Object _) {});
+    _accountEpoch++;
+    _scope = scope;
+    _sessions.clear();
+    _syncTicker();
+    _pendingPersist?.cancel();
+    notifyListeners();
+    if (scope == null) return;
+    _storageKey = 'mojo_groom_timer_$scope';
+    // Adopt the pre-account timers exactly once, on the first staff login.
+    final existing = await _storage.read(key: _storageKey);
+    if (existing == null) {
+      final legacy = await _storage.read(key: 'mojo_groom_timer');
+      if (legacy != null) {
+        await _storage.write(key: _storageKey, value: legacy);
+        await _storage.delete(key: 'mojo_groom_timer');
+      }
+    }
+    _restoring = restore();
+    await _restoring;
+  }
+
+  GroomTimerSession openWalkIn(String name) {
+    var id = -DateTime.now().microsecondsSinceEpoch;
+    while (sessionFor(id) != null) { id--; }
+    return openFor(dogId: id, dogName: name);
+  }
+
   GroomTimerSession? sessionFor(int dogId) {
     for (final session in _sessions) {
       if (session.dogId == dogId) return session;
@@ -200,7 +246,7 @@ class GroomTimerService extends ChangeNotifier {
 
   /// The sessions worth showing — time on the clock, or a phase running.
   List<GroomTimerSession> get liveSessions =>
-      [for (final session in _sessions) if (session.hasTime) session];
+      [for (final session in _sessions) if (session.hasTime || session.hasDraft || session.isWalkIn) session];
 
   /// Whether anything at all is worth going back to.
   bool get hasAnySession => liveSessions.isNotEmpty;
@@ -332,16 +378,15 @@ class GroomTimerService extends ChangeNotifier {
     _pendingPersist = null;
     _sessions.removeWhere((session) => session.dogId == dogId);
     _syncTicker();
-    if (_sessions.isEmpty) {
-      try {
-        await _storage.delete(key: _storageKey);
-      } catch (_) {
-        // Nothing to do about it, and the in-memory session is already gone.
-      }
-    } else {
-      await _persist();
-    }
+    await _persist();
     notifyListeners();
+  }
+
+  /// Finish pending card writes before backgrounding or testing a restart.
+  Future<void> flush() async {
+    _pendingPersist?.cancel();
+    _pendingPersist = null;
+    await _persist();
   }
 
   @override
@@ -380,18 +425,14 @@ class GroomTimerService extends ChangeNotifier {
   }
 
   Future<void> _persist() async {
-    if (_sessions.isEmpty) return;
-    try {
-      await _storage.write(
-        key: _storageKey,
-        value: jsonEncode({
-          'sessions': [for (final session in _sessions) session.toJson()],
-        }),
-      );
-    } catch (_) {
-      // The timer still works from memory, which is the half Jess actually
-      // asked for. A keystore that will not take a write is not a reason to
-      // throw the groom away.
+    if (accountScoped && _scope == null) return;
+    final key = _storageKey;
+    final empty = _sessions.isEmpty;
+    final raw = jsonEncode({'sessions': [for (final session in _sessions) session.toJson()]});
+    _writes = _writes.catchError((Object _) {}).then((_) => empty
+        ? _storage.delete(key: key) : _storage.write(key: key, value: raw));
+    try { await _writes; } catch (_) {
+      // Keep the live timer usable; finishing still requires durable storage.
     }
   }
 
@@ -408,6 +449,7 @@ class GroomTimerService extends ChangeNotifier {
   /// and losing it to a format change would be exactly the loss persistence
   /// exists to prevent.
   Future<void> restore() async {
+    final epoch = _accountEpoch;
     String? raw;
     try {
       raw = await _storage.read(key: _storageKey);
@@ -415,7 +457,7 @@ class GroomTimerService extends ChangeNotifier {
       // A locked or wiped keystore is not worth failing to start over.
       return;
     }
-    if (raw == null || raw.isEmpty) return;
+    if (epoch != _accountEpoch || raw == null || raw.isEmpty) return;
 
     try {
       final data = jsonDecode(raw) as Map<String, dynamic>;

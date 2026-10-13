@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../constants/app_colors.dart';
 import '../../models/models.dart';
 import '../../services/auth_service.dart';
+import '../../services/data_service.dart';
 import '../../services/groom_timer_service.dart';
 import '../../services/service_locator.dart';
 import 'calendar_screen.dart';
@@ -26,8 +29,36 @@ class StaffShell extends StatefulWidget {
   State<StaffShell> createState() => _StaffShellState();
 }
 
-class _StaffShellState extends State<StaffShell> {
+class _StaffShellState extends State<StaffShell> with WidgetsBindingObserver {
   int _index = 0;
+  Timer? _sync;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    unawaited(getIt<DataService>().syncOffline(refreshSnapshot: true));
+    _sync = Timer.periodic(const Duration(seconds: 30), (_) {
+      unawaited(getIt<DataService>().syncOffline());
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive || state == AppLifecycleState.paused) {
+      unawaited(getIt<GroomTimerService>().flush());
+    }
+    if (state == AppLifecycleState.resumed) {
+      unawaited(getIt<DataService>().syncOffline(refreshSnapshot: true));
+    }
+  }
+
+  @override
+  void dispose() {
+    _sync?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
 
   static const _screens = [
     DogumentsScreen(),

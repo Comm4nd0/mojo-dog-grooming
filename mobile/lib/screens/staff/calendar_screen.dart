@@ -13,6 +13,7 @@ import '../../widgets/calendar/timeline_layout.dart';
 import '../../widgets/calendar/timeline_metrics.dart';
 import '../../widgets/calendar/week_timeline.dart';
 import '../../widgets/common.dart';
+import '../../widgets/calendar/block_category.dart';
 import '../../widgets/contact_actions.dart';
 import 'blocked_time_form_screen.dart';
 import 'booking_form_screen.dart';
@@ -1180,10 +1181,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
     String clock(int minutes) => minutes >= 24 * 60
         ? '24:00'
         : '${(minutes ~/ 60).toString().padLeft(2, '0')}:${(minutes % 60).toString().padLeft(2, '0')}';
-    final headline = block.headline;
+    final headline = [if ((block.category ?? '').isNotEmpty) blockCategoryLabels[block.category] ?? '', block.headline].where((s) => s.isNotEmpty).join(' · ');
     return ListTile(
       onTap: () => _openBlock(existing: block),
-      leading: Icon(Icons.event_busy_outlined, color: context.mojo.muted),
+      leading: Icon(Icons.event_busy_outlined, color: blockCategoryColour(context, block.category)),
       title: Text('Blocked out · ${clock(from)} – ${clock(to)}'),
       subtitle: headline.isEmpty ? null : Text(headline),
     );

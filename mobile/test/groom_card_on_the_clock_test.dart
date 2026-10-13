@@ -183,5 +183,6 @@ void main() {
     final body = jsonDecode(posts.single.body) as Map<String, dynamic>;
     expect(body['notes'], 'Lovely today');
     expect(body['dog'], 1);
+    expect(body['complete_card'], isTrue);
   });
 }

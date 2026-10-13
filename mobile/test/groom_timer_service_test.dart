@@ -204,6 +204,7 @@ void main() {
       first.setMinutes(4, 'STRIP', 40);
       first.openFor(dogId: 5, dogName: 'Teddy', usualMinutes: 60);
       first.setMinutes(5, 'WASH', 15);
+      await first.flush();
 
       final second = await service();
       final bunny = second.sessionFor(4)!;

@@ -8,10 +8,13 @@ import '../../services/data_service.dart';
 import '../../services/groom_timer_service.dart';
 import '../../services/service_locator.dart';
 import '../../widgets/common.dart';
+import '../../widgets/offline_status.dart';
 import '../../widgets/contact_actions.dart';
 import '../../widgets/dog_silhouette.dart';
 import '../client/groom_report_screen.dart';
 import 'booking_form_screen.dart';
+import 'breed_detail_screen.dart';
+import 'dog_bookings_screen.dart';
 import 'client_profile_screen.dart';
 import 'dog_form_screen.dart';
 import 'document_viewer_screen.dart';
@@ -257,6 +260,7 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
       child: ListView(
         padding: const EdgeInsets.only(bottom: 100),
         children: [
+          const OfflineStatus(),
           _header(dog),
           if (_isStaff) _temperamentSection(dog),
           _groomingSection(dog),
@@ -484,7 +488,23 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
               children: [
                 Text(dog.name, style: AppColors.display(28)),
                 const SizedBox(height: 4),
-                Text(dog.breedLabel, style: Theme.of(context).textTheme.bodyMedium),
+                if (_isStaff && dog.breedId != null)
+                  InkWell(
+                    onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => BreedDetailScreen(breedId: dog.breedId!),
+                    )),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                      child: Row(children: [
+                        Flexible(child: Text(dog.breedLabel,
+                          style: TextStyle(color: context.mojo.accent, decoration: TextDecoration.underline))),
+                        const SizedBox(width: 4),
+                        const Icon(Icons.chevron_right, size: 18),
+                      ]),
+                    ),
+                  )
+                else
+                  Text(dog.breedLabel, style: Theme.of(context).textTheme.bodyMedium),
                 const SizedBox(height: 10),
                 Wrap(
                   spacing: 6,
@@ -624,7 +644,18 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
         //
         // So the diary answers this row, and the sum keeps its own beneath it.
         if (_nextBookingChecked || _nextBooking != null)
-          DetailRow(label: 'Next booking', value: _nextBookingValue),
+          InkWell(
+            onTap: () async {
+              await Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => DogBookingsScreen(dogId: dog.id, dogName: dog.name),
+              ));
+              if (mounted) _load();
+            },
+            child: Row(children: [
+              Expanded(child: DetailRow(label: 'Next booking', value: _nextBookingValue)),
+              const Padding(padding: EdgeInsets.only(right: 16), child: Icon(Icons.chevron_right)),
+            ]),
+          ),
         if (_nextGroomDue != null)
           DetailRow(
             label: 'Due',
@@ -1179,6 +1210,7 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
 
   Widget _visitTile(Dog dog, GroomSession visit) {
     final parts = <String>[
+      if (visit.pendingSync) 'Waiting to upload',
       // How long the groom took, which is the figure that sizes the next
       // booking — and beside it what the stopwatch actually measured, when
       // they differ. Jess: "it doesn't come up with the individual times for
@@ -1211,6 +1243,10 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
       ),
       trailing: const Icon(Icons.chevron_right, size: 18),
       onTap: () async {
+        if (visit.pendingSync) {
+          showSnack(context, 'Saved on this device. Connect to upload before editing this visit.');
+          return;
+        }
         final saved = await Navigator.of(context).push<bool>(
           MaterialPageRoute(
             builder: (_) => VisitRecordScreen(
@@ -1301,13 +1337,14 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
   }
 
   Widget _notesSection(Dog dog) {
-    final hasAny = dog.generalNotes.isNotEmpty || dog.ownerGrooming.isNotEmpty;
+    final hasAny = dog.generalNotes.isNotEmpty || dog.ownerGrooming.isNotEmpty || dog.groomExpectations.isNotEmpty;
     if (!hasAny) return const SizedBox.shrink();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const SectionHeader(title: 'Notes'),
-        DetailRow(label: 'Owner grooms', value: dog.ownerGrooming),
+        DetailRow(label: 'What Grooming Owners Carry Out Themselves', value: dog.ownerGrooming),
+        DetailRow(label: 'What Owners Expect of a Groom', value: dog.groomExpectations),
         DetailRow(label: 'General', value: dog.generalNotes),
       ],
     );

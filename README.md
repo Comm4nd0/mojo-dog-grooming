@@ -54,11 +54,49 @@ flutter run --dart-define=MOJO_API_BASE=http://<your-lan-ip>:8000/api
 
 Without `--dart-define` the app points at `https://app.mojoandco.uk/api`.
 
+## Offline Doguments and walk-in grooms
+
+Staff opening or returning to the app online save a complete Doguments snapshot on that
+device: dog and owner profiles, groom cards, breeds, equipment and document/photo metadata.
+The status strip shows when this copy was saved. Open Doguments online at least once before
+relying on it offline. Photo bytes and attached files are not downloaded by the snapshot;
+only photos already in the image cache may display without a connection. Diary changes,
+profile edits and invoices still need a connection.
+
+Groom timers, drafts and finished uploads use encrypted, account-specific device storage.
+Previously signed-in staff can reopen the app offline; biometric locking still applies.
+Finished cards are written locally before sending. Reconnection retries while the staff app
+is open (every 30 seconds and on resume), using the same UUID so a lost response cannot create
+a duplicate. The Doguments status strip opens saved uploads, including rejected cards that
+need an edit before retrying. Role rejection disables the staff cache without deleting
+unsent work. Uninstalling or clearing app data removes the local copy and unsent work.
+
+Doguments → Walk-in grooms starts a named timer with no dog profile. Finish the groom there,
+then assign it to an existing dog or add its owner and dog first. Assignment retains the
+complete card and timings and uses the usual appointment matching rules.
+
+Deploy migrations `0024` and `0025` and the backend before distributing the matching mobile build:
+unassigned grooms, idempotent uploads and the complete offline snapshot require the new API.
+
+Finishing the groom card of a timed full groom creates a draft invoice on the server.
+Saving the timer alone waits for the card; a walk-in waits for assignment to a dog, and
+an offline finish waits for upload. The booking's recorded quote takes precedence over
+today's dog/breed price. With no booking, the dog's effective price is used only if a
+price or breed is actually set. Missing prices create an empty draft marked "Price needed",
+which must be priced before it can be marked sent or paid. Review or edit it from Invoices.
+Automatic drafts are hidden from clients until marked sent or paid; existing invoice
+visibility settings still apply. No messages or payments are sent automatically.
+
+Historical cards are excluded from automatic billing. New cards retain their invoice link
+and completion state across retries and edits. Deleting or voiding a prepared invoice
+does not regenerate it. Existing invoices linked to the booking are reused. The PostgreSQL
+test also exercises two simultaneous card completions for the same booking.
+
 ## Tests
 
 ```bash
-python manage.py test api     # 283 backend tests
-cd mobile && flutter test     # 138 widget, model and golden tests
+python manage.py test api     # Includes a PostgreSQL-only concurrency check
+cd mobile && flutter test     # Widget, model and golden tests
 ```
 
 The backend suite covers the access-control rules the design rests on: a client can only reach

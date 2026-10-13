@@ -7,10 +7,13 @@ import '../../models/models.dart';
 import '../../services/data_service.dart';
 import '../../services/service_locator.dart';
 import '../../widgets/common.dart';
+import '../../widgets/offline_status.dart';
 import 'client_form_screen.dart';
 import 'client_profile_screen.dart';
 import 'dog_form_screen.dart';
 import 'dog_profile_screen.dart';
+import 'walk_ins_screen.dart';
+import 'pending_grooms_screen.dart';
 
 /// The Doguments list: every dog, with a whole-profile summary per row.
 ///
@@ -97,6 +100,12 @@ class _DogumentsScreenState extends State<DogumentsScreen> {
           children: [
             const SizedBox(height: 8),
             ListTile(
+              leading: Icon(Icons.timer_outlined, color: context.mojo.accent),
+              title: const Text('Walk-in groom'),
+              subtitle: const Text('Time it now, assign the dog later'),
+              onTap: () => Navigator.pop(context, 'walk-in'),
+            ),
+            ListTile(
               leading: Icon(Icons.person_add_outlined, color: context.mojo.accent),
               title: const Text('Add client'),
               subtitle: const Text('A new owner, with or without a login'),
@@ -115,6 +124,12 @@ class _DogumentsScreenState extends State<DogumentsScreen> {
     );
     if (!mounted || action == null) return;
 
+    if (action == 'walk-in') {
+      await Navigator.of(context).push(MaterialPageRoute(builder: (_) => const WalkInsScreen()));
+      if (mounted) _load();
+      return;
+    }
+
     final saved = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
         builder: (_) => action == 'client' ? const ClientFormScreen() : const DogFormScreen(),
@@ -129,6 +144,11 @@ class _DogumentsScreenState extends State<DogumentsScreen> {
       appBar: AppBar(
         title: const Text('Doguments'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.timer_outlined),
+            tooltip: 'Walk-in grooms',
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const WalkInsScreen())),
+          ),
           IconButton(
             icon: Icon(
               _includeInactive ? Icons.visibility_off_outlined : Icons.visibility_outlined,
@@ -163,6 +183,8 @@ class _DogumentsScreenState extends State<DogumentsScreen> {
       ),
       body: PageBody(child: Column(
         children: [
+          OfflineStatus(showReady: true, onReview: () => Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => const PendingGroomsScreen()))),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
             child: TextField(

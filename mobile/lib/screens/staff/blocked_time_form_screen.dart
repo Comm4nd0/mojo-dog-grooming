@@ -5,6 +5,7 @@ import '../../models/models.dart';
 import '../../services/data_service.dart';
 import '../../services/service_locator.dart';
 import '../../widgets/common.dart';
+import '../../widgets/calendar/block_category.dart';
 
 /// Block a stretch of the diary out, or change one already there.
 ///
@@ -33,6 +34,7 @@ class _BlockedTimeFormScreenState extends State<BlockedTimeFormScreen> {
   late DateTime _start;
   late DateTime _end;
   bool _saving = false;
+  String _category = '';
 
   @override
   void initState() {
@@ -42,6 +44,7 @@ class _BlockedTimeFormScreenState extends State<BlockedTimeFormScreen> {
       _start = existing.startAt;
       _end = existing.endAt;
       _notes.text = existing.notes ?? '';
+      _category = existing.category ?? '';
     } else {
       final at = widget.initialStart ?? DateTime.now();
       // A bare date means "this day", not midnight: start where her morning
@@ -123,12 +126,14 @@ class _BlockedTimeFormScreenState extends State<BlockedTimeFormScreen> {
           startAt: _start,
           endAt: _end,
           notes: _notes.text.trim(),
+          category: _category,
         );
       } else {
         await _data.updateBlockedTime(existing.id, {
           'start_at': _start.toUtc().toIso8601String(),
           'end_at': _end.toUtc().toIso8601String(),
           'notes': _notes.text.trim(),
+          'category': _category,
         });
       }
       if (!mounted) return;
@@ -223,6 +228,19 @@ class _BlockedTimeFormScreenState extends State<BlockedTimeFormScreen> {
                   label: Text(sameDay ? 'WHOLE DAY' : 'JUST THE FIRST DAY'),
                 ),
               ),
+            ),
+            const SectionHeader(title: 'Colour category'),
+            DropdownButtonFormField<String>(
+              initialValue: _category,
+              isExpanded: true,
+              decoration: const InputDecoration(labelText: 'Category — staff only'),
+              items: [for (final entry in blockCategoryLabels.entries)
+                DropdownMenuItem(value: entry.key, child: Row(children: [
+                  Icon(Icons.square, size: 16, color: blockCategoryColour(context, entry.key)),
+                  const SizedBox(width: 10), Text(entry.value),
+                ])),
+              ],
+              onChanged: (value) => setState(() => _category = value ?? ''),
             ),
             const SectionHeader(title: 'Notes'),
             MojoTextField(

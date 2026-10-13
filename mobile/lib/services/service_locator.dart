@@ -4,6 +4,7 @@ import 'api_client.dart';
 import 'auth_service.dart';
 import 'data_service.dart';
 import 'groom_timer_service.dart';
+import 'offline_store.dart';
 
 final GetIt getIt = GetIt.instance;
 
@@ -32,10 +33,17 @@ void setupLocator({String? baseUrl}) {
   if (getIt.isRegistered<DataService>()) return; // Idempotent across hot restarts.
 
   final api = ApiClient(baseUrl: baseUrl ?? apiBaseUrl);
+  final offline = OfflineStore();
+  final timers = GroomTimerService(accountScoped: true);
   getIt.registerSingleton<ApiClient>(api);
-  getIt.registerSingleton<AuthService>(AuthService(api));
-  getIt.registerSingleton<DataService>(DataService(api));
+  getIt.registerSingleton<OfflineStore>(offline);
+  getIt.registerSingleton<AuthService>(AuthService(api, onAccountChanged: (username, staff) async {
+    final scope = username != null && staff ? OfflineStore.accountKey(api.baseUrl, username) : null;
+    await offline.activate(scope);
+    await timers.activateAccount(scope);
+  }));
+  getIt.registerSingleton<DataService>(DataService(api, offline: offline));
   // A singleton because that is the whole point of it: the groom timer has to
   // outlive the screen so Jess can go and read the dog's notes mid-clip.
-  getIt.registerSingleton<GroomTimerService>(GroomTimerService());
+  getIt.registerSingleton<GroomTimerService>(timers);
 }
