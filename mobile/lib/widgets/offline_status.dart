@@ -5,10 +5,9 @@ import '../models/models.dart';
 import '../services/data_service.dart';
 import '../services/service_locator.dart';
 
-/// Visible provenance for locally saved records and uploads still on-device.
+/// Connection and pending-upload status; routine offline saving stays silent.
 class OfflineStatus extends StatelessWidget {
-  const OfflineStatus({super.key, this.showReady = false, this.onReview});
-  final bool showReady;
+  const OfflineStatus({super.key, this.onReview});
   final VoidCallback? onReview;
 
   @override
@@ -20,8 +19,7 @@ class OfflineStatus extends StatelessWidget {
       listenable: store,
       builder: (context, _) {
         if (!store.enabled ||
-            (!showReady &&
-                !store.isOffline &&
+            (!store.isOffline &&
                 store.pendingCount == 0 &&
                 store.syncError == null)) {
           return const SizedBox.shrink();
@@ -38,11 +36,11 @@ class OfflineStatus extends StatelessWidget {
             title: Text(
               store.isOffline
                   ? 'Offline — saved Doguments'
+                  : store.syncError != null
+                  ? 'Sync needs attention'
                   : store.syncing
-                  ? 'Updating saved Doguments…'
-                  : saved == null
-                  ? 'Preparing Doguments for offline use'
-                  : 'Doguments saved for offline use',
+                  ? 'Uploading saved grooms…'
+                  : 'Grooms waiting to upload',
             ),
             subtitle: Text(
               [
@@ -51,7 +49,7 @@ class OfflineStatus extends StatelessWidget {
                 if (store.pendingCount > 0)
                   '${store.pendingCount} groom${store.pendingCount == 1 ? '' : 's'} waiting to upload.',
                 if (store.syncError != null)
-                  'Upload needs attention: ${store.syncError}',
+                  store.syncError!,
               ].join(' '),
             ),
             trailing: IconButton(

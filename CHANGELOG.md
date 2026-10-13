@@ -15,6 +15,8 @@ either on TestFlight or waiting for the first tag.
 
 ## [Unreleased]
 
+- Doguments now saves its offline copy quietly in the background.
+
 - Completing a timed groom card now prepares a draft invoice for review. It
   keeps the booking's quoted price, supports offline uploads and walk-ins,
   and avoids creating another invoice when a groom is uploaded again.

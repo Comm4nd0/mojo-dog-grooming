@@ -183,7 +183,7 @@ class _DogumentsScreenState extends State<DogumentsScreen> {
       ),
       body: PageBody(child: Column(
         children: [
-          OfflineStatus(showReady: true, onReview: () => Navigator.of(context).push(
+          OfflineStatus(onReview: () => Navigator.of(context).push(
             MaterialPageRoute(builder: (_) => const PendingGroomsScreen()))),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
