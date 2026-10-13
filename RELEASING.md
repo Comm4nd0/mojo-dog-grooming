@@ -57,6 +57,10 @@ Leave "Automatically manage version and build number" **off**. The version comes
 from the tag via `ci_post_clone.sh`, and letting Xcode Cloud set it too means two
 things deciding the same field.
 
+The app requires **iOS 15 or later**. Runner and the Podfile use the same minimum;
+the Podfile also raises older plugin targets to 15.0. Xcode Cloud's newer
+toolchain rejected the previous iOS 9–13 plugin targets during archiving.
+
 ### App Store Connect API key
 
 `release.yml` needs a key to submit on your behalf. This is the fiddly half of
