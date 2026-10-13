@@ -951,7 +951,7 @@ class DogListSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
         ]
 
     def get_temperament_display(self, obj):
-        return temperament_label(obj.temperament)
+        return temperament_label(obj.temperament) or 'Not assessed'
 
 
 class DogSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
@@ -964,6 +964,9 @@ class DogSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
     )
 
     client_detail = ClientSerializer(source='client', read_only=True)
+    requires_restraint = AbsentMeansDefaultBooleanField(
+        required=False, allow_null=True,
+    )
     breed_label = serializers.CharField(read_only=True)
     # Jess's own wording for the grade, not the frozen enum label — she
     # renames these in Settings. See models.temperament_label.
@@ -1003,7 +1006,7 @@ class DogSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at', 'updated_at']
 
     def get_temperament_display(self, obj):
-        return temperament_label(obj.temperament)
+        return temperament_label(obj.temperament) or 'Not assessed'
 
 
 # ── Scheduling ─────────────────────────────────────────────────────────
@@ -1047,7 +1050,7 @@ class AppointmentSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
         extra_kwargs = {'end_at': {'required': False}}
 
     def get_dog_temperament_display(self, obj):
-        return temperament_label(obj.dog.temperament)
+        return temperament_label(obj.dog.temperament) or 'Not assessed'
 
     def get_group_dog_names(self, obj):
         if obj.group_id is None:

@@ -84,7 +84,9 @@ class TemperamentChip extends StatelessWidget {
   Widget build(BuildContext context) {
     if (temperament == null) return const SizedBox.shrink();
     final color = context.temperamentColour(temperament);
-    final text = label ?? _defaultLabel(temperament!);
+    final text = temperament!.isEmpty
+        ? 'Not assessed'
+        : label ?? _defaultLabel(temperament!);
     return Container(
       padding: EdgeInsets.symmetric(horizontal: compact ? 6 : 8, vertical: compact ? 2 : 4),
       decoration: BoxDecoration(

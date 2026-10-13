@@ -600,6 +600,14 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
           ),
         if ((dog.temperamentNotes ?? '').isNotEmpty)
           DetailRow(label: 'Handling', value: dog.temperamentNotes),
+        if (dog.temperament!.isEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            child: Text(
+              'Add a handling assessment in Edit once you have met this dog.',
+              style: TextStyle(fontSize: 12, color: context.mojo.muted),
+            ),
+          ),
       ],
     );
   }

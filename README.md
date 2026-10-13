@@ -92,6 +92,25 @@ and completion state across retries and edits. Deleting or voiding a prepared in
 does not regenerate it. Existing invoices linked to the booking are reused. The PostgreSQL
 test also exercises two simultaneous card completions for the same booking.
 
+## Dog setup and first-visit assessments
+
+New dogs start with no handling grade and an unknown restraint requirement. Staff can
+expand **Handling assessment** in Add/Edit dog when these are known. Unassessed dogs
+show a neutral **Not assessed** badge; they are not counted as Easy for daily limits.
+The visit card's observed temperament remains a record of that visit: edit the dog's
+profile explicitly to set its ongoing handling grade. All handling fields remain staff-only.
+
+Choosing a breed copies its recorded grooming styles into blank areas. The individual
+area fields sit under **Different style / previous groomer’s instructions**. Missing
+breed styles are labelled as unspecified. These are starting copies, so later breed edits
+never rewrite a dog's saved instructions. Changing the breed while adding a dog replaces
+only untouched suggestions from that form; existing records and typed instructions stay.
+
+Deploy backend migration `0026` before distributing this mobile change. It preserves all
+existing grades and restraint values: historical defaults cannot be distinguished from
+Jess's deliberate answers. Older mobile builds still submit their old defaults when adding
+a dog, so staff need the updated app to leave a new assessment unset.
+
 ## Tests
 
 ```bash

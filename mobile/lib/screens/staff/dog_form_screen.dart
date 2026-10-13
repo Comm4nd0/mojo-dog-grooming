@@ -10,6 +10,7 @@ import '../../widgets/searchable_picker.dart';
 import '../../widgets/service_picker.dart';
 import '../../widgets/temperament_picker.dart';
 import '../../widgets/weekday_picker.dart';
+import 'breed_detail_screen.dart';
 import 'problem_area_editor.dart';
 
 /// Add or edit a dog.
@@ -37,9 +38,7 @@ class _DogFormScreenState extends State<DogFormScreen> {
   late final TextEditingController _price;
   late final TextEditingController _scheduleWeeks;
   late final TextEditingController _temperamentNotes;
-  // Absent means the server withheld it, which only happens for a client —
-  // and a client cannot reach this form at all. False is the right start.
-  late bool _requiresRestraint;
+  bool? _requiresRestraint;
   late final TextEditingController _colour;
   late final TextEditingController _microchip;
   late final TextEditingController _allergies;
@@ -53,6 +52,10 @@ class _DogFormScreenState extends State<DogFormScreen> {
   late final TextEditingController _groomExpectations;
   late final TextEditingController _generalNotes;
   late final Map<String, TextEditingController> _prefs;
+  // Only unsaved, untouched breed suggestions may follow a changed breed.
+  // Saved instructions and anything Jess types (including clearing a box) stay.
+  final Map<String, String> _breedFilledPreferences = {};
+  final Set<String> _editedPreferences = {};
 
   List<ClientRecord> _clients = const [];
   List<Breed> _breeds = const [];
@@ -61,7 +64,7 @@ class _DogFormScreenState extends State<DogFormScreen> {
   Set<int> _defaultServices = {};
   int? _clientId;
   int? _breedId;
-  String _temperament = 'EASY';
+  String _temperament = '';
   String _sex = '';
   bool? _isNeutered;
   bool _isActive = true;
@@ -71,6 +74,10 @@ class _DogFormScreenState extends State<DogFormScreen> {
   DateTime? _dateOfBirth;
   bool _loading = true;
   bool _busy = false;
+  // Keep these outside PageStorage: text fields inside the tiles also store
+  // scroll offsets there, and must not read the tile's boolean as an offset.
+  bool _handlingExpanded = false;
+  bool _stylesExpanded = false;
 
   bool get _isEditing => widget.dog != null;
 
@@ -87,7 +94,7 @@ class _DogFormScreenState extends State<DogFormScreen> {
     _isDaycare = dog?.isDaycare ?? false;
     _daycareDays = {...?dog?.daycareDays};
     _temperamentNotes = TextEditingController(text: dog?.temperamentNotes ?? '');
-    _requiresRestraint = dog?.requiresRestraint ?? false;
+    _requiresRestraint = dog?.requiresRestraint;
     _colour = TextEditingController(text: dog?.colour ?? '');
     _microchip = TextEditingController(text: dog?.microchipNumber ?? '');
     _allergies = TextEditingController(text: dog?.allergies ?? '');
@@ -110,7 +117,7 @@ class _DogFormScreenState extends State<DogFormScreen> {
     };
     _clientId = dog?.clientId ?? widget.presetClientId;
     _breedId = dog?.breedId;
-    _temperament = dog?.temperament ?? 'EASY';
+    _temperament = dog?.temperament ?? '';
     _sex = dog?.sex ?? '';
     _isNeutered = dog?.isNeutered;
     _defaultServices = {...?dog?.defaultServices};
@@ -392,10 +399,7 @@ class _DogFormScreenState extends State<DogFormScreen> {
               matches: (breed, query) =>
                   breed.name.toLowerCase().contains(query.toLowerCase()),
               emptyLabel: 'Not on the list — leave this blank and use the box below',
-              onSelected: (breed) {
-                setState(() => _breedId = breed?.id);
-                if (breed != null) _applyBreedStyles(breed);
-              },
+              onSelected: _selectBreed,
             ),
             if (_breedId == null) ...[
               const SizedBox(height: 14),
@@ -492,39 +496,7 @@ class _DogFormScreenState extends State<DogFormScreen> {
               subtitle: const Text('Inactive dogs are hidden from Doguments'),
             ),
 
-            const SectionHeader(title: 'Temperament'),
-            Padding(
-              padding: EdgeInsets.only(bottom: 8),
-              child: Text(
-                'Drives the per-day booking limit. Never shown to the client.',
-                style: TextStyle(fontSize: 12, color: context.mojo.muted),
-              ),
-            ),
-            TemperamentPicker(
-              grades: _grades,
-              selected: _temperament,
-              onSelected: (code) =>
-                  setState(() => _temperament = code ?? _temperament),
-            ),
-            const SizedBox(height: 6),
-            // Jess's request. Sits with the handling notes rather than with
-            // the consents: the RESTRAINT consent is the owner agreeing a
-            // muzzle *may* be used, this is Jess recording that this dog
-            // needs one. Staff-only, like the rest of this section.
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              value: _requiresRestraint,
-              onChanged: (value) => setState(() => _requiresRestraint = value),
-              title: const Text('Restraints required'),
-              subtitle: const Text('A collar or muzzle is needed to groom safely'),
-            ),
-            const SizedBox(height: 8),
-            MojoTextField(
-              controller: _temperamentNotes,
-              decoration: const InputDecoration(labelText: 'Handling notes'),
-              maxLines: 3,
-              textCapitalization: TextCapitalization.sentences,
-            ),
+            _handlingSection(),
 
             const SectionHeader(title: 'Groom time, price and schedule'),
             Padding(
@@ -611,14 +583,7 @@ class _DogFormScreenState extends State<DogFormScreen> {
               onChanged: (next) => setState(() => _defaultServices = next),
             ),
             const SizedBox(height: 14),
-            for (final entry in _prefs.entries) ...[
-              MojoTextField(
-                controller: entry.value,
-                decoration: InputDecoration(labelText: _prefLabel(entry.key)),
-                textCapitalization: TextCapitalization.sentences,
-              ),
-              const SizedBox(height: 14),
-            ],
+            _groomingStylesSection(breed),
 
             _problemAreasSection(),
 
@@ -705,16 +670,173 @@ class _DogFormScreenState extends State<DogFormScreen> {
     );
   }
 
-  /// Start this dog's grooming preferences off from its breed's usual styles.
-  ///
-  /// **Only fills blanks.** Picking a breed must never wipe something already
-  /// typed — a client's own instructions outrank the breed's usual, and a
-  /// mis-tap on the breed picker should not silently rewrite them. That also
-  /// makes it safe when editing an existing dog.
-  ///
-  /// Nothing happens silently either: if it filled anything in, it says so, so
-  /// Jess knows where the words came from and can change them.
-  void _applyBreedStyles(Breed breed) {
+  Widget _handlingSection() {
+    final grade = _grades.where((grade) => grade.code == _temperament).firstOrNull;
+    final summary = [
+      _temperament.isEmpty ? 'Not assessed' : grade?.label ?? _temperament,
+      if (_requiresRestraint == true) 'Restraints required',
+      if (_requiresRestraint == false) 'No restraints required',
+      if (_temperamentNotes.text.trim().isNotEmpty) 'Handling notes recorded',
+    ].join(' · ');
+    return ExpansionTile(
+      key: const ValueKey('dog-handling'),
+      initiallyExpanded: _handlingExpanded,
+      onExpansionChanged: (value) => setState(() => _handlingExpanded = value),
+      shape: Border(bottom: BorderSide(color: context.mojo.hairline)),
+      collapsedShape: const Border(),
+      tilePadding: EdgeInsets.zero,
+      childrenPadding: const EdgeInsets.only(bottom: 12),
+      expandedCrossAxisAlignment: CrossAxisAlignment.start,
+      title: const Text('Handling assessment'),
+      subtitle: Text(summary, style: TextStyle(color: context.mojo.muted)),
+      children: [
+        Text(
+          'Optional — add when you have met the dog. Staff only. '
+          'The handling grade is used for daily booking limits.',
+          style: TextStyle(fontSize: 12, color: context.mojo.muted),
+        ),
+        const SizedBox(height: 12),
+        TemperamentPicker(
+          grades: _grades,
+          selected: _temperament,
+          includeUnset: true,
+          unsetLabel: 'Not assessed',
+          onSelected: (code) => setState(() => _temperament = code ?? ''),
+        ),
+        const SizedBox(height: 16),
+        const Text('Restraints required'),
+        const SizedBox(height: 4),
+        Text('A collar or muzzle is needed to groom safely',
+            style: TextStyle(fontSize: 12, color: context.mojo.muted)),
+        const SizedBox(height: 8),
+        SegmentedButton<bool?>(
+          style: ButtonStyle(
+            shape: const WidgetStatePropertyAll(RoundedRectangleBorder()),
+            backgroundColor: WidgetStateProperty.resolveWith((states) {
+              if (!states.contains(WidgetState.selected)) return null;
+              return _requiresRestraint == null ? context.mojo.hairline : context.mojo.tint;
+            }),
+            foregroundColor: WidgetStateProperty.resolveWith((states) {
+              if (!states.contains(WidgetState.selected)) return null;
+              return _requiresRestraint == null
+                  ? Theme.of(context).colorScheme.onSurface : context.mojo.onTint;
+            }),
+          ),
+          segments: const [
+            ButtonSegment(value: null, label: Text('Not assessed')),
+            ButtonSegment(value: true, label: Text('Yes')),
+            ButtonSegment(value: false, label: Text('No')),
+          ],
+          selected: {_requiresRestraint},
+          onSelectionChanged: (value) =>
+              setState(() => _requiresRestraint = value.first),
+        ),
+        const SizedBox(height: 14),
+        MojoTextField(
+          controller: _temperamentNotes,
+          decoration: const InputDecoration(labelText: 'Handling notes'),
+          onChanged: (_) => setState(() {}),
+          maxLines: 3,
+          textCapitalization: TextCapitalization.sentences,
+        ),
+      ],
+    );
+  }
+
+  Widget _groomingStylesSection(Breed? breed) {
+    final defaults = breed?.preferenceDefaults ?? const <String, String>{};
+    final different = _prefs.entries.where((entry) =>
+        entry.value.text.trim().isNotEmpty &&
+        entry.value.text.trim() != (defaults[entry.key] ?? '').trim()).length;
+    final unspecified = _prefs.keys.where((key) => !defaults.containsKey(key))
+        .map(_prefLabel).join(', ');
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Breed standard', style: Theme.of(context).textTheme.titleSmall),
+        const SizedBox(height: 4),
+        Text(
+          breed == null
+              ? 'Choose a breed to use its recorded grooming styles, or add individual instructions below.'
+              : defaults.isEmpty
+                  ? 'No grooming styles recorded for ${breed.name} yet.'
+                  : '${breed.name} — recorded styles are a starting point. '
+                    'Your saved instructions stay with this dog.',
+          style: TextStyle(fontSize: 12.5, color: context.mojo.muted),
+        ),
+        if (defaults.isNotEmpty && unspecified.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text('Not specified by the breed record: $unspecified.',
+                style: TextStyle(fontSize: 12, color: context.mojo.muted)),
+          ),
+        if (breed != null)
+          TextButton(
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute(
+              builder: (_) => BreedDetailScreen(breedId: breed.id),
+            )),
+            child: const Text('VIEW BREED STANDARD'),
+          ),
+        if (defaults.keys.any((key) => _prefs[key]!.text.trim().isEmpty))
+          TextButton(
+            onPressed: () => _applyBreedStyles(breed!),
+            child: const Text('FILL BLANKS FROM BREED'),
+          ),
+        ExpansionTile(
+          key: const ValueKey('dog-grooming-instructions'),
+          initiallyExpanded: _stylesExpanded,
+          onExpansionChanged: (value) => setState(() => _stylesExpanded = value),
+          shape: Border(bottom: BorderSide(color: context.mojo.hairline)),
+          collapsedShape: const Border(),
+          tilePadding: EdgeInsets.zero,
+          childrenPadding: const EdgeInsets.only(top: 8),
+          expandedCrossAxisAlignment: CrossAxisAlignment.start,
+          title: const Text('Different style / previous groomer’s instructions'),
+          subtitle: Text(
+            different == 0
+                ? 'Optional — review or change the style for each area.'
+                : '$different area${different == 1 ? '' : 's'} with individual instructions.',
+            style: TextStyle(fontSize: 12, color: context.mojo.muted),
+          ),
+          children: [
+            for (final entry in _prefs.entries) ...[
+              MojoTextField(
+                controller: entry.value,
+                decoration: InputDecoration(
+                  labelText: _prefLabel(entry.key),
+                  helperText: defaults.containsKey(entry.key)
+                      ? 'Breed: ${defaults[entry.key]}' : 'Not specified by the breed record',
+                  helperMaxLines: 4,
+                ),
+                textCapitalization: TextCapitalization.sentences,
+                onChanged: (_) => setState(() {
+                  _editedPreferences.add(entry.key);
+                  _breedFilledPreferences.remove(entry.key);
+                }),
+              ),
+              const SizedBox(height: 14),
+            ],
+          ],
+        ),
+      ],
+    );
+  }
+
+  void _selectBreed(Breed? breed) {
+    if (_breedId == breed?.id) return;
+    setState(() {
+      _breedId = breed?.id;
+      for (final entry in _breedFilledPreferences.entries) {
+        if (_prefs[entry.key]!.text == entry.value) _prefs[entry.key]!.clear();
+      }
+      _breedFilledPreferences.clear();
+    });
+    if (breed != null) _applyBreedStyles(breed, preserveCleared: true);
+  }
+
+  /// Copy only recorded styles into blank areas. Saved and typed values win.
+  /// This is a snapshot, never a live link that could rewrite an agreed groom.
+  void _applyBreedStyles(Breed breed, {bool preserveCleared = false}) {
     final defaults = breed.preferenceDefaults;
     if (defaults.isEmpty) return;
 
@@ -722,7 +844,9 @@ class _DogFormScreenState extends State<DogFormScreen> {
     for (final entry in defaults.entries) {
       final controller = _prefs[entry.key];
       if (controller == null || controller.text.trim().isNotEmpty) continue;
+      if (preserveCleared && _editedPreferences.contains(entry.key)) continue;
       controller.text = entry.value;
+      _breedFilledPreferences[entry.key] = entry.value;
       filled.add(_prefLabel(entry.key).toLowerCase());
     }
     if (filled.isEmpty || !mounted) return;

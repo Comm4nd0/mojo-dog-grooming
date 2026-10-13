@@ -829,8 +829,8 @@ class Dog(models.Model):
 
     # STAFF ONLY — drives the per-day booking limits. Never shown to clients.
     temperament = models.CharField(
-        max_length=10, choices=Temperament.choices, default=Temperament.EASY,
-        help_text='Handling difficulty. Drives the per-day booking limit. Hidden from clients.',
+        max_length=10, choices=Temperament.choices, blank=True, default='',
+        help_text='Blank until assessed. Drives the per-day booking limit. Hidden from clients.',
     )
     temperament_notes = models.TextField(blank=True, help_text='How to handle this dog. Hidden from clients.')
     # Jess's request, and it sits with the handling notes rather than beside
@@ -841,9 +841,9 @@ class Dog(models.Model):
     # **Staff only**, like everything else in this block. A client opening
     # their dog's profile must not be told their dog gets muzzled.
     requires_restraint = models.BooleanField(
-        default=False,
+        null=True, blank=True, default=None,
         verbose_name='Restraints required',
-        help_text='This dog needs a collar or muzzle to be groomed safely. Hidden from clients.',
+        help_text='Whether this dog needs a collar or muzzle. Unknown until assessed. Hidden from clients.',
     )
 
     # Overrides for the breed averages. Null means "use the breed's value".

@@ -46,6 +46,8 @@ void main() {
         'id': 7,
         'name': 'Bunny',
         'client': 2,
+        'temperament': '',
+        'temperament_display': 'Not assessed',
         'client_full_name': 'Alice Adams',
         'is_active': true,
       },
@@ -56,6 +58,9 @@ void main() {
         'id': 7,
         'name': 'Bunny',
         'client': 2,
+        'temperament': '',
+        'temperament_display': 'Not assessed',
+        'requires_restraint': null,
         'temperament_notes': 'Private handling note',
       },
     ],
@@ -90,10 +95,13 @@ void main() {
         offline: restored,
       );
       expect((await data.getDogs()).single.name, 'Bunny');
+      expect((await data.getDogs()).single.temperament, '');
       expect((await data.getDogs(search: 'alice')).single.name, 'Bunny');
       expect(await data.getDogs(search: 'unknown'), isEmpty);
       expect(await data.getDogs(includeInactive: true), hasLength(2));
       expect((await data.getDog(7)).temperamentNotes, 'Private handling note');
+      expect((await data.getDog(7)).temperament, '');
+      expect((await data.getDog(7)).requiresRestraint, isNull);
       expect(restored.isOffline, isTrue);
       await restored.activate('another-staff');
       expect(restored.read('/dogs/7/', null), isNull);

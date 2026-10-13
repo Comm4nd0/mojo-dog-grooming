@@ -731,7 +731,7 @@ class DogSummary {
   final int scheduleWeeks;
   final bool isActive;
 
-  /// Staff-only.
+  /// Staff-only. Empty means unassessed; null means withheld by the server.
   final String? temperament;
   final String? temperamentDisplay;
 
@@ -1041,12 +1041,12 @@ class Dog {
   final String generalNotes;
   final bool isActive;
 
-  /// Staff-only.
+  /// Staff-only. Empty means unassessed; null means withheld by the server.
   final String? temperament;
   final String? temperamentDisplay;
   final String? temperamentNotes;
 
-  /// Staff-only, so **nullable**: null means the server withheld it, not that
+  /// Staff-only and tristate: null means unassessed or withheld, never that
   /// no restraint is needed. Never render it as "no" without a null check —
   /// telling a groomer a bitey dog needs nothing is how somebody gets bitten.
   final bool? requiresRestraint;

@@ -15,6 +15,9 @@ either on TestFlight or waiting for the first tag.
 
 ## [Unreleased]
 
+- Adding a dog is simpler: leave handling unassessed until the first visit,
+  start from recorded breed styles and expand individual instructions only when needed.
+
 - Doguments now saves its offline copy quietly in the background.
 
 - Completing a timed groom card now prepares a draft invoice for review. It

@@ -30,9 +30,8 @@ class TemperamentPicker extends StatelessWidget {
   final String? selected;
   final ValueChanged<String?> onSelected;
 
-  /// Adds a "not recorded" chip. On for the visit record, where leaving the
-  /// observed temperament blank is a real answer; off on the dog form, where
-  /// every dog has a grade.
+  /// Adds an unset chip: "Not recorded" on a visit, "Not assessed" on a dog.
+  /// An empty dog grade is unassessed; null from the API is withheld.
   final bool includeUnset;
   final String unsetLabel;
 
