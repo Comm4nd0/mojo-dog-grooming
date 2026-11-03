@@ -10,6 +10,7 @@ import '../../widgets/offline_status.dart';
 import '../../services/service_locator.dart';
 import '../../widgets/common.dart';
 import '../../widgets/temperament_picker.dart';
+import 'problem_area_editor.dart';
 
 /// Jess's "Ongoing Record" card, as a screen.
 ///
@@ -661,6 +662,25 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
     );
   }
 
+  /// Open the problem-area editor for this dog with the health check notes
+  /// as the reason. Saved there and then — a problem area belongs to the dog,
+  /// not the visit, so it does not wait for this card's SAVE.
+  Future<void> _markProblemArea() async {
+    final found = _healthCheck.text.trim();
+    final saved = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => ProblemAreaEditor.forDogId(
+          dogId: widget.dogId,
+          dogName: widget.dogName,
+          initialReason: found.isEmpty ? null : found,
+        ),
+      ),
+    );
+    if (saved == true && mounted) {
+      showSnack(context, 'Added to ${widget.dogName}\'s problem areas.');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -855,6 +875,21 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
                   maxLines: 3,
                   textCapitalization: TextCapitalization.sentences,
                 ),
+                // Jess: "Is there an easy way to add what was found in the
+                // health check on grooms to problem areas?" — straight from
+                // here, with what she wrote above already in the reason, so
+                // it is marked on the dog while it is in front of her. Not
+                // for a walk-in: there is no dog record to mark yet.
+                if (widget.dogId > 0)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      key: const Key('health-check-to-problem-area'),
+                      onPressed: _markProblemArea,
+                      icon: const Icon(Icons.add_location_alt_outlined, size: 18),
+                      label: const Text('MARK AS A PROBLEM AREA'),
+                    ),
+                  ),
 
                 const SectionHeader(title: 'Matting found'),
                 Wrap(

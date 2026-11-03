@@ -27,19 +27,38 @@ typedef ProblemAreaDraft = ({List<String> cells, String reason});
 ///   This is the add-a-dog form, where Jess is recording what she was told at
 ///   the door and there is no dog id to hang it off yet.
 class ProblemAreaEditor extends StatefulWidget {
-  const ProblemAreaEditor.forDog({super.key, required Dog dog})
-      : _dog = dog,
+  ProblemAreaEditor.forDog({super.key, required Dog dog, this.initialReason})
+      : _dogId = dog.id,
+        _dogName = dog.name,
+        _draftName = null;
+
+  /// From somewhere that knows the dog without holding a whole [Dog] — the
+  /// groom card, which has only an id and a name.
+  const ProblemAreaEditor.forDogId({
+    super.key,
+    required int dogId,
+    required String dogName,
+    this.initialReason,
+  })  : _dogId = dogId,
+        _dogName = dogName,
         _draftName = null;
 
   const ProblemAreaEditor.draft({super.key, required String dogName})
-      : _dog = null,
-        _draftName = dogName;
+      : _dogId = null,
+        _dogName = null,
+        _draftName = dogName,
+        initialReason = null;
 
-  final Dog? _dog;
+  final int? _dogId;
+  final String? _dogName;
   final String? _draftName;
 
+  /// Pre-fills the reason — the groom card hands over what the health check
+  /// found, so it is written once rather than typed again here.
+  final String? initialReason;
+
   String get _name {
-    final name = _dog?.name ?? _draftName ?? '';
+    final name = _dogName ?? _draftName ?? '';
     return name.isEmpty ? 'this dog' : name;
   }
 
@@ -49,7 +68,7 @@ class ProblemAreaEditor extends StatefulWidget {
 
 class _ProblemAreaEditorState extends State<ProblemAreaEditor> {
   final _data = getIt<DataService>();
-  final _reason = TextEditingController();
+  late final _reason = TextEditingController(text: widget.initialReason ?? '');
 
   Set<String> _cells = {};
   bool _busy = false;
@@ -74,8 +93,8 @@ class _ProblemAreaEditorState extends State<ProblemAreaEditor> {
       reason: _reason.text.trim(),
     );
 
-    final dog = widget._dog;
-    if (dog == null) {
+    final dogId = widget._dogId;
+    if (dogId == null) {
       // Nothing to save it against yet — hand it back to the add-a-dog form,
       // which posts it once the dog has an id.
       Navigator.of(context).pop(draft);
@@ -85,7 +104,7 @@ class _ProblemAreaEditorState extends State<ProblemAreaEditor> {
     setState(() => _busy = true);
     try {
       await _data.createProblemArea(
-        dogId: dog.id,
+        dogId: dogId,
         gridCells: draft.cells,
         reason: draft.reason,
       );

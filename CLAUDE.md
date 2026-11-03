@@ -64,7 +64,7 @@ python manage.py reset_link jess # a way back in when the superuser is locked ou
 Mobile:
 ```bash
 cd mobile && flutter pub get
-flutter analyze && flutter test  # 331 tests
+flutter analyze && flutter test  # 334 tests
 flutter run --dart-define=MOJO_API_BASE=http://192.168.1.20:8000/api
 ```
 
@@ -818,6 +818,11 @@ Things worth knowing:
   `CONFIRMED` booking as `BOOKED` would quietly lose the confirmation. It is null unless *this*
   save changed something, so a booking that was already done offers no undo for a status
   nobody set. One tap from reversible is what makes it reasonable to do unasked.
+- **A health check finding can be marked on the dog from the card.** Jess: *"Is there an easy
+  way to add what was found in the health check on grooms to problem areas?"* — MARK AS A
+  PROBLEM AREA under the health check opens `ProblemAreaEditor.forDogId` with her notes as the
+  reason. It saves there and then rather than waiting for the card's SAVE: a problem area
+  belongs to the dog, not the visit. Not offered on a walk-in (`dogId` 0), which has no dog.
 - **`final_body` / `final_feet` / `final_tail` are what was *done*.** The `pref_*` fields on the
   dog are what the owner asked for at intake. Do not conflate them.
 
