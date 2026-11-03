@@ -1164,8 +1164,10 @@ class GroomReportTests(BaseAPITestCase):
             checklist_notes='Too wriggly for the hygiene area today.',
             notes='Lovely and calm once the dryer was off.',
             temperament_observed=Temperament.FEISTY,
-            # Jess's working record, which must stay on the staff side.
+            # Owner-visible since Jess asked for it, under her disclaimer.
             health_check_notes='Small wart on the left ear.',
+            matting_ears=True,
+            # Jess's working record, which must stay on the staff side.
             sensitive_notes='Hates her tail being touched.',
             recorded_minutes=90,
         )
@@ -1179,6 +1181,10 @@ class GroomReportTests(BaseAPITestCase):
         self.assertIs(report['hygiene_area_done'], False)
         self.assertEqual(report['checklist_notes'], 'Too wriggly for the hygiene area today.')
         self.assertEqual(report['notes'], 'Lovely and calm once the dryer was off.')
+        # Jess: "can the health check ... and where matting found be added".
+        self.assertEqual(report['health_check_notes'], 'Small wart on the left ear.')
+        self.assertIs(report['matting_ears'], True)
+        self.assertNotIn('sensitive_notes', report)
 
     def test_the_report_is_a_whitelist(self):
         """The exact key set, so a field added to the model has to be admitted
@@ -1190,9 +1196,38 @@ class GroomReportTests(BaseAPITestCase):
                 'id', 'dog', 'dog_name', 'visit_type', 'visit_type_display', 'started_at',
                 'health_check_done', 'nails_done', 'ears_cleaned', 'hygiene_area_done',
                 'feet_clipped_out', 'bathed', 'blow_dried', 'usual_groom_done',
-                'checklist_notes', 'fleas_treated', 'ticks_removed',
+                'checklist_notes',
+                'health_check_notes',
+                'matting_paws', 'matting_armpits', 'matting_ears', 'matting_elsewhere',
+                'matting_notes',
+                'fleas_treated', 'ticks_removed', 'flea_aftercare', 'tick_aftercare',
                 'temperament_display', 'notes',
             },
+        )
+
+    def test_aftercare_only_for_what_was_found(self):
+        url = f'/api/groom-reports/{self.session.pk}/'
+        report = self.alice_client.get(url).data
+        self.assertEqual(report['flea_aftercare'], '')
+        self.assertEqual(report['tick_aftercare'], '')
+
+        settings_row = AppSettings.get()
+        settings_row.tick_aftercare = 'Watch the bite.'
+        settings_row.save()
+        GroomSession.objects.filter(pk=self.session.pk).update(ticks_removed=True)
+        report = self.alice_client.get(url).data
+        self.assertEqual(report['tick_aftercare'], 'Watch the bite.')
+        self.assertEqual(report['flea_aftercare'], '')
+
+    def test_staff_can_reword_the_aftercare(self):
+        response = self.staff_client.patch(
+            '/api/settings/', {'flea_aftercare': 'Flea bath again in 2 weeks.'}, format='json',
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(AppSettings.get().flea_aftercare, 'Flea bath again in 2 weeks.')
+        self.assertEqual(
+            self.alice_client.patch('/api/settings/', {'flea_aftercare': 'x'}, format='json').status_code,
+            status.HTTP_403_FORBIDDEN,
         )
 
     def test_another_client_sees_nothing(self):

@@ -163,6 +163,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                     ),
 
+                    // Jess's aftercare, on the owner's groom report when fleas
+                    // were treated or ticks removed. Her draft to start with;
+                    // she said she would write it up, so it is hers to edit.
+                    const SectionHeader(title: 'Groom report aftercare'),
+                    _aftercareTile(
+                      'After fleas are treated',
+                      _settings!.fleaAftercare,
+                      'flea_aftercare',
+                    ),
+                    _aftercareTile(
+                      'After ticks are removed',
+                      _settings!.tickAftercare,
+                      'tick_aftercare',
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                      child: Text(
+                        'Shown to the owner on their groom report, only when it applies. '
+                        'Blank shows nothing.',
+                        style: TextStyle(fontSize: 11.5, color: context.mojo.muted),
+                      ),
+                    ),
+
                     // "Nails, fleas and ticks" used to sit here as well, asking
                     // how long to block out and what it costs. It is the same
                     // question the Services screen asks per service, so having
@@ -378,6 +401,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
   ///
   /// Changing it re-derives every dog's average groom time on the server,
   /// because those are stored with the buffer already in them.
+  Widget _aftercareTile(String title, String text, String field) {
+    return ListTile(
+      key: Key('aftercare-$field'),
+      dense: true,
+      title: Text(title),
+      subtitle: Text(text.isEmpty ? 'Nothing shown' : text),
+      trailing: const Icon(Icons.edit_outlined, size: 18),
+      onTap: () async {
+        final result = await promptForText(
+          context,
+          title: title,
+          initialValue: text,
+          labelText: 'What the owner reads',
+          maxLines: 5,
+        );
+        if (result == null) return;
+        await _data.updateSettings({field: result.trim()});
+        _load();
+      },
+    );
+  }
+
   Future<void> _editGroomTimeBuffer() async {
     final result = await promptForText(
       context,

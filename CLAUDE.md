@@ -55,7 +55,7 @@ mobile/lib/
 Backend:
 ```bash
 python manage.py migrate && python manage.py seed_breeds
-python manage.py test api        # 504 tests
+python manage.py test api        # 506 tests
 python manage.py runserver 0.0.0.0:8000
 python manage.py accounts        # who can sign in — usernames live only in the DB
 python manage.py reset_link jess # a way back in when the superuser is locked out
@@ -64,7 +64,7 @@ python manage.py reset_link jess # a way back in when the superuser is locked ou
 Mobile:
 ```bash
 cd mobile && flutter pub get
-flutter analyze && flutter test  # 334 tests
+flutter analyze && flutter test  # 340 tests
 flutter run --dart-define=MOJO_API_BASE=http://192.168.1.20:8000/api
 ```
 
@@ -932,10 +932,12 @@ box"*. That is `GET /api/groom-reports/`: a **second route over `GroomSession`**
 `ConsentViewSet`), scoped `ClientScopedMixin(client_lookup='dog__client')`, serving the
 whitelist in `GroomReportSerializer` — the eight ticks, `checklist_notes`, `fleas_treated` /
 `ticks_removed`, the temperament **label** (through `temperament_label()`, never the frozen
-enum — the person it describes is reading it), and `notes`. Everything else on the card —
-health check findings, matting, sensitive notes, timings, shampoo, equipment — stays behind
-the staff-only endpoint, and `test_the_report_is_a_whitelist` pins the exact key set so a new
-model field has to be admitted deliberately.
+enum — the person it describes is reading it), and `notes`. Since 3 Nov 2026 also
+`health_check_notes` and the matting flags and `matting_notes` — Jess: *"can the health check
+... and where matting found be added"* — and `flea_aftercare` / `tick_aftercare`. Everything
+else on the card — sensitive notes, timings, shampoo, equipment — stays behind the staff-only
+endpoint, and `test_the_report_is_a_whitelist` pins the exact key set so a new model field has
+to be admitted deliberately.
 
 Four things worth keeping true:
 
@@ -943,10 +945,21 @@ Four things worth keeping true:
   the temperament caption each say so, and `sensitive_notes` — sitting between two shared
   fields — says "Staff only" outright. Jess writes with a reader now; the boundary belongs on
   the card, not in her memory.
-- **The owner's report renders answered items only.** On the staff card a null row is Jess's
-  own to-do list and stays visible; on the report, "Not recorded" eight times over reads as
-  eight worries, and every visit written up before the checklist existed would be all of them.
-  What was done, and what was deliberately left with the reason, is the report.
+- **The owner's report shows every checklist item, and a blank says "N/A".** It used to show
+  answered items only, on the reasoning that "Not recorded" eight times over reads as eight
+  worries. Jess asked for the opposite: *"can anything not been ticked off still be shown and
+  if left blank just say N/A… reminds clients more on offer"*. "N/A" and not "not done" — a
+  blank is a box nobody ticked, and the null-is-not-false rule still holds on this screen.
+- **The health check is shown under Jess's disclaimer, verbatim** (`healthCheckDisclaimer` in
+  `groom_report_screen.dart`: *"…we are not trained vets and these are simple observations…"*).
+  Never render the findings without it. Like `notes` before it, this became owner-visible
+  **retroactively**: anything typed in the health check box on an older card is now readable
+  by that dog's owner. The staff card now marks the health check and matting as owner-visible.
+- **Flea and tick aftercare is Jess's wording, in Settings** (`AppSettings.flea_aftercare` /
+  `tick_aftercare`, `0028`), seeded from her draft (*"Ticks, need to keep an eye on bite
+  area / Flees, need another flee bath in two weeks…"*) because she said she would write it
+  up. The report carries it only when that visit treated fleas or removed ticks — a report
+  must not tell somebody to treat their house for fleas nobody found. Blank shows nothing.
 - **`notes` ("Anything to note") became owner-visible retroactively.** It had always been on
   the card; anything typed in it before the report existed is now readable by that dog's
   owner. `sensitive_notes` is the box that was always meant for what the owner must not see,

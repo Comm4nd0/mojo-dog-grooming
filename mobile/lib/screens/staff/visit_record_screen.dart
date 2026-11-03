@@ -869,6 +869,10 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
                 ),
 
                 const SectionHeader(title: 'Health check'),
+                _ownerCanSee(
+                  'The owner sees what you write here, under a note that these '
+                  'are a groomer\'s observations, not a vet\'s.',
+                ),
                 MojoTextField(
                   controller: _healthCheck,
                   decoration: const InputDecoration(labelText: 'Anything found'),
@@ -892,6 +896,7 @@ class _VisitRecordScreenState extends State<VisitRecordScreen> {
                   ),
 
                 const SectionHeader(title: 'Matting found'),
+                _ownerCanSee('The owner sees where, and the note below.'),
                 Wrap(
                   spacing: 8,
                   children: [

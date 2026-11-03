@@ -74,7 +74,9 @@ class OctoberRequestsTests(BaseAPITestCase):
         self.staff_client.post(f"/api/groom-sessions/{visit['id']}/assign/", {'dog': self.alice_dog.pk})
         reports = self.alice_client.get('/api/groom-reports/').data['results']
         self.assertEqual(len(reports), 1)
-        self.assertNotIn('health_check_notes', reports[0])
+        # The health check is owner-visible since Jess asked for it on the
+        # report (3 Nov 2026); the sensitive notes are what must never be.
+        self.assertNotIn('sensitive_notes', reports[0])
         self.assertEqual(self.bob_client.get('/api/groom-reports/').data['count'], 0)
 
     def test_blank_walk_in_and_wrong_appointment_refused(self):

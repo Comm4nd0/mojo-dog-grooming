@@ -1925,8 +1925,24 @@ class GroomReport {
   final bool? usualGroomDone;
   final String checklistNotes;
 
+  /// What the health check found, '' when nothing was written. Owner-visible
+  /// at Jess's request, always under her not-a-vet disclaimer.
+  final String healthCheckNotes;
+
+  /// Where matting was found. Two-state, like the card's chips.
+  final bool mattingPaws;
+  final bool mattingArmpits;
+  final bool mattingEars;
+  final bool mattingElsewhere;
+  final String mattingNotes;
+
   final bool fleasTreated;
   final bool ticksRemoved;
+
+  /// Jess's aftercare wording from Settings. The server sends it only for a
+  /// visit it applies to, so '' means there is nothing to say.
+  final String fleaAftercare;
+  final String tickAftercare;
 
   /// Jess's wording for how the dog was on the day, or '' when unrecorded.
   final String temperamentDisplay;
@@ -1948,8 +1964,16 @@ class GroomReport {
     this.blowDried,
     this.usualGroomDone,
     this.checklistNotes = '',
+    this.healthCheckNotes = '',
+    this.mattingPaws = false,
+    this.mattingArmpits = false,
+    this.mattingEars = false,
+    this.mattingElsewhere = false,
+    this.mattingNotes = '',
     this.fleasTreated = false,
     this.ticksRemoved = false,
+    this.fleaAftercare = '',
+    this.tickAftercare = '',
     this.temperamentDisplay = '',
     this.notes = '',
   });
@@ -1970,13 +1994,32 @@ class GroomReport {
         blowDried: _tristate(json['blow_dried']),
         usualGroomDone: _tristate(json['usual_groom_done']),
         checklistNotes: json['checklist_notes']?.toString() ?? '',
+        healthCheckNotes: json['health_check_notes']?.toString() ?? '',
+        mattingPaws: json['matting_paws'] == true,
+        mattingArmpits: json['matting_armpits'] == true,
+        mattingEars: json['matting_ears'] == true,
+        mattingElsewhere: json['matting_elsewhere'] == true,
+        mattingNotes: json['matting_notes']?.toString() ?? '',
         fleasTreated: json['fleas_treated'] == true,
         ticksRemoved: json['ticks_removed'] == true,
+        fleaAftercare: json['flea_aftercare']?.toString() ?? '',
+        tickAftercare: json['tick_aftercare']?.toString() ?? '',
         temperamentDisplay: json['temperament_display']?.toString() ?? '',
         notes: json['notes']?.toString() ?? '',
       );
 
   bool get isGroom => visitType == VisitType.groom;
+
+  /// Where matting was found, in the card's own words. "Anywhere else" is
+  /// left out: on its own it says nothing, and [mattingNotes] says where.
+  List<String> get mattingAreas => [
+        if (mattingPaws) 'In paws',
+        if (mattingArmpits) 'Under armpits',
+        if (mattingEars) 'Under ears',
+        if (mattingElsewhere && mattingNotes.isEmpty) 'Elsewhere',
+      ];
+
+  bool get hasMatting => mattingAreas.isNotEmpty || mattingNotes.isNotEmpty;
 
   List<({String label, bool? done})> get checklist => buildChecklist(
         healthCheckDone: healthCheckDone,
@@ -2180,6 +2223,11 @@ class AppSettings {
   /// she fills it in a timed groom books at exactly what it timed.
   final int? groomTimeBufferMinutes;
 
+  /// Aftercare on the owner's groom report — Jess's wording, edited in
+  /// Settings. '' shows nothing.
+  final String fleaAftercare;
+  final String tickAftercare;
+
   const AppSettings({
     required this.businessName,
     required this.contactPhone,
@@ -2189,6 +2237,8 @@ class AppSettings {
     this.nailVisitPrice,
     this.bookingSlotBufferMinutes = 0,
     this.groomTimeBufferMinutes,
+    this.fleaAftercare = '',
+    this.tickAftercare = '',
   });
 
   factory AppSettings.fromJson(Map<String, dynamic> json) => AppSettings(
@@ -2203,6 +2253,8 @@ class AppSettings {
         // older server sending nothing has no buffer set, which is a different
         // statement from one Jess deliberately set to none.
         groomTimeBufferMinutes: (json['groom_time_buffer_minutes'] as num?)?.toInt(),
+        fleaAftercare: json['flea_aftercare']?.toString() ?? '',
+        tickAftercare: json['tick_aftercare']?.toString() ?? '',
         // Deliberately not defaulted: a null price is "not set", not free.
         nailVisitPrice:
             json['nail_visit_price'] == null ? null : _num(json['nail_visit_price']),

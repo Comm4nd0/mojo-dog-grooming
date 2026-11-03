@@ -546,6 +546,7 @@ Future<String?> promptForText(
   TextInputType? keyboardType,
   TextCapitalization textCapitalization = TextCapitalization.sentences,
   String confirmLabel = 'SAVE',
+  int maxLines = 1,
 }) {
   return showDialog<String>(
     context: context,
@@ -560,6 +561,7 @@ Future<String?> promptForText(
       keyboardType: keyboardType,
       textCapitalization: textCapitalization,
       confirmLabel: confirmLabel,
+      maxLines: maxLines,
     ),
   );
 }
@@ -576,6 +578,7 @@ class _TextPromptDialog extends StatefulWidget {
     required this.keyboardType,
     required this.textCapitalization,
     required this.confirmLabel,
+    this.maxLines = 1,
   });
 
   final String title;
@@ -588,6 +591,7 @@ class _TextPromptDialog extends StatefulWidget {
   final TextInputType? keyboardType;
   final TextCapitalization textCapitalization;
   final String confirmLabel;
+  final int maxLines;
 
   @override
   State<_TextPromptDialog> createState() => _TextPromptDialogState();
@@ -632,13 +636,16 @@ class _TextPromptDialogState extends State<_TextPromptDialog> {
             autofocus: true,
             keyboardType: widget.keyboardType,
             textCapitalization: widget.textCapitalization,
+            maxLines: widget.maxLines,
+            minLines: 1,
             decoration: InputDecoration(
               labelText: widget.labelText,
               hintText: widget.hintText,
               helperText: widget.helperText,
               suffixText: widget.suffixText,
             ),
-            onSubmitted: (_) => _submit(),
+            // Multi-line text takes Return as a new line, not as SAVE.
+            onSubmitted: widget.maxLines == 1 ? (_) => _submit() : null,
           ),
         ],
       ),

@@ -2675,6 +2675,24 @@ class AppSettings(models.Model):
     # overhead it covers is handling, not coat, so it barely moves between a
     # toy and a colossal. A dog that genuinely differs gets its groom time set
     # by hand, which overrides all of this anyway.
+    # Aftercare on the owner's groom report, shown when fleas were treated or
+    # ticks removed. Jess: "Ticks, need to keep an eye on bite area / Flees,
+    # need another flee bath in two weeks and entire area where dog/s have
+    # been needs to be treated" — and "Will need to write it up", so these are
+    # her draft, editable in Settings, not wording this codebase owns.
+    flea_aftercare = models.TextField(
+        blank=True,
+        default=(
+            'Your dog will need another flea bath in two weeks, and the entire area '
+            'where your dog/s have been needs to be treated.'
+        ),
+        help_text='Shown on the groom report when fleas were treated. Blank shows nothing.',
+    )
+    tick_aftercare = models.TextField(
+        blank=True,
+        default='Please keep an eye on the bite area.',
+        help_text='Shown on the groom report when ticks were removed. Blank shows nothing.',
+    )
     groom_time_buffer_minutes = models.PositiveIntegerField(
         null=True, blank=True,
         help_text=(

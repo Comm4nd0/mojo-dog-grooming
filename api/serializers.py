@@ -504,6 +504,7 @@ class AppSettingsSerializer(serializers.ModelSerializer):
             'business_name', 'contact_phone', 'contact_email',
             'invoicing_visible_to_clients', 'booking_slot_buffer_minutes',
             'nail_visit_minutes', 'nail_visit_price', 'groom_time_buffer_minutes',
+            'flea_aftercare', 'tick_aftercare',
             'updated_at',
         ]
         read_only_fields = ['updated_at']
@@ -1474,6 +1475,10 @@ class GroomReportSerializer(serializers.ModelSerializer):
     # read by the person it describes, which is one more reason the frozen
     # seed labels would be wrong here.
     temperament_display = serializers.SerializerMethodField()
+    # Aftercare from Settings, only for a visit it applies to — the report
+    # should not tell somebody to treat their house for fleas nobody found.
+    flea_aftercare = serializers.SerializerMethodField()
+    tick_aftercare = serializers.SerializerMethodField()
 
     class Meta:
         model = GroomSession
@@ -1483,12 +1488,31 @@ class GroomReportSerializer(serializers.ModelSerializer):
             'health_check_done', 'nails_done', 'ears_cleaned', 'hygiene_area_done',
             'feet_clipped_out', 'bathed', 'blow_dried', 'usual_groom_done',
             'checklist_notes',
-            'fleas_treated', 'ticks_removed',
+            # Admitted at Jess's request — "can the health check ... and where
+            # matting found be added" — under her disclaimer that these are a
+            # groomer's observations, not a vet's. Everything else on the card
+            # (sensitive notes, timings, equipment) stays staff-only.
+            'health_check_notes',
+            'matting_paws', 'matting_armpits', 'matting_ears', 'matting_elsewhere',
+            'matting_notes',
+            'fleas_treated', 'ticks_removed', 'flea_aftercare', 'tick_aftercare',
             'temperament_display', 'notes',
         ]
 
     def get_temperament_display(self, obj):
         return temperament_label(obj.temperament_observed)
+
+    def _settings(self):
+        # One read per response, not one per report in a list.
+        if not hasattr(self, '_settings_row'):
+            self._settings_row = AppSettings.get()
+        return self._settings_row
+
+    def get_flea_aftercare(self, obj):
+        return self._settings().flea_aftercare if obj.fleas_treated else ''
+
+    def get_tick_aftercare(self, obj):
+        return self._settings().tick_aftercare if obj.ticks_removed else ''
 
 
 # ── Money ──────────────────────────────────────────────────────────────
