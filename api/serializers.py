@@ -938,6 +938,12 @@ class DogListSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
     price_effective = serializers.DecimalField(
         source='effective_price', max_digits=7, decimal_places=2, read_only=True,
     )
+    # `price_effective` is per hour for an hourly dog; this is what a groom of
+    # its usual length comes to, so nothing has to redo the sum.
+    groom_price = serializers.DecimalField(max_digits=7, decimal_places=2, read_only=True)
+    # Said outright: the list row has no raw `price` to tell a real hourly
+    # rate from "per hour" left on a blank one.
+    price_per_hour = serializers.BooleanField(source='is_priced_per_hour', read_only=True)
     schedule_weeks_effective = serializers.IntegerField(source='effective_schedule_weeks', read_only=True)
 
     class Meta:
@@ -947,7 +953,8 @@ class DogListSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
             'client', 'client_uid', 'client_first_name', 'client_full_name', 'client_phone',
             'breed', 'breed_label',
             'temperament', 'temperament_display',
-            'groom_minutes_effective', 'price_effective', 'schedule_weeks_effective',
+            'price_basis', 'groom_minutes_effective', 'price_effective', 'groom_price', 'price_per_hour',
+            'schedule_weeks_effective',
         ]
 
     def get_temperament_display(self, obj):
@@ -981,6 +988,12 @@ class DogSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
     price_effective = serializers.DecimalField(
         source='effective_price', max_digits=7, decimal_places=2, read_only=True,
     )
+    # `price_effective` is per hour for an hourly dog; this is what a groom of
+    # its usual length comes to, so nothing has to redo the sum.
+    groom_price = serializers.DecimalField(max_digits=7, decimal_places=2, read_only=True)
+    # Said outright: the list row has no raw `price` to tell a real hourly
+    # rate from "per hour" left on a blank one.
+    price_per_hour = serializers.BooleanField(source='is_priced_per_hour', read_only=True)
     schedule_weeks_effective = serializers.IntegerField(source='effective_schedule_weeks', read_only=True)
     #: "Mon, Wed, Fri" — so the app and the admin agree on the wording without
     #: each keeping their own copy of the weekday names.
@@ -993,8 +1006,10 @@ class DogSerializer(StaffOnlyFieldsMixin, serializers.ModelSerializer):
             'date_of_birth', 'sex', 'is_neutered', 'colour', 'microchip_number', 'profile_image',
             'temperament', 'temperament_display', 'temperament_notes',
             'requires_restraint',
-            'groom_minutes', 'price', 'schedule_weeks', 'is_ad_hoc', 'average_groom_minutes',
-            'groom_minutes_effective', 'price_effective', 'schedule_weeks_effective',
+            'groom_minutes', 'price', 'price_basis', 'schedule_weeks', 'is_ad_hoc',
+            'average_groom_minutes',
+            'groom_minutes_effective', 'price_effective', 'groom_price', 'price_per_hour',
+            'schedule_weeks_effective',
             'is_daycare', 'daycare_days', 'daycare_days_label',
             'pref_body', 'pref_feet', 'pref_tail', 'pref_face', 'pref_ears', 'pref_skirt',
             'default_services', 'default_services_detail',

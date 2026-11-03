@@ -727,8 +727,19 @@ class DogSummary {
   final String clientPhone;
   final String breedLabel;
   final int groomMinutes;
+
+  /// The figure on the record: an hourly rate when [isPricedPerHour].
   final num price;
+
+  /// The list row never sees the dog's own price, only the effective one,
+  /// so it cannot tell "per hour" on a real price from "per hour" left on a
+  /// blank one. The server says outright (`price_per_hour`).
+  final bool isPricedPerHour;
   final int scheduleWeeks;
+
+  /// "£30.00 an hour" or "£55.00" — for anywhere a dog's price is a label.
+  String get priceLabel =>
+      isPricedPerHour ? '${formatMoney(price)} an hour' : formatMoney(price);
   final bool isActive;
 
   /// Staff-only. Empty means unassessed; null means withheld by the server.
@@ -746,6 +757,7 @@ class DogSummary {
     required this.breedLabel,
     required this.groomMinutes,
     required this.price,
+    this.isPricedPerHour = false,
     required this.scheduleWeeks,
     required this.isActive,
     this.profileImage,
@@ -765,6 +777,7 @@ class DogSummary {
         breedLabel: json['breed_label']?.toString() ?? '',
         groomMinutes: (json['groom_minutes_effective'] as num?)?.toInt() ?? 0,
         price: _num(json['price_effective']),
+        isPricedPerHour: json['price_per_hour'] == true,
         scheduleWeeks: (json['schedule_weeks_effective'] as num?)?.toInt() ?? 0,
         isActive: json['is_active'] != false,
         temperament: json['temperament']?.toString(),
@@ -779,7 +792,7 @@ class DogSummary {
         clientFirstName,
         ?clientUid,
         formatDuration(groomMinutes),
-        formatMoney(price),
+        priceLabel,
         'every ${scheduleWeeks}w',
       ].join(' · ');
 
@@ -996,8 +1009,27 @@ class Dog {
   final int? scheduleWeeksOverride;
 
   final int groomMinutes;
+
+  /// The figure on the record: an hourly rate when [isPricedPerHour].
+  /// What a groom costs is [groomPrice] — never charge this directly.
   final num price;
+
+  /// `GROOM` or `HOUR`, qualifying [priceOverride] only. Jess: *"can we add
+  /// a drop down of 'Per Groom' or 'Per Hour' please?"*. The breed grid is
+  /// always per groom, so with no price of its own the dog is per groom
+  /// whatever this says — the server applies the same rule.
+  final String priceBasis;
+
+  /// A groom of this dog's usual length at its price, worked out by the
+  /// server. Falls back to [price], which is right for every per-groom dog.
+  final num groomPrice;
   final int scheduleWeeks;
+
+  bool get isPricedPerHour => priceOverride != null && priceBasis == 'HOUR';
+
+  /// "£30.00 an hour" or "£55.00" — for anywhere a dog's price is a label.
+  String get priceLabel =>
+      isPricedPerHour ? '${formatMoney(price)} an hour' : formatMoney(price);
 
   /// No agreed interval — this one comes when the owner rings.
   ///
@@ -1066,6 +1098,8 @@ class Dog {
     required this.isNeutered,
     required this.groomMinutes,
     required this.price,
+    this.priceBasis = 'GROOM',
+    num? groomPrice,
     required this.scheduleWeeks,
     this.isAdHoc = false,
     this.isDaycare = false,
@@ -1104,7 +1138,7 @@ class Dog {
     this.requiresRestraint,
     this.averageGroomMinutes,
     this.problemAreas,
-  });
+  }) : groomPrice = groomPrice ?? price;
 
   factory Dog.fromJson(Map<String, dynamic> json) => Dog(
         id: json['id'] as int,
@@ -1127,6 +1161,8 @@ class Dog {
         scheduleWeeksOverride: (json['schedule_weeks'] as num?)?.toInt(),
         groomMinutes: (json['groom_minutes_effective'] as num?)?.toInt() ?? 0,
         price: _num(json['price_effective']),
+        priceBasis: json['price_basis']?.toString() == 'HOUR' ? 'HOUR' : 'GROOM',
+        groomPrice: json['groom_price'] == null ? null : _num(json['groom_price']),
         scheduleWeeks: (json['schedule_weeks_effective'] as num?)?.toInt() ?? 0,
         isAdHoc: json['is_ad_hoc'] == true,
         isDaycare: json['is_daycare'] == true,

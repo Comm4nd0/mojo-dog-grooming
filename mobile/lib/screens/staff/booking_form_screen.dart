@@ -605,7 +605,7 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
                     compact: true,
                   ),
                   InfoTag(label: '${formatDuration(dog.groomMinutes)} usual'),
-                  InfoTag(label: formatMoney(dog.price)),
+                  InfoTag(label: dog.priceLabel),
                   InfoTag(label: 'every ${dog.scheduleWeeks}w'),
                 ],
               ),

@@ -55,7 +55,7 @@ mobile/lib/
 Backend:
 ```bash
 python manage.py migrate && python manage.py seed_breeds
-python manage.py test api        # 466 tests
+python manage.py test api        # 504 tests
 python manage.py runserver 0.0.0.0:8000
 python manage.py accounts        # who can sign in — usernames live only in the DB
 python manage.py reset_link jess # a way back in when the superuser is locked out
@@ -64,7 +64,7 @@ python manage.py reset_link jess # a way back in when the superuser is locked ou
 Mobile:
 ```bash
 cd mobile && flutter pub get
-flutter analyze && flutter test  # 277 tests
+flutter analyze && flutter test  # 331 tests
 flutter run --dart-define=MOJO_API_BASE=http://192.168.1.20:8000/api
 ```
 
@@ -462,6 +462,28 @@ default.
 Dogs inherit from their breed unless overridden — always read `dog.effective_groom_minutes`,
 `effective_price`, `effective_schedule_weeks`, never the bare field, which is null in the
 common case.
+
+### A dog's own price can be per hour
+
+Jess: *"can we add a drop down of 'Per Groom' or 'Per Hour' please?"* — `Dog.price_basis`
+(`0027`), `GROOM` or `HOUR`, a dropdown beside the price on the dog form. **Every price stored
+before it was a whole-groom price**, so `GROOM` is the default and nothing was backfilled.
+
+- **It qualifies `Dog.price` only.** The breed grid is per groom by construction, so a dog with
+  no price of its own is per groom whatever the basis says (`is_priced_per_hour`). The form
+  says so when "Per hour" is picked over a blank box rather than let it look set.
+- **`effective_price` is now the figure on the record, not what a groom costs.** For an hourly
+  dog it is the rate. Charge `groom_price` (rate × `effective_groom_minutes`, to the penny) or
+  `price_for_minutes(m)` — `resolve_slot`, the Full Groom service line and invoicing from a
+  booking all do. Reading `effective_price` as a groom price quotes the hourly rate for a
+  four-hour groom, which is the bug this exists to prevent.
+- **A groom with no booking is invoiced on the card's `bookable_minutes`** — how long it took,
+  Jess's own definition — and the line says "150 min at £30.00/hour". A booked groom still
+  bills its `price_quoted`, which was worked out from the rate when it was made; the quote is
+  the agreement, same as before.
+- `price_per_hour` is sent outright on both dog serializers because the Doguments row never
+  sees the raw `price` and so cannot apply the blank-price rule itself. In Dart, `priceLabel`
+  is the one place "£30.00 an hour" is spelled.
 
 ## Brand
 

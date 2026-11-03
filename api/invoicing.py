@@ -39,12 +39,21 @@ def prepare_groom_invoice(session, *, complete_card=False):
                 # The quote is a historical agreement, possibly adjusted by
                 # Jess. Today's service or breed price must not replace it.
                 price = appointment.price_quoted
+            elif dog.is_priced_per_hour:
+                # No booking to have quoted it, so an hourly dog is billed on
+                # how long the groom took — the card's whole-groom figure,
+                # the one Jess named "how long the groom took".
+                price = dog.price_for_minutes(current.bookable_minutes)
             elif dog.price is not None or dog.breed_id:
                 price = dog.effective_price
             else:
                 price = None
             date = timezone.localtime(current.started_at).date()
             description = f'Full groom — {dog.name}, {date:%d %b %Y}'
+            if appointment is None and dog.is_priced_per_hour:
+                description += (
+                    f' ({current.bookable_minutes} min at £{dog.price}/hour)'
+                )
             invoice = Invoice.objects.create(
                 client=dog.client, source_appointment=appointment, auto_generated=True,
                 created_by=current.created_by, issue_date=timezone.localdate(),

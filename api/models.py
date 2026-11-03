@@ -101,6 +101,23 @@ class ServiceType(models.TextChoices):
     NAILS_FLEAS_TICKS = 'NAILS', 'Nails, fleas or ticks'
 
 
+class PriceBasis(models.TextChoices):
+    """What a dog's own price is a price *of*.
+
+    Jess: *"can we add a drop down of 'Per Groom' or 'Per Hour' please?"* —
+    beside the price on the dog form. Some dogs she charges by the hour, and a
+    figure typed into a box that every booking reads as a whole-groom price
+    quoted her hourly rate as the cost of a four-hour groom.
+
+    It qualifies ``Dog.price`` only. The breed grid is per groom by
+    construction — her price list is — so a dog with no price of its own is
+    per groom whatever this says. See :meth:`Dog.price_for_minutes`.
+    """
+
+    PER_GROOM = 'GROOM', 'Per groom'
+    PER_HOUR = 'HOUR', 'Per hour'
+
+
 class AppointmentStatus(models.TextChoices):
     REQUESTED = 'REQUESTED', 'Requested'
     BOOKED = 'BOOKED', 'Booked'
@@ -855,6 +872,14 @@ class Dog(models.Model):
         max_digits=7, decimal_places=2, null=True, blank=True,
         help_text='Overrides the breed average price. Blank = use the breed default.',
     )
+    #: Whether ``price`` is for the whole groom or for an hour of it. Every
+    #: price stored before this existed was a whole-groom price, so that is
+    #: the default and nothing needs backfilling.
+    price_basis = models.CharField(
+        max_length=5, choices=PriceBasis.choices, default=PriceBasis.PER_GROOM,
+        help_text="What this dog's own price is for. Ignored when the price is blank — "
+                  'the breed default is always per groom.',
+    )
     schedule_weeks = models.PositiveIntegerField(
         null=True, blank=True,
         help_text='Overrides the breed average grooming interval. Blank = use the breed default.',
@@ -1078,11 +1103,37 @@ class Dog(models.Model):
 
     @property
     def effective_price(self):
+        """The figure on the record — per hour when :attr:`is_priced_per_hour`.
+
+        Never charge this directly. It is what the form and the profile show;
+        what a groom costs is :attr:`groom_price` / :meth:`price_for_minutes`.
+        """
         if self.price is not None:
             return self.price
         if self.breed_id:
             return self.breed.avg_price
         return Decimal('0.00')
+
+    @property
+    def is_priced_per_hour(self):
+        # Only the dog's own price can be hourly; the breed grid never is.
+        return self.price is not None and self.price_basis == PriceBasis.PER_HOUR
+
+    def price_for_minutes(self, minutes):
+        """What a groom of ``minutes`` costs this dog.
+
+        Per groom, the length is irrelevant and the price is the price. Per
+        hour, it is the rate pro rata, to the penny — a 90-minute groom at
+        £30 an hour is £45, not two hours' worth.
+        """
+        if not self.is_priced_per_hour:
+            return self.effective_price
+        return (self.price * Decimal(minutes) / Decimal(60)).quantize(Decimal('0.01'))
+
+    @property
+    def groom_price(self):
+        """A whole groom at this dog's usual length — what a booking quotes."""
+        return self.price_for_minutes(self.effective_groom_minutes)
 
     @property
     def effective_schedule_weeks(self):
@@ -1520,7 +1571,7 @@ def resolve_slot(dog, service_type, services=()):
         if service_type == ServiceType.NAILS_FLEAS_TICKS:
             minutes = settings_row.nail_visit_minutes or FALLBACK_NAIL_VISIT_MINUTES
             return minutes, settings_row.nail_visit_price, []
-        return dog.effective_groom_minutes, dog.effective_price, []
+        return dog.effective_groom_minutes, dog.groom_price, []
 
     minutes = 0
     total = Decimal('0.00')
@@ -1528,7 +1579,7 @@ def resolve_slot(dog, service_type, services=()):
     for service in services:
         if service.takes_dog_defaults:
             minutes += dog.effective_groom_minutes
-            total += dog.effective_price
+            total += dog.groom_price
             continue
         minutes += service.default_minutes or 0
         if service.default_price is None:

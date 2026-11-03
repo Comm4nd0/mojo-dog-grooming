@@ -66,6 +66,9 @@ class _DogFormScreenState extends State<DogFormScreen> {
   int? _breedId;
   String _temperament = '';
   String _sex = '';
+
+  /// `GROOM` or `HOUR` — what the price box is a price *of*.
+  String _priceBasis = 'GROOM';
   bool? _isNeutered;
   bool _isActive = true;
   bool _isAdHoc = false;
@@ -90,6 +93,7 @@ class _DogFormScreenState extends State<DogFormScreen> {
     _groomMinutes = TextEditingController(text: dog?.groomMinutesOverride?.toString() ?? '');
     _price = TextEditingController(text: dog?.priceOverride?.toString() ?? '');
     _scheduleWeeks = TextEditingController(text: dog?.scheduleWeeksOverride?.toString() ?? '');
+    _priceBasis = dog?.priceBasis ?? 'GROOM';
     _isAdHoc = dog?.isAdHoc ?? false;
     _isDaycare = dog?.isDaycare ?? false;
     _daycareDays = {...?dog?.daycareDays};
@@ -265,6 +269,7 @@ class _DogFormScreenState extends State<DogFormScreen> {
       // an override actually clears it.
       'groom_minutes': asInt(_groomMinutes),
       'price': _price.text.trim().isEmpty ? null : _price.text.trim(),
+      'price_basis': _priceBasis,
       'schedule_weeks': asInt(_scheduleWeeks),
       'is_ad_hoc': _isAdHoc,
       'is_daycare': _isDaycare,
@@ -515,16 +520,50 @@ class _DogFormScreenState extends State<DogFormScreen> {
                 hintText: breed?.avgGroomMinutes.toString(),
               ),
               keyboardType: TextInputType.number,
+              // The per-hour sum under the price reads this.
+              onChanged: (_) => setState(() {}),
             ),
             const SizedBox(height: 14),
-            MojoTextField(
-              controller: _price,
-              decoration: InputDecoration(
-                labelText: 'Price (£)',
-                hintText: breed?.avgPrice.toStringAsFixed(2),
-              ),
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            // Jess: "can we add a drop down of 'Per Groom' or 'Per Hour'
+            // please?" — beside the price, because it says what the price is
+            // a price of. Per hour, a booking quotes the rate times the groom
+            // time above, and the line underneath does that sum out loud so
+            // the figure on the booking is never a surprise.
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: MojoTextField(
+                    controller: _price,
+                    decoration: InputDecoration(
+                      labelText: 'Price (£)',
+                      hintText: breed?.avgPrice.toStringAsFixed(2),
+                    ),
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    onChanged: (_) => setState(() {}),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: DropdownButtonFormField<String>(
+                    key: const Key('price-basis'),
+                    initialValue: _priceBasis,
+                    isExpanded: true,
+                    decoration: const InputDecoration(labelText: 'Charged'),
+                    items: const [
+                      DropdownMenuItem(value: 'GROOM', child: Text('Per groom')),
+                      DropdownMenuItem(value: 'HOUR', child: Text('Per hour')),
+                    ],
+                    onChanged: (value) => setState(() => _priceBasis = value ?? 'GROOM'),
+                  ),
+                ),
+              ],
             ),
+            if (_priceBasisNote(breed) case final note?)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(note, style: TextStyle(fontSize: 12, color: context.mojo.muted)),
+              ),
             const SizedBox(height: 14),
             MojoTextField(
               controller: _scheduleWeeks,
@@ -741,6 +780,26 @@ class _DogFormScreenState extends State<DogFormScreen> {
         ),
       ],
     );
+  }
+
+  /// The line under an hourly price: the sum a booking will quote, or why
+  /// there is none. Null for a per-groom price, which needs no explaining.
+  String? _priceBasisNote(Breed? breed) {
+    if (_priceBasis != 'HOUR') return null;
+    final rate = num.tryParse(_price.text.trim());
+    if (rate == null) {
+      // The breed grid is per groom, so an hourly basis on a blank price
+      // would quietly mean nothing. Say so rather than let it look set.
+      return 'Type an hourly rate — the ${breed?.name ?? 'breed'} default is a whole-groom price.';
+    }
+    final minutes = int.tryParse(_groomMinutes.text.trim()) ??
+        widget.dog?.groomMinutes ??
+        breed?.avgGroomMinutes;
+    if (minutes == null || minutes <= 0) {
+      return 'Bookings quote the rate times the groom time.';
+    }
+    return '${formatMoney(rate)} an hour × ${formatDuration(minutes)} = '
+        '${formatMoney(rate * minutes / 60)} a groom';
   }
 
   Widget _groomingStylesSection(Breed? breed) {

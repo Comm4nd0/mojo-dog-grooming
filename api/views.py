@@ -1727,7 +1727,7 @@ class InvoiceViewSet(ClientScopedMixin, viewsets.ModelViewSet):
         if services:
             for service in services:
                 if service.takes_dog_defaults:
-                    lines.append((service.name, appointment.dog.effective_price))
+                    lines.append((service.name, appointment.dog.groom_price))
                 elif service.default_price is None:
                     unpriced.append(service.name)
                 else:

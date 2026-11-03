@@ -72,7 +72,7 @@ class ProblemAreaInline(admin.TabularInline):
 class DogAdmin(admin.ModelAdmin):
     list_display = [
         'name', 'client', 'breed_label', 'temperament',
-        'effective_groom_minutes', 'effective_price',
+        'effective_groom_minutes', 'effective_price', 'price_basis',
         'is_ad_hoc', 'is_daycare', 'daycare_days_label', 'is_active',
     ]
     list_filter = ['temperament', 'is_ad_hoc', 'is_daycare', 'is_active', 'breed']

@@ -275,7 +275,7 @@ class _ClientProfileScreenState extends State<ClientProfileScreen> {
                 title: Text(dog.name, style: AppColors.display(19, weight: FontWeight.w600)),
                 subtitle: Text(
                   '${dog.breedLabel} · ${formatDuration(dog.groomMinutes)} · '
-                  '${formatMoney(dog.price)}',
+                  '${dog.priceLabel}',
                 ),
                 trailing: TemperamentChip(
                   temperament: dog.temperament,

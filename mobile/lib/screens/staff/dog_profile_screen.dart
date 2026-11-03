@@ -635,8 +635,10 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
         ),
         DetailRow(
           label: 'Price',
-          value: '${formatMoney(dog.price)}'
-              '${dog.priceOverride == null ? ' (breed default)' : ''}',
+          value: dog.isPricedPerHour
+              ? '${dog.priceLabel} · ${formatMoney(dog.groomPrice)} a groom'
+              : '${formatMoney(dog.price)}'
+                  '${dog.priceOverride == null ? ' (breed default)' : ''}',
         ),
         DetailRow(
           label: 'Schedule',
