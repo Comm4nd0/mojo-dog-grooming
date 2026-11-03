@@ -1119,7 +1119,12 @@ class _CalendarScreenState extends State<CalendarScreen> {
     }
 
     return ListView.separated(
-      padding: const EdgeInsets.only(bottom: 12),
+      // Clear of the + button. Jess: "With more than two bookings I can't
+      // click the last dogs paw print for their profile" — the FAB floats
+      // over the list's bottom-right corner, which is exactly where the last
+      // row's paw sits, and 12dp of padding left nothing to scroll it out
+      // from under. A FAB's height plus its margin top and bottom does.
+      padding: const EdgeInsets.only(bottom: 56 + 2 * kFloatingActionButtonMargin),
       itemCount: blocks.length + appointments.length,
       separatorBuilder: (_, _) => const Divider(height: 1),
       itemBuilder: (context, index) {
