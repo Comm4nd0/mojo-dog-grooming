@@ -148,6 +148,17 @@ void main() {
       expect(find.text('BOOK A GROOM'), findsOneWidget);
     });
 
+    testWidgets("puts the client's UID up with the tags", (tester) async {
+      // Jess: "Can we add the 'unique client I'd' to this?"
+      await _pumpProfile(tester);
+      final tag = find.byKey(const Key('client-uid-tag'));
+      expect(tag, findsOneWidget);
+      expect(find.descendant(of: tag, matching: find.text('MOJO-001')), findsOneWidget);
+      // Above the Temperament section, not down in the owner block.
+      expect(tester.getTopLeft(tag).dy,
+          lessThan(tester.getTopLeft(find.text('Temperament')).dy));
+    });
+
     testWidgets('keeps the staff-only sections for a staff login', (tester) async {
       await _pumpProfile(tester);
       // Gated on `dog.temperament != null` rather than on the login — a client

@@ -540,6 +540,17 @@ class _DogProfileScreenState extends State<DogProfileScreen> {
                             : 'Daycare · ${dog.daycareDaysLabel}',
                         icon: Icons.home_outlined,
                       ),
+                    // Jess: "Can we add the 'unique client I'd' to this?" —
+                    // her filing reference, up with the tags so it is on
+                    // screen without scrolling to the owner block. The server
+                    // withholds it from a client login (null), so it is a
+                    // staff-only tag by construction, not by a check here.
+                    if (dog.client?.uid case final uid? when uid.isNotEmpty)
+                      InfoTag(
+                        key: const Key('client-uid-tag'),
+                        label: uid,
+                        icon: Icons.badge_outlined,
+                      ),
                     if (!dog.isActive)
                       InfoTag(label: 'Inactive', color: context.mojo.muted),
                   ],
